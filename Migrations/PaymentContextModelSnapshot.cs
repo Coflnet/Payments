@@ -41,7 +41,7 @@ namespace Payments.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Transactions");
+                    b.ToTable("FiniteTransactions");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.OwnerShip", b =>
@@ -92,7 +92,7 @@ namespace Payments.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("FutureTransactions");
+                    b.ToTable("PlanedTransactions");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.PurchaseableProduct", b =>

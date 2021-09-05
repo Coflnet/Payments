@@ -17,13 +17,13 @@ namespace Coflnet.Payments.Models
         /// Can not be chaned once created
         /// </summary>
         /// <value></value>
-        public DbSet<FiniteTransaction> Transactions { get; set; }
+        public DbSet<FiniteTransaction> FiniteTransactions { get; set; }
         /// <summary>
         /// Not yet finished Transactions created by a <see cref="Users"/>
         /// may be updated/delted
         /// </summary>
         /// <value></value>
-        public DbSet<PlanedTransaction> FutureTransactions { get; set; }
+        public DbSet<PlanedTransaction> PlanedTransactions { get; set; }
         /// <summary>
         /// Purchaseable Proucts
         /// </summary>

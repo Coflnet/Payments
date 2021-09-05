@@ -50,7 +50,7 @@ namespace Payments.Migrations
                 .Annotation("MySql:CharSet", "utf8mb4");
 
             migrationBuilder.CreateTable(
-                name: "FutureTransactions",
+                name: "FiniteTransactions",
                 columns: table => new
                 {
                     Id = table.Column<long>(type: "bigint", nullable: false)
@@ -62,15 +62,15 @@ namespace Payments.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_FutureTransactions", x => x.Id);
+                    table.PrimaryKey("PK_FiniteTransactions", x => x.Id);
                     table.ForeignKey(
-                        name: "FK_FutureTransactions_Products_ProductId",
+                        name: "FK_FiniteTransactions_Products_ProductId",
                         column: x => x.ProductId,
                         principalTable: "Products",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_FutureTransactions_Users_UserId",
+                        name: "FK_FiniteTransactions_Users_UserId",
                         column: x => x.UserId,
                         principalTable: "Users",
                         principalColumn: "Id",
@@ -107,7 +107,7 @@ namespace Payments.Migrations
                 .Annotation("MySql:CharSet", "utf8mb4");
 
             migrationBuilder.CreateTable(
-                name: "Transactions",
+                name: "PlanedTransactions",
                 columns: table => new
                 {
                     Id = table.Column<long>(type: "bigint", nullable: false)
@@ -119,15 +119,15 @@ namespace Payments.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Transactions", x => x.Id);
+                    table.PrimaryKey("PK_PlanedTransactions", x => x.Id);
                     table.ForeignKey(
-                        name: "FK_Transactions_Products_ProductId",
+                        name: "FK_PlanedTransactions_Products_ProductId",
                         column: x => x.ProductId,
                         principalTable: "Products",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_Transactions_Users_UserId",
+                        name: "FK_PlanedTransactions_Users_UserId",
                         column: x => x.UserId,
                         principalTable: "Users",
                         principalColumn: "Id",
@@ -136,13 +136,13 @@ namespace Payments.Migrations
                 .Annotation("MySql:CharSet", "utf8mb4");
 
             migrationBuilder.CreateIndex(
-                name: "IX_FutureTransactions_ProductId",
-                table: "FutureTransactions",
+                name: "IX_FiniteTransactions_ProductId",
+                table: "FiniteTransactions",
                 column: "ProductId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_FutureTransactions_UserId",
-                table: "FutureTransactions",
+                name: "IX_FiniteTransactions_UserId",
+                table: "FiniteTransactions",
                 column: "UserId");
 
             migrationBuilder.CreateIndex(
@@ -156,20 +156,20 @@ namespace Payments.Migrations
                 column: "UserId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_PlanedTransactions_ProductId",
+                table: "PlanedTransactions",
+                column: "ProductId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_PlanedTransactions_UserId",
+                table: "PlanedTransactions",
+                column: "UserId");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_Products_Slug",
                 table: "Products",
                 column: "Slug",
                 unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_Transactions_ProductId",
-                table: "Transactions",
-                column: "ProductId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_Transactions_UserId",
-                table: "Transactions",
-                column: "UserId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_Users_ExternalId",
@@ -181,13 +181,13 @@ namespace Payments.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "FutureTransactions");
+                name: "FiniteTransactions");
 
             migrationBuilder.DropTable(
                 name: "OwnerShip");
 
             migrationBuilder.DropTable(
-                name: "Transactions");
+                name: "PlanedTransactions");
 
             migrationBuilder.DropTable(
                 name: "Products");

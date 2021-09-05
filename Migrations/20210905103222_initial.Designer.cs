@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Payments.Migrations
 {
     [DbContext(typeof(PaymentContext))]
-    [Migration("20210905102755_initial")]
+    [Migration("20210905103222_initial")]
     partial class initial
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -43,7 +43,7 @@ namespace Payments.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Transactions");
+                    b.ToTable("FiniteTransactions");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.OwnerShip", b =>
@@ -94,7 +94,7 @@ namespace Payments.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("FutureTransactions");
+                    b.ToTable("PlanedTransactions");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.PurchaseableProduct", b =>
