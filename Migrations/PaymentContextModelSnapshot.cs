@@ -17,6 +17,33 @@ namespace Payments.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 64)
                 .HasAnnotation("ProductVersion", "5.0.9");
 
+            modelBuilder.Entity("Coflnet.Payments.Models.FiniteTransaction", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(65,30)");
+
+                    b.Property<int?>("ProductId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("Timestamp")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("Transactions");
+                });
+
             modelBuilder.Entity("Coflnet.Payments.Models.OwnerShip", b =>
                 {
                     b.Property<long>("Id")
@@ -39,6 +66,33 @@ namespace Payments.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("OwnerShip");
+                });
+
+            modelBuilder.Entity("Coflnet.Payments.Models.PlanedTransaction", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(65,30)");
+
+                    b.Property<int?>("ProductId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("Timestamp")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("FutureTransactions");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.PurchaseableProduct", b =>
@@ -73,33 +127,6 @@ namespace Payments.Migrations
                     b.ToTable("Products");
                 });
 
-            modelBuilder.Entity("Coflnet.Payments.Models.Transaction", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    b.Property<decimal>("Amount")
-                        .HasColumnType("decimal(65,30)");
-
-                    b.Property<int?>("ProductId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("Timestamp")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int?>("UserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ProductId");
-
-                    b.HasIndex("UserId");
-
-                    b.ToTable("Transactions");
-                });
-
             modelBuilder.Entity("Coflnet.Payments.Models.User", b =>
                 {
                     b.Property<int>("Id")
@@ -120,6 +147,21 @@ namespace Payments.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("Coflnet.Payments.Models.FiniteTransaction", b =>
+                {
+                    b.HasOne("Coflnet.Payments.Models.PurchaseableProduct", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId");
+
+                    b.HasOne("Coflnet.Payments.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId");
+
+                    b.Navigation("Product");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Coflnet.Payments.Models.OwnerShip", b =>
                 {
                     b.HasOne("Coflnet.Payments.Models.PurchaseableProduct", "Product")
@@ -135,7 +177,7 @@ namespace Payments.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("Coflnet.Payments.Models.Transaction", b =>
+            modelBuilder.Entity("Coflnet.Payments.Models.PlanedTransaction", b =>
                 {
                     b.HasOne("Coflnet.Payments.Models.PurchaseableProduct", "Product")
                         .WithMany()
