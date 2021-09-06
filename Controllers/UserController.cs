@@ -2,6 +2,7 @@
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
+using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -17,16 +18,25 @@ namespace Payments.Controllers
     {
         private readonly ILogger<UserController> _logger;
         private readonly PaymentContext db;
+        private readonly TransactionService transactionService;
+        private readonly UserService userService;
 
         /// <summary>
         /// Creates a new instance of <see cref="UserController"/>
         /// </summary>
         /// <param name="logger"></param>
         /// <param name="context"></param>
-        public UserController(ILogger<UserController> logger, PaymentContext context)
+        /// <param name="transactionService"></param>
+        /// <param name="userService"></param>
+        public UserController(ILogger<UserController> logger, 
+            PaymentContext context,
+            TransactionService transactionService,
+            UserService userService)
         {
             _logger = logger;
             db = context;
+            this.transactionService = transactionService;
+            this.userService = userService;
         }
 
         /// <summary>
@@ -36,16 +46,9 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("{userId}")]
-        public async Task<User> GetOrCreate(string userId)
+        public Task<User> GetOrCreate(string userId)
         {
-            var user = await db.Users.Where(u => u.ExternalId == userId).Include(u => u.Owns).FirstOrDefaultAsync();
-            if (user == null)
-            {
-                user = new Coflnet.Payments.Models.User() { ExternalId = userId, Balance = 0 };
-                db.Users.Add(user);
-                await db.SaveChangesAsync();
-            }
-            return user;
+            return userService.GetOrCreate(userId);
         }
 
         /// <summary>
@@ -86,19 +89,7 @@ namespace Payments.Controllers
         [Route("{userId}/purchase/{productSlug}")]
         public async Task<ActionResult<User>> Purchase(string userId, string productSlug)
         {
-            var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
-            if(product.IsDisabled)
-                throw new Exception("product can't be purchased");
-            var user = await GetOrCreate(userId);
-            if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.Now + TimeSpan.FromDays(3000)).Any())
-                throw new Exception("already owned");
-            if (user.Balance < product.Cost)
-                throw new Exception("insuficcient balance");
-
-            user.Balance -= product.Cost;
-            user.Owns.Add(new OwnerShip() { Expires = DateTime.Now.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
-            db.Update(user);
-            await db.SaveChangesAsync();
+            await transactionService.PurchaseProduct(productSlug,userId);
             return Ok();
         }
     }

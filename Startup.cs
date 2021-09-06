@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Reflection;
 using Coflnet.Payments.Models;
+using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
@@ -9,6 +10,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
+using Stripe;
 
 namespace Coflnet.Payments
 {
@@ -28,7 +30,7 @@ namespace Coflnet.Payments
             services.AddControllers();
             services.AddSwaggerGen(c =>
             {
-                c.SwaggerDoc("v1", new OpenApiInfo { Title = "Payments", Version = "v1" });
+                c.SwaggerDoc("v1", new OpenApiInfo { Title = "Payments", Version = "v1", License = new OpenApiLicense { Name = "MIT" } });
                 // Set the comments path for the Swagger JSON and UI.
                 var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
                 var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
@@ -42,7 +44,10 @@ namespace Coflnet.Payments
                     .EnableSensitiveDataLogging() // <-- These two calls are optional but help
                     .EnableDetailedErrors()       // <-- with debugging (remove for production).
             );
+            services.AddScoped<TransactionService>();
+            services.AddScoped<UserService>();
 
+            StripeConfiguration.ApiKey = Configuration["STRIPE:KEY"];
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

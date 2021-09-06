@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel.DataAnnotations;
 
 namespace Coflnet.Payments.Models
 {
@@ -24,6 +25,13 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public decimal Amount { get; set; }
+        /// <summary>
+        /// Custom reference data for this transaction.
+        /// External identifiers, notes, metadata
+        /// </summary>
+        /// <value></value>
+        [MaxLength(80)]
+        public string Reference { get; set; }
         /// <summary>
         /// Timestamp of this transaction
         /// </summary>
