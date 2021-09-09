@@ -37,7 +37,7 @@ namespace Payments.Controllers
         }
 
         /// <summary>
-        /// Creates a payment session with stripe
+        /// Webhook callback for stripe
         /// </summary>
         /// <param name="userId"></param>
         /// <returns></returns>

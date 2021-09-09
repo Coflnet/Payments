@@ -65,7 +65,11 @@ namespace Coflnet.Payments.Models
             /// <summary>
             /// Products with this flag just lock some amount and are not able to become permanent
             /// </summary> 
-            DISABLED = 16
+            DISABLED = 16,
+            /// <summary>
+            /// The <see cref="Cost"/> is the minimal cost but can be increased
+            /// </summary> 
+            VARIABLE_PRICE = 32
 
         }
     }

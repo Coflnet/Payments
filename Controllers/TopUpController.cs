@@ -90,7 +90,7 @@ namespace Payments.Controllers
 
         Dictionary<string,Price> priceCache = null;
 
-        public Price GetPrice(string productId)
+        private Price GetPrice(string productId)
         {
             var service = new PriceService();
             if(priceCache == null)
@@ -105,7 +105,7 @@ namespace Payments.Controllers
         }
         Dictionary<string,Product> productCache = null;
 
-        public Product GetProduct(string productId)
+        private Product GetProduct(string productId)
         {
             var service = new ProductService();
             if(priceCache == null)

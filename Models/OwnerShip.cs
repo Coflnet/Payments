@@ -1,5 +1,6 @@
 
 using System;
+using Newtonsoft.Json;
 
 namespace Coflnet.Payments.Models
 {
@@ -18,6 +19,7 @@ namespace Coflnet.Payments.Models
         /// The user having the ownership
         /// </summary>
         /// <value></value>
+        [JsonIgnore]
         public User User { get; set; }
         /// <summary>
         /// The produt being owned

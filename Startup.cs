@@ -27,10 +27,10 @@ namespace Coflnet.Payments
         public void ConfigureServices(IServiceCollection services)
         {
 
-            services.AddControllers();
+            services.AddControllers().AddNewtonsoftJson();
             services.AddSwaggerGen(c =>
             {
-                c.SwaggerDoc("v1", new OpenApiInfo { Title = "Payments", Version = "v1", License = new OpenApiLicense { Name = "MIT" } });
+                c.SwaggerDoc("v1", new OpenApiInfo { Title = "Payments", Version = "0.0.1", License = new OpenApiLicense { Name = "MIT" } });
                 // Set the comments path for the Swagger JSON and UI.
                 var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
                 var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
@@ -64,7 +64,7 @@ namespace Coflnet.Payments
 
 
 
-            app.UseHttpsRedirection();
+            //app.UseHttpsRedirection();
 
             app.UseRouting();
 
@@ -75,11 +75,19 @@ namespace Coflnet.Payments
                 endpoints.MapControllers();
             });
 
-            using (var serviceScope = app.ApplicationServices.GetRequiredService<IServiceScopeFactory>().CreateScope())
+            try
             {
-                var context = serviceScope.ServiceProvider.GetService<PaymentContext>();
-                context.Database.Migrate();
+                using (var serviceScope = app.ApplicationServices.GetRequiredService<IServiceScopeFactory>().CreateScope())
+                {
+                    var context = serviceScope.ServiceProvider.GetService<PaymentContext>();
+                    context.Database.Migrate();
+                }
             }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Migrating failed \n{e.Message} \n{e.InnerException?.Message}" );
+            }
+
         }
     }
 }

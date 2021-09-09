@@ -60,21 +60,24 @@ namespace Coflnet.Payments.Services
         /// </summary>
         /// <param name="productSlug"></param>
         /// <param name="userId"></param>
+        /// <param name="price"></param>
         /// <returns></returns>
-        public async Task PurchaseProduct(string productSlug, string userId)
+        public async Task PurchaseProduct(string productSlug, string userId, decimal price = 0)
         {
             var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
+            if(!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
+                price = product.Cost;
             if (product.Type == PurchaseableProduct.ProductType.DISABLED)
                 throw new Exception("product can't be purchased");
             var user = await userService.GetOrCreate(userId);
             if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.Now + TimeSpan.FromDays(3000)).Any())
                 throw new Exception("already owned");
-            if (user.Balance < product.Cost)
+            if (user.AvailableBalance < price)
                 throw new Exception("insuficcient balance");
 
-            user.Balance -= product.Cost;
+            user.Balance -= price;
             await db.Database.BeginTransactionAsync();
-            await CreateTransaction(product, user, product.Cost * -1);
+            await CreateTransaction(product, user, price * -1);
             user.Owns.Add(new OwnerShip() { Expires = DateTime.Now.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
             db.Update(user);
             await db.SaveChangesAsync();

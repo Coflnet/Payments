@@ -1,8 +1,12 @@
 using System;
 using System.ComponentModel.DataAnnotations;
+using Newtonsoft.Json;
 
 namespace Coflnet.Payments.Models
 {
+    /// <summary>
+    /// Base class for transactions
+    /// </summary>
     public class Transaction
     {
         /// <summary>
@@ -14,6 +18,7 @@ namespace Coflnet.Payments.Models
         /// The user doing the transaction
         /// </summary>
         /// <value></value>
+        [JsonIgnore]
         public User User { get; set; }
         /// <summary>
         /// What product this transaction coresponds to (gives context why this happened)

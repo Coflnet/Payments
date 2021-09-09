@@ -33,6 +33,10 @@ namespace Coflnet.Payments.Services
                 db.Users.Add(user);
                 await db.SaveChangesAsync();
             }
+            else
+            {
+                user.AvailableBalance = user.Balance + await db.PlanedTransactions.Where(t => t.User == user && t.Amount < 0).SumAsync(t => t.Amount);
+            }
             return user;
         }
     }

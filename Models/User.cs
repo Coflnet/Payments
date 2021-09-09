@@ -1,9 +1,17 @@
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Coflnet.Payments.Models
 {
+    /// <summary>
+    /// An user capable of making transactions  
+    /// </summary>
     public class User
     {
+        /// <summary>
+        /// primary key
+        /// </summary>
+        /// <value></value>
         public int Id { get; set; }
         /// <summary>
         /// The identifier of the account system
@@ -15,6 +23,12 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public decimal Balance { get; set; }
+        /// <summary>
+        /// The balance available (<see cref="Balance"/> minus any <see cref="PlanedTransaction"/>)
+        /// </summary>
+        /// <value></value>
+        [NotMapped]
+        public decimal AvailableBalance {get;set;}
         /// <summary>
         /// Things this user owns
         /// </summary>
