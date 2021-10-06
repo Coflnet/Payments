@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Coflnet.Payments.Models
@@ -17,6 +18,7 @@ namespace Coflnet.Payments.Models
         /// The identifier of the account system
         /// </summary>
         /// <value></value>
+        [MaxLength(32)]
         public string ExternalId { get; set; }
         /// <summary>
         /// Balance of this user

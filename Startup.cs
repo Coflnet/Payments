@@ -46,6 +46,8 @@ namespace Coflnet.Payments
             );
             services.AddScoped<TransactionService>();
             services.AddScoped<UserService>();
+            services.AddSingleton<ExchangeService>();
+            services.AddScoped<Services.ProductService>();
 
             StripeConfiguration.ApiKey = Configuration["STRIPE:KEY"];
         }

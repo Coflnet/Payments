@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Services;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -39,24 +40,30 @@ namespace Payments.Controllers
         /// <summary>
         /// Webhook callback for stripe
         /// </summary>
-        /// <param name="userId"></param>
         /// <returns></returns>
         [HttpPost]
         [Route("stripe")]
-        public async Task<IActionResult> CreateStripe(string userId)
+        public async Task<IActionResult> CreateStripe()
         {
 
             _logger.LogInformation("received callback from stripe --");
+            var syncIOFeature = HttpContext.Features.Get<IHttpBodyControlFeature>();
+            if (syncIOFeature != null)
+            {
+                syncIOFeature.AllowSynchronousIO = true;
+            }
             string json = "";
             try
             {
                 _logger.LogInformation("reading json");
                 json = new StreamReader(Request.Body).ReadToEnd();
+                if(String.IsNullOrEmpty(json))
+                    throw new Exception("Json body is not set");
 
                 var stripeEvent = EventUtility.ConstructEvent(
-                  json,
-                  Request.Headers["Stripe-Signature"],
-                  signingSecret
+                    json,
+                    Request.Headers["Stripe-Signature"],
+                    signingSecret
                 );
                 _logger.LogInformation("stripe valiadted");
                 _logger.LogInformation(json);
@@ -67,7 +74,8 @@ namespace Payments.Controllers
                     var session = stripeEvent.Data.Object as Stripe.Checkout.Session;
 
                     // Fulfill the purchase...
-                    await transactionService.AddTopUp(session.LineItems.Data[0].Price.ProductId, session.ClientReferenceId, session.Id);
+                    var productId = int.Parse(session.LineItems.Data[0].Price.Metadata["productId"]);
+                    await transactionService.AddTopUp(productId, session.ClientReferenceId, session.Id);
                 }
                 else
                 {

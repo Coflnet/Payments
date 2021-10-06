@@ -26,13 +26,13 @@ namespace Coflnet.Payments.Services
         /// <summary>
         /// Adds a top up to some user
         /// </summary>
-        /// <param name="productSlug">The product purchased</param>
+        /// <param name="productId">The product purchased</param>
         /// <param name="userId">The user doing the transaction</param>
         /// <param name="reference">External reference data</param>
         /// <returns></returns>
-        public async Task AddTopUp(string productSlug, string userId, string reference)
+        public async Task AddTopUp(int productId, string userId, string reference)
         {
-            var product = db.Products.Where(p => p.Slug == productSlug).FirstOrDefault();
+            var product = db.Products.Where(p => p.Id == productId).FirstOrDefault();
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
             await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
@@ -65,7 +65,7 @@ namespace Coflnet.Payments.Services
         public async Task PurchaseProduct(string productSlug, string userId, decimal price = 0)
         {
             var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
-            if(!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
+            if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
             if (product.Type == PurchaseableProduct.ProductType.DISABLED)
                 throw new Exception("product can't be purchased");

@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
+using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Stripe;
 using Stripe.Checkout;
@@ -20,26 +22,35 @@ namespace Payments.Controllers
     {
         private readonly ILogger<TopUpController> _logger;
         private readonly PaymentContext db;
+        private readonly ExchangeService exchangeService;
+        private readonly Coflnet.Payments.Services.ProductService productService;
 
-        public TopUpController(ILogger<TopUpController> logger, PaymentContext context)
+        public TopUpController(ILogger<TopUpController> logger,
+            PaymentContext context,
+            ExchangeService exchangeService,
+            Coflnet.Payments.Services.ProductService productService)
         {
             _logger = logger;
             db = context;
+            this.exchangeService = exchangeService;
+            this.productService = productService;
         }
 
         /// <summary>
         /// Creates a payment session with stripe
         /// </summary>
         /// <param name="userId"></param>
+        /// <param name="productId"></param>
         /// <returns></returns>
         [HttpPost]
         [Route("stripe")]
         public async Task<IdResponse> CreateStripeSession(string userId, string productId)
         {
-            var product = GetProduct(productId);
-            var price = GetPrice(productId);
+            var product = await productService.GetProduct(productId);
+            var eurPrice = exchangeService.ToEur(product.Cost);
 
             var domain = "https://sky.coflnet.com";
+            var metadata = new Dictionary<string, string>(){{"productId",product.Id.ToString()}};
             var options = new SessionCreateOptions
             {
                 PaymentMethodTypes = new List<string>
@@ -50,20 +61,24 @@ namespace Payments.Controllers
                 {
                   new SessionLineItemOptions
                   {
-
                     PriceData = new SessionLineItemPriceDataOptions
                     {
-                      UnitAmount = price.UnitAmount,
+                      UnitAmount = (long)(eurPrice * 100),
 
                       Currency = "eur",
-                      Product=productId
+                      //Product=productId,
+                      ProductData = new SessionLineItemPriceDataProductDataOptions()
+                      {
+                          Name = product.Title,
+                          Metadata = metadata
+                      }
                     },
 
                    // Description = "Unlocks premium features: Subscribe to 100 Thrings, Search with multiple filters and you support the project :)",
                     Quantity = 1,
                   },
                 },
-                Metadata = product.Metadata,
+                Metadata = metadata,
                 Mode = "payment",
                 SuccessUrl = domain + "/success",
                 CancelUrl = domain + "/cancel",
@@ -77,50 +92,21 @@ namespace Payments.Controllers
             }
             catch (Exception e)
             {
-                _logger.LogError(e,"Stripe checkout session could not be created");
-                throw new Exception("Payment current unavailable");
+                _logger.LogError(e, "Stripe checkout session could not be created");
+                throw new Exception("Payment currently unavailable");
             }
 
-            return new IdResponse{ Id = session.Id };
+            return new IdResponse { Id = session.Id };
         }
-        public class IdResponse 
+        public class IdResponse
         {
-            public string Id {get;set;}
+            public string Id { get; set; }
         }
 
-        Dictionary<string,Price> priceCache = null;
 
-        private Price GetPrice(string productId)
-        {
-            var service = new PriceService();
-            if(priceCache == null)
-            {
-                priceCache = service.List().ToDictionary(e=>e.ProductId);
-                _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(priceCache));
-            }
-            if(priceCache.TryGetValue(productId,out Price value))
-                return value;
-
-            throw new System.Exception($"The price for id {productId} was not found");
-        }
-        Dictionary<string,Product> productCache = null;
-
-        private Product GetProduct(string productId)
-        {
-            var service = new ProductService();
-            if(priceCache == null)
-            {
-                productCache = service.List().ToDictionary(e=>e.Id);
-                _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(priceCache));
-            }
-            if(productCache.TryGetValue(productId,out Product value))
-                return value;
-
-            throw new System.Exception($"The product with id {productId} was not found");
-        }
 
         /// <summary>
-        /// Creates a payment session with stripe
+        /// Creates a payment session with paypal
         /// </summary>
         /// <param name="userId"></param>
         /// <returns></returns>
@@ -128,7 +114,7 @@ namespace Payments.Controllers
         [Route("paypal")]
         public async Task<IEnumerable<PurchaseableProduct>> CreatePayPal(string userId)
         {
-            return await db.Products.ToListAsync();
+            throw new NotImplementedException("todo ...");
         }
     }
 }

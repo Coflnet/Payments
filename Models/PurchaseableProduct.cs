@@ -7,14 +7,21 @@ namespace Coflnet.Payments.Models
     /// </summary>
     public class PurchaseableProduct
     {
+        /// <summary>
+        /// Primary Key
+        /// </summary>
         public int Id { get; set; }
+        /// <summary>
+        /// Title of this product 
+        /// </summary>
+        /// <value></value>
         [MaxLength(80)]
         public string Title { get; set; }
         /// <summary>
         /// unique Slug for this product
         /// </summary>
         /// <value></value>
-        [MaxLength(20)]
+        [MaxLength(32)]
         public string Slug { get; set; }
         /// <summary>
         /// DB-Level description may not be displayed to the end user directly (localisation n stuff)

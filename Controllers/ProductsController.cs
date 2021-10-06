@@ -23,11 +23,50 @@ namespace Payments.Controllers
             db = context;
         }
 
+        /// <summary>
+        /// Get the details of a product
+        /// </summary>
+        /// <param name="productSlug"></param>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("p/{productSlug}")]
+        public Task<PurchaseableProduct> Get(string productSlug)
+        {
+            return db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
+        }
+
+        /// <summary>
+        /// Get all products
+        /// </summary>
+        /// <returns></returns>
         [HttpGet]
         [Route("")]
-        public async Task<IEnumerable<PurchaseableProduct>> Get(string userId)
+        public async Task<IEnumerable<PurchaseableProduct>> GetAll(int offset = 0, int amount = 20)
         {
-            return await db.Products.ToListAsync();
+            return await db.Products.Skip(offset).Take(amount).ToListAsync();
+        }
+
+        /// <summary>
+        /// Get topup options
+        /// </summary>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("topup")]
+        public async Task<IEnumerable<PurchaseableProduct>> GetTopupOptions(int offset = 0, int amount = 20)
+        {
+            return await db.Products.Where(p=>p.Type.HasFlag(PurchaseableProduct.ProductType.TOP_UP)).Skip(offset).Take(amount).ToListAsync();
+        }
+
+
+        /// <summary>
+        /// Get services
+        /// </summary>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("services")]
+        public async Task<IEnumerable<PurchaseableProduct>> GetServices(int offset = 0, int amount = 20)
+        {
+            return await db.Products.Where(p=>p.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE)).Skip(offset).Take(amount).ToListAsync();
         }
 
         [HttpPost]
