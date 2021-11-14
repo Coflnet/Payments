@@ -29,12 +29,13 @@ namespace Payments.Controllers
         private readonly Coflnet.Payments.Services.ProductService productService;
         private readonly IConfiguration config;
         private readonly UserService userService;
+        private readonly PayPalHttpClient paypalClient;
 
         public TopUpController(ILogger<TopUpController> logger,
             PaymentContext context,
             ExchangeService exchangeService,
             Coflnet.Payments.Services.ProductService productService,
-            IConfiguration config, UserService userService)
+            IConfiguration config, UserService userService, PayPalHttpClient paypalClient)
         {
             _logger = logger;
             db = context;
@@ -42,6 +43,7 @@ namespace Payments.Controllers
             this.productService = productService;
             this.config = config;
             this.userService = userService;
+            this.paypalClient = paypalClient;
         }
 
         /// <summary>
@@ -49,10 +51,11 @@ namespace Payments.Controllers
         /// </summary>
         /// <param name="userId"></param>
         /// <param name="productId"></param>
+        /// <param name="email">If provided, this value will be used when the Customer object is created. If not provided, customers will be asked to enter their email address</param>
         /// <returns></returns>
         [HttpPost]
         [Route("stripe")]
-        public async Task<IdResponse> CreateStripeSession(string userId, string productId)
+        public async Task<IdResponse> CreateStripeSession(string userId, string productId, string email = null)
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetProduct(productId);
@@ -92,7 +95,8 @@ namespace Payments.Controllers
                 Mode = "payment",
                 SuccessUrl = domain + "/success",
                 CancelUrl = domain + "/cancel",
-                ClientReferenceId = user.ExternalId
+                ClientReferenceId = user.ExternalId,
+                CustomerEmail = email
             };
             var service = new SessionService();
             Session session;
@@ -158,8 +162,6 @@ namespace Payments.Controllers
 
                             }
                         },
-
-
                     }
                 },
                 ApplicationContext = new ApplicationContext()
@@ -174,7 +176,7 @@ namespace Payments.Controllers
             var request = new OrdersCreateRequest();
             request.Prefer("return=representation");
             request.RequestBody(order);
-            var response = await client().Execute(request);
+            var response = await paypalClient.Execute(request);
             var statusCode = response.StatusCode;
             var result = response.Result<PayPalCheckoutSdk.Orders.Order>();
             Console.WriteLine("Status: {0}", result.Status);
@@ -189,19 +191,6 @@ namespace Payments.Controllers
                 DirctLink = result.Links.Where(l=>l.Rel == "approve").FirstOrDefault().Href,
                 Id = result.Id
             };
-        }
-
-        public static PayPalHttpClient PayPal;
-
-        private HttpClient client()
-        {
-            // Creating a sandbox environment
-            PayPalEnvironment environment = new SandboxEnvironment(config["PAYPAL:ID"], config["PAYPAL:SECRET"]);
-
-            // Creating a client for the environment
-            PayPalHttpClient client = new PayPalHttpClient(environment);
-            PayPal = client;
-            return client;
         }
     }
 }

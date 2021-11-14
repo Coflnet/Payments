@@ -54,6 +54,15 @@ namespace Coflnet.Payments
             else
                 services.AddSingleton<ITransactionEventProducer, KafkaTransactionEventProducer>();
 
+
+            // Creating correct paypalEnvironment
+            PayPalCheckoutSdk.Core.PayPalEnvironment environment;
+            if (!string.IsNullOrEmpty(Configuration["PAYPAL:IS_SANDBOX"]) && bool.TryParse(Configuration["PAYPAL:IS_SANDBOX"], out bool isSandbox) && isSandbox)
+                environment = new PayPalCheckoutSdk.Core.SandboxEnvironment(Configuration["PAYPAL:ID"], Configuration["PAYPAL:SECRET"]);
+            else
+                environment = new PayPalCheckoutSdk.Core.LiveEnvironment(Configuration["PAYPAL:ID"], Configuration["PAYPAL:SECRET"]);
+            services.AddSingleton<PayPalCheckoutSdk.Core.PayPalHttpClient>(new PayPalCheckoutSdk.Core.PayPalHttpClient(environment));
+
             StripeConfiguration.ApiKey = Configuration["STRIPE:SIGNING_SECRET"];
         }
 

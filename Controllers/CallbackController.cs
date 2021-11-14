@@ -15,6 +15,7 @@ using Stripe;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Runtime.Serialization;
+using PayPalCheckoutSdk.Core;
 
 namespace Payments.Controllers
 {
@@ -29,17 +30,20 @@ namespace Payments.Controllers
         private readonly PaymentContext db;
         private string signingSecret;
         private TransactionService transactionService;
+        private readonly PayPalHttpClient paypalClient;
 
         public CallbackController(
             IConfiguration config,
             ILogger<CallbackController> logger,
             PaymentContext context,
-            TransactionService transactionService)
+            TransactionService transactionService, 
+            PayPalHttpClient paypalClient)
         {
             _logger = logger;
             db = context;
             signingSecret = config["STRIPE:SIGNING_SECRET"];
             this.transactionService = transactionService;
+            this.paypalClient = paypalClient;
         }
 
         /// <summary>
@@ -115,7 +119,6 @@ namespace Payments.Controllers
                 syncIOFeature.AllowSynchronousIO = true;
             }
             string json = "";
-            var client = TopUpController.PayPal;
             try
             {
                 _logger.LogInformation("reading json");
@@ -126,7 +129,7 @@ namespace Payments.Controllers
                 {
 
                     // completing order
-                    order = await CompleteOrder(client, webhookResult.Resource.Id);
+                    order = await CompleteOrder(paypalClient, webhookResult.Resource.Id);
                 } else if(webhookResult.EventType == "PAYMENT.CAPTURE.COMPLETED")
                 {
                     dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
@@ -142,7 +145,7 @@ namespace Payments.Controllers
                 try
                 {
                     OrdersGetRequest getRequest = new OrdersGetRequest(webhookResult.Resource.Id);
-                    response = client.Execute(getRequest).Result;
+                    response = paypalClient.Execute(getRequest).Result;
                 }
                 catch (Exception e)
                 {
