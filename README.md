@@ -16,3 +16,8 @@ Becuase it is the esiest by default stripe is used.
 To configure stripe get your stripe `KEY` and `SIGNING_SECRET` from stripe.com and set them as configuration. 
 (either modify appsettings.json or set the enviromentvariables `STRIPE__KEY` and `STRIPE__SIGNING_SECRET`)  
 Next create a webhook callback to `/Callback/stripe` that triggers on confirmed purchase.
+
+## Events 
+This microservice can produce transaction events into a Kafka Topic.
+To configure it set the configuration variables `KAFKA_HOST` and `KAFKA_TRANSACTION_TOPIC`.
+The format and fields of the events can be seen in the [TransactionEvent class](Models/TransactionEvent.cs) 

@@ -7,20 +7,24 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Coflnet.Payments.Services
 {
+
     public class TransactionService
     {
         private ILogger<TransactionService> logger;
         private PaymentContext db;
         private UserService userService;
+        private ITransactionEventProducer transactionEventProducer;
 
         public TransactionService(
             ILogger<TransactionService> logger,
             PaymentContext context,
-            UserService userService)
+            UserService userService, 
+            ITransactionEventProducer transactionEventProducer)
         {
             this.logger = logger;
             db = context;
             this.userService = userService;
+            this.transactionEventProducer = transactionEventProducer;
         }
 
         /// <summary>
@@ -34,6 +38,8 @@ namespace Coflnet.Payments.Services
         {
             var product = db.Products.Where(p => p.Id == productId).FirstOrDefault();
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
+            if(user == null)
+                throw new Exception("user doesn't exist");
             await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
             await CreateTransaction(product, user, changeamount, reference);
@@ -43,16 +49,28 @@ namespace Coflnet.Payments.Services
 
         private async Task CreateTransaction(PurchaseableProduct product, User user, decimal changeamount, string reference = "")
         {
-            db.FiniteTransactions.Add(new FiniteTransaction()
+            var transaction = new FiniteTransaction()
             {
                 Product = product,
                 Amount = changeamount,
                 Reference = reference,
                 User = user
-            });
+            };
+            db.FiniteTransactions.Add(transaction);
             user.Balance += changeamount;
             db.Update(user);
             await db.SaveChangesAsync();
+            await transactionEventProducer.ProduceEvent(new TransactionEvent()
+            {
+                Amount = Decimal.ToDouble(changeamount),
+                Id = transaction.Id,
+                OwnedSeconds = product.OwnershipSeconds,
+                ProductId = product.Id,
+                ProductSlug = product.Slug,
+                Reference = reference,
+                UserId = user.ExternalId,
+                Timestamp = transaction.Timestamp
+            });
         }
 
         /// <summary>

@@ -10,7 +10,7 @@ namespace Coflnet.Payments.Models
     }
 
     /// <summary>
-    /// Finite transaction can't be changed and usually coresponds to some <see cref="Ownership"/>
+    /// Finite transaction can't be changed and usually coresponds to some <see cref="OwnerShip"/>
     /// </summary>
     public class FiniteTransaction : Transaction
     {

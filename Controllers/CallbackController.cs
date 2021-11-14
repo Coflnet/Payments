@@ -9,7 +9,12 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using PayPalCheckoutSdk.Orders;
+using PayPalHttp;
 using Stripe;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Runtime.Serialization;
 
 namespace Payments.Controllers
 {
@@ -55,9 +60,8 @@ namespace Payments.Controllers
             string json = "";
             try
             {
-                _logger.LogInformation("reading json");
                 json = new StreamReader(Request.Body).ReadToEnd();
-                if(String.IsNullOrEmpty(json))
+                if (String.IsNullOrEmpty(json))
                     throw new Exception("Json body is not set");
 
                 var stripeEvent = EventUtility.ConstructEvent(
@@ -94,6 +98,110 @@ namespace Payments.Controllers
                 _logger.LogError(ex, "stripe checkout");
                 return StatusCode(400);
             }
+        }
+
+        /// <summary>
+        /// accept callbacks from paypal
+        /// </summary>
+        /// <returns></returns>
+        [HttpPost]
+        [Route("paypal")]
+        public async Task<IActionResult> Paypal()
+        {
+            _logger.LogInformation("received callback from paypal --");
+            var syncIOFeature = HttpContext.Features.Get<IHttpBodyControlFeature>();
+            if (syncIOFeature != null)
+            {
+                syncIOFeature.AllowSynchronousIO = true;
+            }
+            string json = "";
+            var client = TopUpController.PayPal;
+            try
+            {
+                _logger.LogInformation("reading json");
+                json = await new StreamReader(Request.Body).ReadToEndAsync();
+                var webhookResult = Newtonsoft.Json.JsonConvert.DeserializeObject<PayPalWebhook>(json);
+                PayPalCheckoutSdk.Orders.Order order = null;
+                if(webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
+                {
+
+                    // completing order
+                    order = await CompleteOrder(client, webhookResult.Resource.Id);
+                } else if(webhookResult.EventType == "PAYMENT.CAPTURE.COMPLETED")
+                {
+                    dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+                    var id = (string)data.resource.supplementary_data.related_ids.order_id;
+                    _logger.LogInformation("received confirmation for purchase " + id);
+
+                    return Ok();
+                }
+
+                //3. Call PayPal to get the transaction
+                PayPalHttp.HttpResponse response;
+                _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(webhookResult));
+                try
+                {
+                    OrdersGetRequest getRequest = new OrdersGetRequest(webhookResult.Resource.Id);
+                    response = client.Execute(getRequest).Result;
+                }
+                catch (Exception e)
+                {
+                    _logger.LogError(e, "payPalPayment");
+                    throw new Exception("The provided orderId has not vaid payment asociated");
+                }
+                //4. Save the transaction in your database. Implement logic to save transaction to your database for future reference.
+                order = response.Result<PayPalCheckoutSdk.Orders.Order>();
+                _logger.LogInformation("Retrieved Order Status");
+                AmountWithBreakdown amount = order.PurchaseUnits[0].AmountWithBreakdown;
+                _logger.LogInformation("Total Amount: {0} {1}", amount.CurrencyCode, amount.Value);
+                
+                if (order.Status != "COMPLETED")
+                    throw new Exception("The order is not yet completed");
+
+                _logger.LogInformation("Status: {0}", order.Status);
+
+                _logger.LogInformation("Order Id: {0}", order.Id);
+                if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.Now.Subtract(TimeSpan.FromHours(1)))
+                    throw new Exception("the provied order id is too old, please contact support for manual review");
+
+                var transactionId = order.Id;
+                var product = order.PurchaseUnits[0];
+                _logger.LogInformation($"user {product.ReferenceId} purchased '{product.CustomId}' via PayPal {transactionId}");
+                await transactionService.AddTopUp(int.Parse(product.CustomId), product.ReferenceId, order.Id);
+
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "paypal checkout");
+               // return StatusCode(400);
+            }
+
+            return Ok();
+        }
+
+        private async Task<PayPalCheckoutSdk.Orders.Order> CompleteOrder(PayPalCheckoutSdk.Core.PayPalHttpClient client, string id)
+        {
+            var request = new OrdersCaptureRequest(id);
+            request.RequestBody(new OrderActionRequest());
+            HttpResponse responsea = await client.Execute(request);
+            var statusCode = responsea.StatusCode;
+            var result = responsea.Result<PayPalCheckoutSdk.Orders.Order>();
+            _logger.LogInformation("Status: {0}", result.Status);
+            _logger.LogInformation("Capture Id: {0}", result.Id);
+            return result;
+        }
+
+        [DataContract]
+        public class PayPalWebhook
+        {
+            [DataMember(Name = "id")]
+            public string Id { get; set; }
+            [DataMember(Name = "create_time")]
+            public DateTime CreateTime;
+            [DataMember(Name = "event_type")]
+            public string EventType;
+            [DataMember(Name = "resource")]
+            public PayPalCheckoutSdk.Orders.Order Resource;
         }
     }
 }

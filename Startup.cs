@@ -49,7 +49,12 @@ namespace Coflnet.Payments
             services.AddSingleton<ExchangeService>();
             services.AddScoped<Services.ProductService>();
 
-            StripeConfiguration.ApiKey = Configuration["STRIPE:KEY"];
+            if (string.IsNullOrEmpty(Configuration["KAFKA_HOST"]))
+                services.AddSingleton<ITransactionEventProducer, TransactionEventProducer>();
+            else
+                services.AddSingleton<ITransactionEventProducer, KafkaTransactionEventProducer>();
+
+            StripeConfiguration.ApiKey = Configuration["STRIPE:SIGNING_SECRET"];
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -87,7 +92,7 @@ namespace Coflnet.Payments
             }
             catch (Exception e)
             {
-                Console.WriteLine($"Migrating failed \n{e.Message} \n{e.InnerException?.Message}" );
+                Console.WriteLine($"Migrating failed \n{e.Message} \n{e.InnerException?.Message}");
             }
 
         }
