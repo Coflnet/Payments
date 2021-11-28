@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
 using Stripe;
+using System.Linq;
 
 namespace Coflnet.Payments
 {
@@ -64,6 +65,7 @@ namespace Coflnet.Payments
             services.AddSingleton<PayPalCheckoutSdk.Core.PayPalHttpClient>(new PayPalCheckoutSdk.Core.PayPalHttpClient(environment));
 
             StripeConfiguration.ApiKey = Configuration["STRIPE:SIGNING_SECRET"];
+            services.AddHostedService<MigrationService>();
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -90,20 +92,6 @@ namespace Coflnet.Payments
             {
                 endpoints.MapControllers();
             });
-
-            try
-            {
-                using (var serviceScope = app.ApplicationServices.GetRequiredService<IServiceScopeFactory>().CreateScope())
-                {
-                    var context = serviceScope.ServiceProvider.GetService<PaymentContext>();
-                    context.Database.Migrate();
-                }
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Migrating failed \n{e.Message} \n{e.InnerException?.Message}");
-            }
-
         }
     }
 }

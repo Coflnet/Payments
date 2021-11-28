@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using System.Threading.Tasks;
 using System;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 
 namespace Coflnet.Payments.Services
 {
@@ -14,17 +15,22 @@ namespace Coflnet.Payments.Services
         private PaymentContext db;
         private UserService userService;
         private ITransactionEventProducer transactionEventProducer;
+        private decimal transactionDeflationRate { get; set; }
 
         public TransactionService(
             ILogger<TransactionService> logger,
             PaymentContext context,
-            UserService userService, 
-            ITransactionEventProducer transactionEventProducer)
+            UserService userService,
+            ITransactionEventProducer transactionEventProducer,
+            IConfiguration config)
         {
             this.logger = logger;
             db = context;
             this.userService = userService;
             this.transactionEventProducer = transactionEventProducer;
+            transactionDeflationRate = config.GetValue<decimal>("TRANSACTION_DEFLATE");
+            logger.LogInformation("deflation rate is: " + transactionDeflationRate);
+
         }
 
         /// <summary>
@@ -38,16 +44,17 @@ namespace Coflnet.Payments.Services
         {
             var product = db.Products.Where(p => p.Id == productId).FirstOrDefault();
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
-            if(user == null)
+            if (user == null)
                 throw new Exception("user doesn't exist");
             await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
-            await CreateTransaction(product, user, changeamount, reference);
+            var transactionEvent = await CreateTransaction(product, user, changeamount, reference);
 
             await db.Database.CommitTransactionAsync();
+            await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
-        private async Task CreateTransaction(PurchaseableProduct product, User user, decimal changeamount, string reference = "")
+        private async Task<TransactionEvent> CreateTransaction(PurchaseableProduct product, User user, decimal changeamount, string reference = "")
         {
             var transaction = new FiniteTransaction()
             {
@@ -58,9 +65,11 @@ namespace Coflnet.Payments.Services
             };
             db.FiniteTransactions.Add(transaction);
             user.Balance += changeamount;
+            if (user.Balance < 0)
+                throw new InsufficientFundsException();
             db.Update(user);
             await db.SaveChangesAsync();
-            await transactionEventProducer.ProduceEvent(new TransactionEvent()
+            var transactionEvent = new TransactionEvent()
             {
                 Amount = Decimal.ToDouble(changeamount),
                 Id = transaction.Id,
@@ -70,7 +79,8 @@ namespace Coflnet.Payments.Services
                 Reference = reference,
                 UserId = user.ExternalId,
                 Timestamp = transaction.Timestamp
-            });
+            };
+            return transactionEvent;
         }
 
         /// <summary>
@@ -95,11 +105,62 @@ namespace Coflnet.Payments.Services
 
             user.Balance -= price;
             await db.Database.BeginTransactionAsync();
-            await CreateTransaction(product, user, price * -1);
+            var transactionEvent = await CreateTransaction(product, user, price * -1);
             user.Owns.Add(new OwnerShip() { Expires = DateTime.Now.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
             db.Update(user);
             await db.SaveChangesAsync();
             await db.Database.CommitTransactionAsync();
+            await transactionEventProducer.ProduceEvent(transactionEvent);
+        }
+
+        internal async Task<TransactionEvent> Transfer(string userId, string targetUserId, decimal changeamount, string reference)
+        {
+            if (changeamount < 1)
+                throw new Exception("The minimum transaction amount is 1");
+            var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
+            var initiatingUser = await userService.GetOrCreate(userId);
+            var targetUser = await userService.GetOrCreate(targetUserId);
+            await db.Database.BeginTransactionAsync();
+            var senderDeduct = -(changeamount + changeamount * transactionDeflationRate);
+            if (db.FiniteTransactions.Where(t =>
+                 t.Amount == senderDeduct && t.Product == product && t.Reference == reference && t.User == initiatingUser)
+                .Any())
+                throw new DupplicateTransactionException();
+
+            var transactionEvent = await CreateTransaction(product, initiatingUser, senderDeduct, reference);
+            var receiveTransaction = await CreateTransaction(product, targetUser, changeamount, reference);
+
+            await db.Database.CommitTransactionAsync();
+            await transactionEventProducer.ProduceEvent(transactionEvent);
+            await transactionEventProducer.ProduceEvent(receiveTransaction);
+            return transactionEvent;
+        }
+
+        /// <summary>
+        /// Thrown if the transaction was already executed
+        /// </summary>
+        public class DupplicateTransactionException : Exception
+        {
+            /// <summary>
+            /// Creates a new instance <see cref="DupplicateTransactionException"/>
+            /// </summary>
+            /// <returns></returns>
+            public DupplicateTransactionException() : base("This transaction already happened")
+            {
+            }
+        }
+        /// <summary>
+        /// Thrown if an user doesn't have enough funds
+        /// </summary>
+        public class InsufficientFundsException : Exception
+        {
+            /// <summary>
+            /// Creates a new instance <see cref="InsufficientFundsException"/>
+            /// </summary>
+            /// <returns></returns>
+            public InsufficientFundsException() : base("You don't have enough funds to make this transaction")
+            {
+            }
         }
     }
 }

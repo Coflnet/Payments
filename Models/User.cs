@@ -30,7 +30,7 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         [NotMapped]
-        public decimal AvailableBalance {get;set;}
+        public decimal AvailableBalance { get; set; }
         /// <summary>
         /// Things this user owns
         /// </summary>
