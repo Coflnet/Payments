@@ -8,5 +8,7 @@ docker run --rm -v "${PWD}:/local" --network host -u $(id -u ${USER}):$(id -g ${
 cd out
 sed -i 's/GIT_USER_ID/Coflnet/g' src/Coflnet.Payments.Client/Coflnet.Payments.Client.csproj
 sed -i 's/GIT_REPO_ID/Payments/g' src/Coflnet.Payments.Client/Coflnet.Payments.Client.csproj
+sed -i 's/>OpenAPI/>Coflnet/g' src/Coflnet.Payments.Client/Coflnet.Payments.Client.csproj
+
 dotnet pack
 cp src/Coflnet.Payments.Client/bin/Debug/Coflnet.Payments.Client.*.nupkg ..
