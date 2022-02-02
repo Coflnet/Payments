@@ -29,6 +29,11 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public DbSet<PurchaseableProduct> Products { get; set; }
+        /// <summary>
+        /// TopUp options
+        /// </summary>
+        /// <value></value>
+        public DbSet<TopUpProduct> TopUpProducts { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>

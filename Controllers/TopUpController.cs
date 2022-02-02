@@ -25,7 +25,6 @@ namespace Payments.Controllers
     {
         private readonly ILogger<TopUpController> _logger;
         private readonly PaymentContext db;
-        private readonly ExchangeService exchangeService;
         private readonly Coflnet.Payments.Services.ProductService productService;
         private readonly IConfiguration config;
         private readonly UserService userService;
@@ -39,11 +38,22 @@ namespace Payments.Controllers
         {
             _logger = logger;
             db = context;
-            this.exchangeService = exchangeService;
             this.productService = productService;
             this.config = config;
             this.userService = userService;
             this.paypalClient = paypalClient;
+        }
+
+
+        /// <summary>
+        /// All available topup options
+        /// </summary>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("options")]
+        public async Task<List<TopUpProduct>> GetTopUps()
+        {
+            return await productService.GetTopupProducts();
         }
 
         /// <summary>
@@ -58,8 +68,8 @@ namespace Payments.Controllers
         public async Task<IdResponse> CreateStripeSession(string userId, string productId, string email = null)
         {
             var user = await userService.GetOrCreate(userId);
-            var product = await productService.GetProduct(productId);
-            var eurPrice = exchangeService.ToEur(product.Cost);
+            var product = await productService.GetTopupProduct(productId);
+            var eurPrice = product.Price;
 
             var domain = "https://sky.coflnet.com";
             var metadata = new Dictionary<string, string>() { { "productId", product.Id.ToString() } };
@@ -77,7 +87,7 @@ namespace Payments.Controllers
                     {
                       UnitAmount = (long)(eurPrice * 100),
 
-                      Currency = "eur",
+                      Currency = product.CurrencyCode,
                       //Product=productId,
                       ProductData = new SessionLineItemPriceDataProductDataOptions()
                       {
@@ -131,9 +141,9 @@ namespace Payments.Controllers
         public async Task<IdResponse> CreatePayPal(string userId, string productId)
         {
             var user = await userService.GetOrCreate(userId);
-            var product = await productService.GetProduct(productId);
-            var eurPrice = exchangeService.ToEur(product.Cost);
-            var moneyValue = new Money() { CurrencyCode = "EUR", Value = eurPrice.ToString("0.##") };
+            var product = await productService.GetTopupProduct(productId);
+            var eurPrice = product.Price;
+            var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var order = new OrderRequest()
             {
                 CheckoutPaymentIntent = "CAPTURE",
@@ -143,7 +153,7 @@ namespace Payments.Controllers
                     {
                         AmountWithBreakdown = new AmountWithBreakdown()
                         {
-                            CurrencyCode = "EUR",
+                            CurrencyCode = product.CurrencyCode,
                             Value = eurPrice.ToString ("0.##"),
                             AmountBreakdown = new AmountBreakdown()
                             {

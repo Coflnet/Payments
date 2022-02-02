@@ -105,6 +105,13 @@ namespace Payments.Controllers
             return trans;
         }
 
+        [HttpPost]
+        [Route("send")]
+        public async Task SendEvent(TransactionEvent transactionEvent)
+        {
+
+        }
+
         public class ExternalTransaction
         {
             public string Id { get; set; }
