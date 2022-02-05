@@ -52,9 +52,9 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpGet]
         [Route("topup")]
-        public async Task<IEnumerable<PurchaseableProduct>> GetTopupOptions(int offset = 0, int amount = 20)
+        public async Task<IEnumerable<TopUpProduct>> GetTopupOptions(int offset = 0, int amount = 20)
         {
-            return await db.Products.Where(p=>p.Type.HasFlag(PurchaseableProduct.ProductType.TOP_UP)).Skip(offset).Take(amount).ToListAsync();
+            return await db.TopUpProducts.Where(p=>p.Type.HasFlag(PurchaseableProduct.ProductType.TOP_UP)).Skip(offset).Take(amount).ToListAsync();
         }
 
 
@@ -77,10 +77,22 @@ namespace Payments.Controllers
             await db.SaveChangesAsync();
             return await GetProduct(product);
         }
+        [HttpPost]
+        [Route("topup")]
+        public async Task<TopUpProduct> CreateNewTopup(TopUpProduct product)
+        {
+            db.Add(product);
+            await db.SaveChangesAsync();
+            return product;
+        }
 
         private async Task<PurchaseableProduct> GetProduct(PurchaseableProduct product)
         {
             return await db.Products.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
+        }
+        private async Task<TopUpProduct> GetTopupProduct(TopUpProduct product)
+        {
+            return await db.TopUpProducts.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
         }
 
         /// <summary>
@@ -94,17 +106,41 @@ namespace Payments.Controllers
         public async Task<PurchaseableProduct> UpdateProduct(PurchaseableProduct product)
         {
             var oldProduct = await GetProduct(product);
+            InvalidateProduct(oldProduct);
+
+            db.Add(product);
+            await db.SaveChangesAsync();
+            return await db.Products.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
+        }
+
+        /// <summary>
+        /// Updates a topup option by replacing it with a new one.
+        /// Old options get a new slug and are marked as disabled
+        /// </summary>
+        /// <param name="product"></param>
+        /// <returns></returns>
+        [HttpPut]
+        [Route("topup")]
+        public async Task<TopUpProduct> UpdateTopUpProduct(TopUpProduct product)
+        {
+            var oldProduct = await GetTopupProduct(product);
+            InvalidateProduct(oldProduct);
+
+            db.Add(product);
+            await db.SaveChangesAsync();
+            return await db.TopUpProducts.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
+        }
+
+        private void InvalidateProduct(Product oldProduct)
+        {
             if (oldProduct != null)
             {
                 // change the old slug
                 var newSlug = oldProduct.Slug.Truncate(18) + Convert.ToBase64String(BitConverter.GetBytes(DateTime.Now.Ticks % 100).Reverse().ToArray());
                 oldProduct.Slug = newSlug.Truncate(20);
+                oldProduct.Type |= Product.ProductType.DISABLED;
                 db.Update(oldProduct);
             }
-
-            db.Add(product);
-            await db.SaveChangesAsync();
-            return await db.Products.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
         }
     }
 }

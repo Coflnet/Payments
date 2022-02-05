@@ -11,8 +11,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Payments.Migrations
 {
     [DbContext(typeof(PaymentContext))]
-    [Migration("20220125161704_topup")]
-    partial class topup
+    [Migration("20220205171130_create")]
+    partial class create
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
@@ -107,7 +107,7 @@ namespace Payments.Migrations
                     b.ToTable("PlanedTransactions");
                 });
 
-            modelBuilder.Entity("Coflnet.Payments.Models.PurchaseableProduct", b =>
+            modelBuilder.Entity("Coflnet.Payments.Models.Product", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -117,6 +117,10 @@ namespace Payments.Migrations
                         .HasColumnType("decimal(65,30)");
 
                     b.Property<string>("Description")
+                        .HasColumnType("longtext");
+
+                    b.Property<string>("Discriminator")
+                        .IsRequired()
                         .HasColumnType("longtext");
 
                     b.Property<long>("OwnershipSeconds")
@@ -135,52 +139,9 @@ namespace Payments.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Slug")
-                        .IsUnique();
+                    b.ToTable("Product");
 
-                    b.ToTable("Products");
-                });
-
-            modelBuilder.Entity("Coflnet.Payments.Models.TopUpProduct", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("Cost")
-                        .HasColumnType("decimal(65,30)");
-
-                    b.Property<string>("CurrencyCode")
-                        .HasMaxLength(3)
-                        .HasColumnType("varchar(3)");
-
-                    b.Property<string>("Description")
-                        .HasColumnType("longtext");
-
-                    b.Property<long>("OwnershipSeconds")
-                        .HasColumnType("bigint");
-
-                    b.Property<decimal>("Price")
-                        .HasColumnType("decimal(65,30)");
-
-                    b.Property<string>("ProviderSlug")
-                        .HasMaxLength(16)
-                        .HasColumnType("varchar(16)");
-
-                    b.Property<string>("Slug")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)");
-
-                    b.Property<string>("Title")
-                        .HasMaxLength(80)
-                        .HasColumnType("varchar(80)");
-
-                    b.Property<int>("Type")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("TopUpProducts");
+                    b.HasDiscriminator<string>("Discriminator").HasValue("Product");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.User", b =>
@@ -204,9 +165,37 @@ namespace Payments.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("Coflnet.Payments.Models.PurchaseableProduct", b =>
+                {
+                    b.HasBaseType("Coflnet.Payments.Models.Product");
+
+                    b.HasIndex("Slug")
+                        .IsUnique();
+
+                    b.HasDiscriminator().HasValue("PurchaseableProduct");
+                });
+
+            modelBuilder.Entity("Coflnet.Payments.Models.TopUpProduct", b =>
+                {
+                    b.HasBaseType("Coflnet.Payments.Models.Product");
+
+                    b.Property<string>("CurrencyCode")
+                        .HasMaxLength(3)
+                        .HasColumnType("varchar(3)");
+
+                    b.Property<decimal>("Price")
+                        .HasColumnType("decimal(65,30)");
+
+                    b.Property<string>("ProviderSlug")
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.HasDiscriminator().HasValue("TopUpProduct");
+                });
+
             modelBuilder.Entity("Coflnet.Payments.Models.FiniteTransaction", b =>
                 {
-                    b.HasOne("Coflnet.Payments.Models.PurchaseableProduct", "Product")
+                    b.HasOne("Coflnet.Payments.Models.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId");
 
@@ -236,7 +225,7 @@ namespace Payments.Migrations
 
             modelBuilder.Entity("Coflnet.Payments.Models.PlanedTransaction", b =>
                 {
-                    b.HasOne("Coflnet.Payments.Models.PurchaseableProduct", "Product")
+                    b.HasOne("Coflnet.Payments.Models.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId");
 

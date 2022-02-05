@@ -35,7 +35,7 @@ namespace Coflnet.Payments.Services
                             Description = "Transfer of coins to another user",
                             Slug = "transfer",
                             Type = PurchaseableProduct.ProductType.VARIABLE_PRICE | PurchaseableProduct.ProductType.TOP_UP,
-                            Title = "Coin trasnfer"
+                            Title = "Coin transfer"
                         };
                         context.Products.Add(tranProduct);
                         await context.SaveChangesAsync();

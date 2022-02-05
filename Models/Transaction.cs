@@ -24,7 +24,7 @@ namespace Coflnet.Payments.Models
         /// What product this transaction coresponds to (gives context why this happened)
         /// </summary>
         /// <value></value>
-        public PurchaseableProduct Product { get; set; }
+        public Product Product { get; set; }
         /// <summary>
         /// The size of the transaction
         /// </summary>

@@ -42,19 +42,51 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task AddTopUp(int productId, string userId, string reference)
         {
-            var product = db.Products.Where(p => p.Id == productId).FirstOrDefault();
+            var product = db.TopUpProducts.Where(p => p.Id == productId).FirstOrDefault();
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
             if (user == null)
                 throw new Exception("user doesn't exist");
             await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
+            await CreateAndProduceTransaction(product, user, changeamount, reference);
+        }
+
+
+        /// <summary>
+        /// Execute a custom topup that changes an users balance in some way
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="topup"></param>
+        /// <returns></returns>
+        public async Task AddCustomTopUp(string userId, CustomTopUp topup)
+        {
+            var product = db.TopUpProducts.Where(p => p.Slug == topup.ProductId && p.ProviderSlug == "custom").FirstOrDefault();
+            if (product == null)
+                throw new Exception($"{topup.ProductId} is not a valid custom topup option ");
+            var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
+            if (user == null)
+                throw new Exception("user doesn't exist");
+            await db.Database.BeginTransactionAsync();
+            var changeamount = product.Cost;
+            // adjust amount if its valid
+            if (topup.Amount != 0 && topup.Amount < product.Cost)
+                if (product.Type.HasFlag(Product.ProductType.VARIABLE_PRICE))
+                    changeamount = topup.Amount;
+                else
+                    logger.LogWarning($"Variable price is disabled for {topup.ProductId} but a value of {topup.Amount} was passed");
+
+            await CreateAndProduceTransaction(product, user, changeamount, topup.Reference);
+        }
+
+        private async Task CreateAndProduceTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
+        {
             var transactionEvent = await CreateTransaction(product, user, changeamount, reference);
 
             await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
-        private async Task<TransactionEvent> CreateTransaction(PurchaseableProduct product, User user, decimal changeamount, string reference = "")
+        private async Task<TransactionEvent> CreateTransaction(Product product, User user, decimal changeamount, string reference = "")
         {
             var transaction = new FiniteTransaction()
             {

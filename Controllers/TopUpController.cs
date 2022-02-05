@@ -26,15 +26,18 @@ namespace Payments.Controllers
         private readonly ILogger<TopUpController> _logger;
         private readonly PaymentContext db;
         private readonly Coflnet.Payments.Services.ProductService productService;
+        private readonly Coflnet.Payments.Services.TransactionService transactionService;
         private readonly IConfiguration config;
         private readonly UserService userService;
         private readonly PayPalHttpClient paypalClient;
 
         public TopUpController(ILogger<TopUpController> logger,
             PaymentContext context,
-            ExchangeService exchangeService,
-            Coflnet.Payments.Services.ProductService productService,
-            IConfiguration config, UserService userService, PayPalHttpClient paypalClient)
+            Coflnet.Payments.Services.ProductService productService, 
+            Coflnet.Payments.Services.TransactionService transactionService,
+            IConfiguration config, 
+            UserService userService, 
+            PayPalHttpClient paypalClient)
         {
             _logger = logger;
             db = context;
@@ -42,6 +45,7 @@ namespace Payments.Controllers
             this.config = config;
             this.userService = userService;
             this.paypalClient = paypalClient;
+            this.transactionService = transactionService;
         }
 
 
@@ -197,10 +201,28 @@ namespace Payments.Controllers
             {
                 Console.WriteLine("\t{0}: {1}\tCall Type: {2}", link.Rel, link.Href, link.Method);
             }
-            return new IdResponse(){
-                DirctLink = result.Links.Where(l=>l.Rel == "approve").FirstOrDefault().Href,
+            return new IdResponse()
+            {
+                DirctLink = result.Links.Where(l => l.Rel == "approve").FirstOrDefault().Href,
                 Id = result.Id
             };
+        }
+
+        /// <summary>
+        /// Creates a custom topup that is instantly credited
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="topUp"></param>
+        /// <returns></returns>
+        [HttpPost]
+        [Route("custom")]
+        public async Task<IdResponse> CreateCustom(string userId, CustomTopUp topUp)
+        {
+            var user = await userService.GetOrCreate(userId);
+            var product = await productService.GetTopupProduct(topUp.ProductId);
+            var eurPrice = product.Price;
+            await transactionService.AddCustomTopUp(userId,topUp);
+            return null;
         }
     }
 }
