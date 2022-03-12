@@ -99,7 +99,7 @@ namespace Payments.Controllers
             var userTask = userService.GetOrCreate(userId);
             var trans = await db.PlanedTransactions.Where(t => t.Id == transactionId).FirstOrDefaultAsync();
             if (trans.User != await userTask)
-                throw new Exception("this user doesn't own the given transaction");
+                throw new ApiException("this user doesn't own the given transaction");
             db.PlanedTransactions.Remove(trans);
             await db.SaveChangesAsync();
             return trans;

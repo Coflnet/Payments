@@ -37,7 +37,7 @@ namespace Coflnet.Payments.Services
         {
             var product = await db.Products.Where(p => p.Slug == slug).FirstOrDefaultAsync();
             if(product == null)
-                throw new System.Exception($"product with slug '{slug}' not found");
+                throw new ApiException($"product with slug '{slug}' not found");
             return product;
         }
 
@@ -50,7 +50,7 @@ namespace Coflnet.Payments.Services
         {
             var product = await db.TopUpProducts.Where(p => p.Slug == slug).FirstOrDefaultAsync();
             if(product == null)
-                throw new System.Exception($"product with slug '{slug}' not found");
+                throw new ApiException($"product with slug '{slug}' not found");
             return product;
         }
 

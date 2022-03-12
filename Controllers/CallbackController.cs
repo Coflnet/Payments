@@ -36,7 +36,7 @@ namespace Payments.Controllers
             IConfiguration config,
             ILogger<CallbackController> logger,
             PaymentContext context,
-            TransactionService transactionService, 
+            TransactionService transactionService,
             PayPalHttpClient paypalClient)
         {
             _logger = logger;
@@ -66,7 +66,7 @@ namespace Payments.Controllers
             {
                 json = new StreamReader(Request.Body).ReadToEnd();
                 if (String.IsNullOrEmpty(json))
-                    throw new Exception("Json body is not set");
+                    throw new ApiException("Json body is not set");
 
                 var stripeEvent = EventUtility.ConstructEvent(
                     json,
@@ -83,7 +83,14 @@ namespace Payments.Controllers
 
                     // Fulfill the purchase...
                     var productId = int.Parse(session.Metadata["productId"]);
-                    await transactionService.AddTopUp(productId, session.ClientReferenceId, session.Id);
+                    try
+                    {
+                        await transactionService.AddTopUp(productId, session.ClientReferenceId, session.Id);
+                    }
+                    catch (TransactionService.DupplicateTransactionException)
+                    {
+                        // this already happened so was successful
+                    }
                 }
                 else
                 {
@@ -125,12 +132,13 @@ namespace Payments.Controllers
                 json = await new StreamReader(Request.Body).ReadToEndAsync();
                 var webhookResult = Newtonsoft.Json.JsonConvert.DeserializeObject<PayPalWebhook>(json);
                 PayPalCheckoutSdk.Orders.Order order = null;
-                if(webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
+                if (webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
                 {
 
                     // completing order
                     order = await CompleteOrder(paypalClient, webhookResult.Resource.Id);
-                } else if(webhookResult.EventType == "PAYMENT.CAPTURE.COMPLETED")
+                }
+                else if (webhookResult.EventType == "PAYMENT.CAPTURE.COMPLETED")
                 {
                     dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
                     var id = (string)data.resource.supplementary_data.related_ids.order_id;
@@ -150,16 +158,16 @@ namespace Payments.Controllers
                 catch (Exception e)
                 {
                     _logger.LogError(e, "payPalPayment");
-                    throw new Exception("The provided orderId has not vaid payment asociated");
+                    throw new ApiException("The provided orderId has not vaid payment asociated");
                 }
                 //4. Save the transaction in your database. Implement logic to save transaction to your database for future reference.
                 order = response.Result<PayPalCheckoutSdk.Orders.Order>();
                 _logger.LogInformation("Retrieved Order Status");
                 AmountWithBreakdown amount = order.PurchaseUnits[0].AmountWithBreakdown;
                 _logger.LogInformation("Total Amount: {0} {1}", amount.CurrencyCode, amount.Value);
-                
+
                 if (order.Status != "COMPLETED")
-                    throw new Exception("The order is not yet completed");
+                    throw new ApiException("The order is not yet completed");
 
                 _logger.LogInformation("Status: {0}", order.Status);
 
@@ -176,7 +184,7 @@ namespace Payments.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "paypal checkout");
-               // return StatusCode(400);
+                // return StatusCode(400);
             }
 
             return Ok();

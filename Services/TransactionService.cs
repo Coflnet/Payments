@@ -45,7 +45,7 @@ namespace Coflnet.Payments.Services
             var product = db.TopUpProducts.Where(p => p.Id == productId).FirstOrDefault();
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
             if (user == null)
-                throw new Exception("user doesn't exist");
+                throw new ApiException("user doesn't exist");
             await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
             await CreateAndProduceTransaction(product, user, changeamount, reference);
@@ -62,10 +62,10 @@ namespace Coflnet.Payments.Services
         {
             var product = db.TopUpProducts.Where(p => p.Slug == topup.ProductId && p.ProviderSlug == "custom").FirstOrDefault();
             if (product == null)
-                throw new Exception($"{topup.ProductId} is not a valid custom topup option ");
+                throw new ApiException($"{topup.ProductId} is not a valid custom topup option ");
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
             if (user == null)
-                throw new Exception("user doesn't exist");
+                throw new ApiException("user doesn't exist");
             await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
             // adjust amount if its valid
@@ -95,6 +95,13 @@ namespace Coflnet.Payments.Services
                 Reference = reference,
                 User = user
             };
+            var exists = await db.FiniteTransactions.Where(f =>
+                f.Product == product &&
+                f.User == user &&
+                f.Amount == changeamount
+                && f.Reference == reference).AnyAsync();
+            if(exists)
+                throw new DupplicateTransactionException();
             db.FiniteTransactions.Add(transaction);
             user.Balance += changeamount;
             if (user.Balance < 0)
@@ -128,12 +135,12 @@ namespace Coflnet.Payments.Services
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
             if (product.Type == PurchaseableProduct.ProductType.DISABLED)
-                throw new Exception("product can't be purchased");
+                throw new ApiException("product can't be purchased");
             var user = await userService.GetOrCreate(userId);
             if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.Now + TimeSpan.FromDays(3000)).Any())
-                throw new Exception("already owned");
+                throw new ApiException("already owned");
             if (user.AvailableBalance < price)
-                throw new Exception("insuficcient balance");
+                throw new ApiException("insuficcient balance");
 
             user.Balance -= price;
             await db.Database.BeginTransactionAsync();
@@ -148,7 +155,7 @@ namespace Coflnet.Payments.Services
         internal async Task<TransactionEvent> Transfer(string userId, string targetUserId, decimal changeamount, string reference)
         {
             if (changeamount < 1)
-                throw new Exception("The minimum transaction amount is 1");
+                throw new ApiException("The minimum transaction amount is 1");
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
             var initiatingUser = await userService.GetOrCreate(userId);
             var targetUser = await userService.GetOrCreate(targetUserId);
@@ -171,7 +178,7 @@ namespace Coflnet.Payments.Services
         /// <summary>
         /// Thrown if the transaction was already executed
         /// </summary>
-        public class DupplicateTransactionException : Exception
+        public class DupplicateTransactionException : ApiException
         {
             /// <summary>
             /// Creates a new instance <see cref="DupplicateTransactionException"/>
@@ -184,7 +191,7 @@ namespace Coflnet.Payments.Services
         /// <summary>
         /// Thrown if an user doesn't have enough funds
         /// </summary>
-        public class InsufficientFundsException : Exception
+        public class InsufficientFundsException : ApiException
         {
             /// <summary>
             /// Creates a new instance <see cref="InsufficientFundsException"/>

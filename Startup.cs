@@ -11,7 +11,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
 using Stripe;
-using System.Linq;
+using Prometheus;
+using System.Net;
+using Microsoft.AspNetCore.Diagnostics;
+using Newtonsoft.Json;
+using Microsoft.AspNetCore.Http;
 
 namespace Coflnet.Payments
 {
@@ -23,6 +27,8 @@ namespace Coflnet.Payments
         }
 
         public IConfiguration Configuration { get; }
+        Prometheus.Counter errorCount = Prometheus.Metrics.CreateCounter("payments_error", "Counts the amount of error responses handed out");
+        Prometheus.Counter badRequestCount = Prometheus.Metrics.CreateCounter("payments_bad_request", "Counts the responses for invalid requests");
 
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
@@ -82,7 +88,40 @@ namespace Coflnet.Payments
 
 
 
-            //app.UseHttpsRedirection();
+            app.UseExceptionHandler(errorApp =>
+            {
+                errorApp.Run(async context =>
+                {
+                    context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+                    context.Response.ContentType = "text/json";
+
+                    var exceptionHandlerPathFeature =
+                        context.Features.Get<IExceptionHandlerPathFeature>();
+
+                    if (exceptionHandlerPathFeature?.Error is ApiException ex)
+                    {
+                        context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
+                        await context.Response.WriteAsync(
+                                        JsonConvert.SerializeObject(new { ex.Message }));
+                        badRequestCount.Inc();
+                    }
+                    else
+                    {
+                        using var span = OpenTracing.Util.GlobalTracer.Instance.BuildSpan("error").StartActive();
+                        span.Span.Log(exceptionHandlerPathFeature?.Error?.Message);
+                        span.Span.Log(exceptionHandlerPathFeature?.Error?.StackTrace);
+                        var traceId = System.Net.Dns.GetHostName().Replace("commands", "").Trim('-') + "." + span.Span.Context.TraceId;
+                        await context.Response.WriteAsync(
+                            JsonConvert.SerializeObject(new
+                            {
+                                Slug = "internal_error",
+                                Message = "An unexpected internal error occured. Please check that your request is valid. If it is please report he error and include the TraceId.",
+                                TraceId = traceId
+                            }));
+                        errorCount.Inc();
+                    }
+                });
+            });
 
             app.UseRouting();
 
@@ -90,6 +129,7 @@ namespace Coflnet.Payments
 
             app.UseEndpoints(endpoints =>
             {
+                endpoints.MapMetrics();
                 endpoints.MapControllers();
             });
         }
