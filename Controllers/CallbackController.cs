@@ -82,7 +82,7 @@ namespace Payments.Controllers
                     var session = stripeEvent.Data.Object as Stripe.Checkout.Session;
 
                     // Fulfill the purchase...
-                    var productId = int.Parse(session.LineItems.Data[0].Price.Metadata["productId"]);
+                    var productId = int.Parse(session.Metadata["productId"]);
                     await transactionService.AddTopUp(productId, session.ClientReferenceId, session.Id);
                 }
                 else
