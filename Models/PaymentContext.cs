@@ -61,6 +61,10 @@ namespace Coflnet.Payments.Models
             {
                 entity.HasIndex(e => e.Slug).IsUnique();
             });
+            modelBuilder.Entity<TopUpProduct>(entity =>
+            {
+                entity.HasIndex(e => new { e.Slug, e.ProviderSlug }).IsUnique();
+            });
         }
     }
 }

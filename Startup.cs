@@ -64,7 +64,7 @@ namespace Coflnet.Payments
                 environment = new PayPalCheckoutSdk.Core.LiveEnvironment(Configuration["PAYPAL:ID"], Configuration["PAYPAL:SECRET"]);
             services.AddSingleton<PayPalCheckoutSdk.Core.PayPalHttpClient>(new PayPalCheckoutSdk.Core.PayPalHttpClient(environment));
 
-            StripeConfiguration.ApiKey = Configuration["STRIPE:SIGNING_SECRET"];
+            StripeConfiguration.ApiKey = Configuration["STRIPE:KEY"];
             services.AddHostedService<MigrationService>();
         }
 
