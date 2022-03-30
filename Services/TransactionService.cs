@@ -96,9 +96,8 @@ namespace Coflnet.Payments.Services
                 User = user
             };
             var exists = await db.FiniteTransactions.Where(f =>
-                f.Product == product &&
-                f.User == user &&
-                f.Amount == changeamount
+                f.Product == product 
+                && f.User == user 
                 && f.Reference == reference).AnyAsync();
             if(exists)
                 throw new DupplicateTransactionException();
@@ -184,7 +183,7 @@ namespace Coflnet.Payments.Services
             /// Creates a new instance <see cref="DupplicateTransactionException"/>
             /// </summary>
             /// <returns></returns>
-            public DupplicateTransactionException() : base("This transaction already happened")
+            public DupplicateTransactionException() : base("This transaction already happened (same reference)")
             {
             }
         }
