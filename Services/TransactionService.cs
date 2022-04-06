@@ -96,15 +96,15 @@ namespace Coflnet.Payments.Services
                 User = user
             };
             var exists = await db.FiniteTransactions.Where(f =>
-                f.Product == product 
-                && f.User == user 
+                f.Product == product
+                && f.User == user
                 && f.Reference == reference).AnyAsync();
-            if(exists)
+            if (exists)
                 throw new DupplicateTransactionException();
             db.FiniteTransactions.Add(transaction);
             user.Balance += changeamount;
             if (user.Balance < 0)
-                throw new InsufficientFundsException();
+                throw new InsufficientFundsException(changeamount, user.Balance);
             db.Update(user);
             await db.SaveChangesAsync();
             var transactionEvent = new TransactionEvent()
@@ -196,7 +196,7 @@ namespace Coflnet.Payments.Services
             /// Creates a new instance <see cref="InsufficientFundsException"/>
             /// </summary>
             /// <returns></returns>
-            public InsufficientFundsException() : base("You don't have enough funds to make this transaction")
+            public InsufficientFundsException(decimal required, decimal available) : base($"You don't have enough funds to make this transaction. Required {required} Available: {available}")
             {
             }
         }
