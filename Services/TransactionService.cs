@@ -141,7 +141,6 @@ namespace Coflnet.Payments.Services
             if (user.AvailableBalance < price)
                 throw new ApiException("insuficcient balance");
 
-            user.Balance -= price;
             await db.Database.BeginTransactionAsync();
             var transactionEvent = await CreateTransaction(product, user, price * -1);
             user.Owns.Add(new OwnerShip() { Expires = DateTime.Now.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
