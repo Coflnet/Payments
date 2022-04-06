@@ -107,7 +107,7 @@ namespace Coflnet.Payments
                     }
                     else
                     {
-                        using var span = OpenTracing.Util.GlobalTracer.Instance.BuildSpan("error").StartActive();
+                        using var span = OpenTracing.Util.GlobalTracer.Instance.BuildSpan("error").WithTag("error", "true").StartActive();
                         span.Span.Log(exceptionHandlerPathFeature?.Error?.Message);
                         span.Span.Log(exceptionHandlerPathFeature?.Error?.StackTrace);
                         var traceId = System.Net.Dns.GetHostName().Replace("commands", "").Trim('-') + "." + span.Span.Context.TraceId;
