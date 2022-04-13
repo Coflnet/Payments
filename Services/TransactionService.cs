@@ -17,6 +17,7 @@ namespace Coflnet.Payments.Services
         private UserService userService;
         private ITransactionEventProducer transactionEventProducer;
         private decimal transactionDeflationRate { get; set; }
+        private TransferSettings transferSettings { get; set; }
 
         public TransactionService(
             ILogger<TransactionService> logger,
@@ -29,8 +30,7 @@ namespace Coflnet.Payments.Services
             db = context;
             this.userService = userService;
             this.transactionEventProducer = transactionEventProducer;
-            transactionDeflationRate = config.GetValue<decimal>("TRANSACTION_DEFLATE");
-            logger.LogInformation("deflation rate is: " + transactionDeflationRate);
+            transferSettings = config.GetSection("TRANSFER").Get<TransferSettings>();
 
         }
 
@@ -184,10 +184,14 @@ namespace Coflnet.Payments.Services
             if (changeamount < 1)
                 throw new ApiException("The minimum transaction amount is 1");
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
-            var initiatingUser = await userService.GetOrCreate(userId);
+            var initiatingUser = await userService.GetAndInclude(userId, u=>u);
+            var minTime = DateTime.UtcNow - TimeSpan.FromDays(30);
+            var transactionCount = db.FiniteTransactions.Where(t=>t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).Count();
+            if(transactionCount >= transferSettings.Limit)
+                throw new ApiException($"You reached the maximium of {transferSettings.Limit} transactions per {transferSettings.PeriodDays} days");
             var targetUser = await userService.GetOrCreate(targetUserId);
             await db.Database.BeginTransactionAsync();
-            var senderDeduct = -(changeamount + changeamount * transactionDeflationRate);
+            var senderDeduct = -(changeamount);
             if (db.FiniteTransactions.Where(t =>
                  t.Amount == senderDeduct && t.Product == product && t.Reference == reference && t.User == initiatingUser)
                 .Any())
