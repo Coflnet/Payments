@@ -74,7 +74,6 @@ namespace Coflnet.Payments.Models
             /// The <see cref="Cost"/> is the minimal cost but can be increased
             /// </summary> 
             VARIABLE_PRICE = 32
-
         }
     }
 }

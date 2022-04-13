@@ -94,6 +94,24 @@ namespace Payments.Controllers
             return Ok();
         }
 
+        /// <summary>
+        /// Purchase a new product if enough funds are available
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="productSlug"></param>
+        /// <param name="reference"></param>
+        /// <param name="count"></param>
+        /// <returns></returns>
+        [HttpPost]
+        [Route("{userId}/service/purchase/{productSlug}")]
+        public async Task<ActionResult<User>> PurchaseService(string userId, string productSlug, string reference, int count = 1)
+        {
+            await transactionService.PurchaseServie(productSlug, userId, count, reference);
+            return Ok();
+        }
+
+
+
 
         /// <summary>
         /// Purchase a new product if enough funds are available
