@@ -83,9 +83,10 @@ namespace Payments.Controllers
 
                     // Fulfill the purchase...
                     var productId = int.Parse(session.Metadata["productId"]);
+                    int.TryParse(session.Metadata.GetValueOrDefault("coinAmount", "0"), out int coinAmount);
                     try
                     {
-                        await transactionService.AddTopUp(productId, session.ClientReferenceId, session.Id);
+                        await transactionService.AddTopUp(productId, session.ClientReferenceId, session.Id, coinAmount);
                     }
                     catch (TransactionService.DupplicateTransactionException)
                     {
@@ -177,8 +178,12 @@ namespace Payments.Controllers
 
                 var transactionId = order.Id;
                 var product = order.PurchaseUnits[0];
+                var topupInfo = product.CustomId.Split(';');
                 _logger.LogInformation($"user {product.ReferenceId} purchased '{product.CustomId}' via PayPal {transactionId}");
-                await transactionService.AddTopUp(int.Parse(product.CustomId), product.ReferenceId, order.Id);
+                var exactCoinAmount = 0;
+                if (topupInfo.Length >= 2)
+                    int.TryParse(topupInfo[1], out exactCoinAmount);
+                await transactionService.AddTopUp(int.Parse(product.CustomId), product.ReferenceId, order.Id, exactCoinAmount);
 
             }
             catch (Exception ex)

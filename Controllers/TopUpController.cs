@@ -73,9 +73,11 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
-            var eurPrice = product.Price;
+            GetPriceAndCoins(topupotions, product, out decimal eurPrice, out  decimal coinAmount);
 
-            var metadata = new Dictionary<string, string>() { { "productId", product.Id.ToString() } };
+            var metadata = new Dictionary<string, string>() { 
+                { "productId", product.Id.ToString() },
+                { "coinAmount", coinAmount.ToString() } };
             var options = new SessionCreateOptions
             {
                 PaymentMethodTypes = new List<string>
@@ -146,7 +148,7 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
-            var eurPrice = product.Price;
+            GetPriceAndCoins(options, product, out decimal eurPrice, out  decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var order = new OrderRequest()
             {
@@ -164,7 +166,7 @@ namespace Payments.Controllers
                                 ItemTotal = moneyValue
                             }
                         },
-                        CustomId = product.Id.ToString(),
+                        CustomId = product.Id.ToString() + ";" + coinAmount,
                         ReferenceId = user.ExternalId,
                         Description = product.Title,
                         Items = new List<Item>(){
@@ -210,6 +212,20 @@ namespace Payments.Controllers
                 DirctLink = result.Links.Where(l => l.Rel == "approve").FirstOrDefault().Href,
                 Id = result.Id
             };
+        }
+
+        private static void GetPriceAndCoins(TopUpOptions options, TopUpProduct product, out decimal eurPrice, out decimal coinAmount)
+        {
+            eurPrice = product.Price;
+            coinAmount = product.Cost;
+            if ((options?.TopUpAmount ?? 0) > 0)
+            {
+                var targetCoins = options.TopUpAmount;
+                if (targetCoins < product.Cost)
+                    throw new ApiException($"The topUpAmount has to be bigger than the cost of product {product.Slug} ({product.Cost.ToString("0,##")})");
+                eurPrice = eurPrice * targetCoins / product.Cost;
+                coinAmount = targetCoins;
+            }
         }
 
         /// <summary>

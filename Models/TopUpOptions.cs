@@ -17,5 +17,10 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public string UserEmail { get; set; }
+        /// <summary>
+        /// Percise amount of coflcoins to topup
+        /// </summary>
+        /// <value></value>
+        public long TopUpAmount { get; set; }
     }
 }

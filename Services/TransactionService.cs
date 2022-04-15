@@ -40,8 +40,9 @@ namespace Coflnet.Payments.Services
         /// <param name="productId">The product purchased</param>
         /// <param name="userId">The user doing the transaction</param>
         /// <param name="reference">External reference data</param>
+        /// <param name="customAmount">Custom amount to add as topup, has to be higher than the product cost</param>
         /// <returns></returns>
-        public async Task AddTopUp(int productId, string userId, string reference)
+        public async Task AddTopUp(int productId, string userId, string reference, long customAmount = 0)
         {
             var product = db.TopUpProducts.Where(p => p.Id == productId).FirstOrDefault();
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
@@ -49,6 +50,11 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("user doesn't exist");
             await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
+            if(customAmount != 0)
+                if(customAmount < product.Cost)
+                throw new ApiException("custom amount is to smal for product");
+                else
+                    changeamount = customAmount;
             await CreateAndProduceTransaction(product, user, changeamount, reference);
         }
 
