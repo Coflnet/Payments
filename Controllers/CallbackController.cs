@@ -183,7 +183,7 @@ namespace Payments.Controllers
                 var exactCoinAmount = 0;
                 if (topupInfo.Length >= 2)
                     int.TryParse(topupInfo[1], out exactCoinAmount);
-                await transactionService.AddTopUp(int.Parse(product.CustomId), product.ReferenceId, order.Id, exactCoinAmount);
+                await transactionService.AddTopUp(int.Parse(topupInfo[0]), product.ReferenceId, order.Id, exactCoinAmount);
 
             }
             catch (Exception ex)
