@@ -73,9 +73,9 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
-            GetPriceAndCoins(topupotions, product, out decimal eurPrice, out  decimal coinAmount);
+            GetPriceAndCoins(topupotions, product, out decimal eurPrice, out decimal coinAmount);
 
-            var metadata = new Dictionary<string, string>() { 
+            var metadata = new Dictionary<string, string>() {
                 { "productId", product.Id.ToString() },
                 { "coinAmount", coinAmount.ToString() } };
             var options = new SessionCreateOptions
@@ -148,7 +148,7 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
-            GetPriceAndCoins(options, product, out decimal eurPrice, out  decimal coinAmount);
+            GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var order = new OrderRequest()
             {
@@ -223,7 +223,7 @@ namespace Payments.Controllers
                 var targetCoins = options.TopUpAmount;
                 if (targetCoins < product.Cost)
                     throw new ApiException($"The topUpAmount has to be bigger than the cost of product {product.Slug} ({product.Cost.ToString("0,##")})");
-                eurPrice = eurPrice * targetCoins / product.Cost;
+                eurPrice = Math.Round(eurPrice * targetCoins / product.Cost, 2);
                 coinAmount = targetCoins;
             }
         }
