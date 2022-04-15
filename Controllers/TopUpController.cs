@@ -33,10 +33,10 @@ namespace Payments.Controllers
 
         public TopUpController(ILogger<TopUpController> logger,
             PaymentContext context,
-            Coflnet.Payments.Services.ProductService productService, 
+            Coflnet.Payments.Services.ProductService productService,
             Coflnet.Payments.Services.TransactionService transactionService,
-            IConfiguration config, 
-            UserService userService, 
+            IConfiguration config,
+            UserService userService,
             PayPalHttpClient paypalClient)
         {
             _logger = logger;
@@ -65,17 +65,16 @@ namespace Payments.Controllers
         /// </summary>
         /// <param name="userId"></param>
         /// <param name="productId"></param>
-        /// <param name="email">If provided, this value will be used when the Customer object is created. If not provided, customers will be asked to enter their email address</param>
+        /// <param name="topupotions">Additional options</param>
         /// <returns></returns>
         [HttpPost]
         [Route("stripe")]
-        public async Task<IdResponse> CreateStripeSession(string userId, string productId, string email = null)
+        public async Task<IdResponse> CreateStripeSession(string userId, string productId, [FromBody] TopUpOptions topupotions = null)
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
             var eurPrice = product.Price;
 
-            var domain = "https://sky.coflnet.com";
             var metadata = new Dictionary<string, string>() { { "productId", product.Id.ToString() } };
             var options = new SessionCreateOptions
             {
@@ -107,10 +106,10 @@ namespace Payments.Controllers
                 },
                 Metadata = metadata,
                 Mode = "payment",
-                SuccessUrl = domain + "/success",
-                CancelUrl = domain + "/cancel",
+                SuccessUrl = topupotions?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"],
+                CancelUrl = topupotions?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
                 ClientReferenceId = user.ExternalId,
-                CustomerEmail = email
+                CustomerEmail = topupotions?.UserEmail
             };
             var service = new SessionService();
             Session session;
@@ -139,10 +138,11 @@ namespace Payments.Controllers
         /// </summary>
         /// <param name="userId"></param>
         /// <param name="productId"></param>
+        /// <param name="options">Additional options</param>
         /// <returns></returns>
         [HttpPost]
         [Route("paypal")]
-        public async Task<IdResponse> CreatePayPal(string userId, string productId)
+        public async Task<IdResponse> CreatePayPal(string userId, string productId, [FromBody] TopUpOptions options = null)
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
@@ -180,8 +180,12 @@ namespace Payments.Controllers
                 },
                 ApplicationContext = new ApplicationContext()
                 {
-                    ReturnUrl = "https://www.example.com",
-                    CancelUrl = "https://www.example.com"
+                    ReturnUrl = options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"],
+                    CancelUrl = options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"]
+                },
+                Payer = new Payer()
+                {
+                    Email = options?.UserEmail
                 }
             };
 
@@ -221,7 +225,7 @@ namespace Payments.Controllers
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(topUp.ProductId);
             var eurPrice = product.Price;
-            await transactionService.AddCustomTopUp(userId,topUp);
+            await transactionService.AddCustomTopUp(userId, topUp);
             return null;
         }
     }
