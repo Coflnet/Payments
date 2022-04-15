@@ -16,6 +16,7 @@ using System.Net;
 using Microsoft.AspNetCore.Diagnostics;
 using Newtonsoft.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace Coflnet.Payments
 {
@@ -38,7 +39,7 @@ namespace Coflnet.Payments
             services.AddSwaggerGen(c =>
             {
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Payments", Version = "0.0.1", License = new OpenApiLicense { Name = "MIT" } });
-                // Set the comments path for the Swagger JSON and UI.
+            // Set the comments path for the Swagger JSON and UI.
                 var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
                 var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
                 c.IncludeXmlComments(xmlPath);
@@ -65,7 +66,10 @@ namespace Coflnet.Payments
             // Creating correct paypalEnvironment
             PayPalCheckoutSdk.Core.PayPalEnvironment environment;
             if (!string.IsNullOrEmpty(Configuration["PAYPAL:IS_SANDBOX"]) && bool.TryParse(Configuration["PAYPAL:IS_SANDBOX"], out bool isSandbox) && isSandbox)
+            {
+                Console.WriteLine("Starting paypal in SandboxMode");
                 environment = new PayPalCheckoutSdk.Core.SandboxEnvironment(Configuration["PAYPAL:ID"], Configuration["PAYPAL:SECRET"]);
+            }
             else
                 environment = new PayPalCheckoutSdk.Core.LiveEnvironment(Configuration["PAYPAL:ID"], Configuration["PAYPAL:SECRET"]);
             services.AddSingleton<PayPalCheckoutSdk.Core.PayPalHttpClient>(new PayPalCheckoutSdk.Core.PayPalHttpClient(environment));
