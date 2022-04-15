@@ -172,7 +172,7 @@ namespace Payments.Controllers
                 _logger.LogInformation("Status: {0}", order.Status);
 
                 _logger.LogInformation("Order Id: {0}", order.Id);
-                if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.Now.Subtract(TimeSpan.FromHours(1)))
+                if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.UtcNow.Subtract(TimeSpan.FromHours(1)))
                     throw new Exception("the provied order id is too old, please contact support for manual review");
 
                 var transactionId = order.Id;

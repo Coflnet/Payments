@@ -41,7 +41,7 @@ namespace Coflnet.Payments.Models
         /// Timestamp of this transaction
         /// </summary>
         /// <value></value>
-        public DateTime Timestamp { get; set; } = DateTime.Now;
+        public DateTime Timestamp { get; set; } = DateTime.UtcNow;
 
     }
 }

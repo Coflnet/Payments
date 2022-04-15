@@ -136,7 +136,7 @@ namespace Payments.Controllers
             if (oldProduct != null)
             {
                 // change the old slug
-                var newSlug = oldProduct.Slug.Truncate(18) + Convert.ToBase64String(BitConverter.GetBytes(DateTime.Now.Ticks % 100).Reverse().ToArray());
+                var newSlug = oldProduct.Slug.Truncate(18) + Convert.ToBase64String(BitConverter.GetBytes(DateTime.UtcNow.Ticks % 100).Reverse().ToArray());
                 oldProduct.Slug = newSlug.Truncate(20);
                 oldProduct.Type |= Product.ProductType.DISABLED;
                 db.Update(oldProduct);

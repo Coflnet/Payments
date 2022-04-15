@@ -132,19 +132,21 @@ namespace Coflnet.Payments.Services
         public async Task PurchaseProduct(string productSlug, string userId, decimal price = 0)
         {
             var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
+            if(product == null)
+                throw new ApiException($"product {productSlug} could not be found ");
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
             if (product.Type == PurchaseableProduct.ProductType.DISABLED)
                 throw new ApiException("product can't be purchased");
             var user = await userService.GetOrCreate(userId);
-            if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.Now + TimeSpan.FromDays(3000)).Any())
+            if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
                 throw new ApiException("already owned");
             if (user.AvailableBalance < price)
                 throw new ApiException("insuficcient balance");
 
             await db.Database.BeginTransactionAsync();
             var transactionEvent = await CreateTransaction(product, user, price * -1);
-            user.Owns.Add(new OwnerShip() { Expires = DateTime.Now.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
+            user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
             db.Update(user);
             await db.SaveChangesAsync();
             await db.Database.CommitTransactionAsync();
@@ -160,7 +162,7 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("product is not a service");
             var user = await userService.GetOrCreate(userId);
             var existingOwnerShip = user.Owns?.Where(p => p.Product == product) ?? new List<OwnerShip>();
-            if (existingOwnerShip.Where(p => p.Expires > DateTime.Now + TimeSpan.FromDays(3000)).Any())
+            if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
                 throw new ApiException("already owned for too long");
             var price = product.Cost * count;
             if (user.AvailableBalance < price)
@@ -170,9 +172,15 @@ namespace Coflnet.Payments.Services
             var transactionEvent = await CreateTransaction(product, user, price * -1, reference);
             var time = TimeSpan.FromSeconds(product.OwnershipSeconds * count);
             if (existingOwnerShip.Any())
-                existingOwnerShip.First().Expires += time;
+            {
+                var currentTime = existingOwnerShip.First().Expires;
+                if(currentTime < DateTime.UtcNow)
+                    existingOwnerShip.First().Expires = DateTime.Now + time;
+                else
+                    existingOwnerShip.First().Expires += time;
+            }
             else
-                user.Owns.Add(new OwnerShip() { Expires = DateTime.Now + time, Product = product, User = user });
+                user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow + time, Product = product, User = user });
             db.Update(user);
             await db.SaveChangesAsync();
             await db.Database.CommitTransactionAsync();
