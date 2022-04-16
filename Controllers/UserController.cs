@@ -75,7 +75,7 @@ namespace Payments.Controllers
         {
             var user = await GetOrCreate(userId);
             return await db.Users.Where(u => u.ExternalId == userId)
-                    .Select(u => u.Owns.Where(o => o.Product == db.Products.Where(p => p.Slug == productSlug))
+                    .Select(u => u.Owns.Where(o => o.Product == db.Products.Where(p => p.Slug == productSlug).First())
                     .Select(p => p.Expires).FirstOrDefault()).FirstOrDefaultAsync();
         }
 
