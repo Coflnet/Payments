@@ -83,6 +83,7 @@ namespace Payments.Controllers
                 PaymentMethodTypes = new List<string>
                 {
                   "card",
+                  "bancontact",
                 },
                 LineItems = new List<SessionLineItemOptions>
                 {
