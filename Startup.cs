@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Newtonsoft.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using hypixel;
 
 namespace Coflnet.Payments
 {
@@ -76,6 +77,7 @@ namespace Coflnet.Payments
 
             StripeConfiguration.ApiKey = Configuration["STRIPE:KEY"];
             services.AddHostedService<MigrationService>();
+            services.AddJaeger(0.1, 10);
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
