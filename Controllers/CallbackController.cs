@@ -138,6 +138,7 @@ namespace Payments.Controllers
 
                     // completing order
                     order = await CompleteOrder(paypalClient, webhookResult.Resource.Id);
+                    _logger.LogInformation("completing order " + webhookResult.Resource.Id);
                 }
                 else if (webhookResult.EventType == "PAYMENT.CAPTURE.COMPLETED")
                 {
@@ -154,6 +155,7 @@ namespace Payments.Controllers
                 try
                 {
                     OrdersGetRequest getRequest = new OrdersGetRequest(webhookResult.Resource.Id);
+                    _logger.LogInformation("getting order " + webhookResult.Resource.Id);
                     response = paypalClient.Execute(getRequest).Result;
                 }
                 catch (Exception e)
