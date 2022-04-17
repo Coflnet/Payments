@@ -84,6 +84,7 @@ namespace Payments.Controllers
                 {
                   "card",
                   "bancontact",
+                  "giropay",
                 },
                 LineItems = new List<SessionLineItemOptions>
                 {
