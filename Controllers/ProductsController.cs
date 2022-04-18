@@ -54,7 +54,7 @@ namespace Payments.Controllers
         [Route("topup")]
         public async Task<IEnumerable<TopUpProduct>> GetTopupOptions(int offset = 0, int amount = 20)
         {
-            return await db.TopUpProducts.Where(p=>p.Type.HasFlag(PurchaseableProduct.ProductType.TOP_UP)).Skip(offset).Take(amount).ToListAsync();
+            return await db.TopUpProducts.Skip(offset).Take(amount).ToListAsync();
         }
 
 
@@ -136,7 +136,7 @@ namespace Payments.Controllers
             if (oldProduct != null)
             {
                 // change the old slug
-                var newSlug = oldProduct.Slug.Truncate(18) + Convert.ToBase64String(BitConverter.GetBytes(DateTime.UtcNow.Ticks % 100).Reverse().ToArray());
+                var newSlug = oldProduct.Slug.Truncate(18) + Convert.ToBase64String(BitConverter.GetBytes(DateTime.UtcNow.Ticks % 100000).Reverse().ToArray());
                 oldProduct.Slug = newSlug.Truncate(20);
                 oldProduct.Type |= Product.ProductType.DISABLED;
                 db.Update(oldProduct);

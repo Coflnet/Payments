@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -77,6 +78,38 @@ namespace Payments.Controllers
             return await db.Users.Where(u => u.ExternalId == userId)
                     .Select(u => u.Owns.Where(o => o.Product == db.Products.Where(p => p.Slug == productSlug).First())
                     .Select(p => p.Expires).FirstOrDefault()).FirstOrDefaultAsync();
+        }
+
+        /// <summary>
+        /// Returns the bigest time out of a list of product ids
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="slugs"></param>
+        /// <returns></returns>
+        [HttpPost]
+        [Route("{userId}/owns/longest")]
+        public async Task<DateTime> GetLongest(string userId, [FromBody] HashSet<string> slugs)
+        {
+            var user = await GetOrCreate(userId);
+            return await db.Users.Where(u => u.ExternalId == userId)
+                    .Select(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug))
+                    .Select(p => p.Expires).OrderByDescending(p => p).FirstOrDefault()).FirstOrDefaultAsync();
+        }
+        /// <summary>
+        /// Returns all ownership data for an user out of a list of interested 
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="slugs"></param>
+        /// <returns></returns>
+        [HttpPost]
+        [Route("{userId}/owns")]
+        public async Task<IEnumerable<OwnerShip>> GetAllOwnerships(string userId, [FromBody] HashSet<string> slugs)
+        {
+            var user = await GetOrCreate(userId);
+            var select = db.Users.Where(u => u.ExternalId == userId)
+                    .Include(p=>p.Owns).ThenInclude(o=>o.Product)
+                    .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug)));
+            return await select.ToListAsync();
         }
 
         /// <summary>
