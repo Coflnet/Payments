@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using System;
+using System.Collections.Generic;
 
 namespace Coflnet.Payments.Services
 {
@@ -59,6 +60,16 @@ namespace Coflnet.Payments.Services
         public async Task<User> GetAndInclude(string userId, Func<IQueryable<User>, IQueryable<User>> includer)
         {
             return await includer(db.Users.Where(u => u.ExternalId == userId)).FirstOrDefaultAsync();
+        }
+
+        /// <summary>
+        /// Returns all users that own a specific product
+        /// </summary>
+        /// <param name="slug"></param>
+        /// <returns></returns>
+        public async Task<IEnumerable<User>> GetUsersOwning(string slug)
+        {
+            return await db.Users.Where(u=>u.Owns.Where(o=>o.Product == db.Products.Where(p=>p.Slug == slug).FirstOrDefault()).Any()).ToListAsync();
         }
     }
 }

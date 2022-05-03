@@ -242,9 +242,39 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(topUp.ProductId);
-            var eurPrice = product.Price;
+            if (topUp.Amount > product.Cost)
+                throw new ApiException($"The requested amount is larger than the maximum allowed of {product.Cost}");
             await transactionService.AddCustomTopUp(userId, topUp);
             return null;
+        }
+
+
+        /// <summary>
+        /// Compensates users of a service for something
+        /// </summary>
+        /// <param name="details"></param>
+        /// <returns></returns>
+        [HttpPost]
+        [Route("compensate")]
+        public async Task<(int,int)> Compensate(Compensation details)
+        {
+            var product = await productService.GetTopupProduct("compensation");
+            var eurPrice = product.Price;
+            var users = await userService.GetUsersOwning(details.ProductId);
+            var failedCount = 0;
+            foreach (var item in users)
+            {
+                try
+                {
+                    await transactionService.CreateTransactionInTransaction(product, item, details.Amount, details.Reference);
+                }
+                catch (Exception e)
+                {
+                    _logger.LogError(e, "topup already existant for user");
+                    failedCount++;
+                }
+            }
+            return (users.Count(), failedCount);
         }
     }
 }

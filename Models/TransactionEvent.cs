@@ -28,6 +28,10 @@ namespace Coflnet.Payments.Models
         /// </summary>
         public long OwnedSeconds { get; set; }
         /// <summary>
+        /// The type of the product
+        /// </summary>
+        public Product.ProductType ProductType { get; set; }
+        /// <summary>
         /// The transaction amount
         /// </summary>
         public double Amount { get; set; }

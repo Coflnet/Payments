@@ -73,7 +73,6 @@ namespace Coflnet.Payments.Services
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
             if (user == null)
                 throw new ApiException("user doesn't exist");
-            await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
             // adjust amount if its valid
             if (topup.Amount != 0 && topup.Amount < product.Cost)
@@ -81,8 +80,13 @@ namespace Coflnet.Payments.Services
                     changeamount = topup.Amount;
                 else
                     logger.LogWarning($"Variable price is disabled for {topup.ProductId} but a value of {topup.Amount} was passed");
+            await CreateTransactionInTransaction(product, user, changeamount, topup.Reference);
+        }
 
-            await CreateAndProduceTransaction(product, user, changeamount, topup.Reference);
+        public async Task CreateTransactionInTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
+        {
+            await db.Database.BeginTransactionAsync();
+            await CreateAndProduceTransaction(product, user, changeamount, reference);
         }
 
         private async Task CreateAndProduceTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
@@ -123,7 +127,8 @@ namespace Coflnet.Payments.Services
                 ProductSlug = product.Slug,
                 Reference = reference,
                 UserId = user.ExternalId,
-                Timestamp = transaction.Timestamp
+                Timestamp = transaction.Timestamp,
+                ProductType = product.Type
             };
             return transactionEvent;
         }
