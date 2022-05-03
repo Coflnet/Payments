@@ -69,7 +69,7 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task<IEnumerable<User>> GetUsersOwning(string slug)
         {
-            return await db.Users.Where(u=>u.Owns.Where(o=>o.Product == db.Products.Where(p=>p.Slug == slug).FirstOrDefault()).Any()).ToListAsync();
+            return await db.Users.Where(u=>u.Owns.Where(o=>o.Product == db.Products.Where(p=>p.Slug == slug).FirstOrDefault() && o.Expires > DateTime.Now).Any()).ToListAsync();
         }
     }
 }
