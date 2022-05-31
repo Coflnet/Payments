@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using Newtonsoft.Json;
 
 namespace Coflnet.Payments.Models
 {
@@ -40,6 +42,12 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public ProductType Type { get; set; }
+        /// <summary>
+        /// Groups this product is in
+        /// </summary>
+        /// <value></value>
+        [JsonIgnore]
+        public List<Group> Groups { get; set; }
 
         /// <summary>
         /// Types of products
