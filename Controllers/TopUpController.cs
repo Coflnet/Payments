@@ -261,7 +261,9 @@ namespace Payments.Controllers
         {
             var product = await productService.GetTopupProduct("compensation");
             var eurPrice = product.Price;
-            var users = await userService.GetUsersOwning(details.ProductId);
+            if(details.When == default)
+                details.When = DateTime.UtcNow;
+            var users = await userService.GetUsersOwning(details.ProductId, details.When);
             var failedCount = 0;
             foreach (var item in users)
             {
