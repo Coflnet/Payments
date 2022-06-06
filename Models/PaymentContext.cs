@@ -39,6 +39,10 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public DbSet<Group> Groups { get; set; }
+        /// <summary>
+        /// Rules to be applied before purchase
+        /// </summary>
+        public DbSet<Rule> Rules { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -77,7 +81,6 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<Rule>(entity =>
             {
                 entity.HasIndex(e => e.Slug).IsUnique();
-                entity.HasIndex(e => e.Targets);
             });
         }
     }

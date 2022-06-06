@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace Coflnet.Payments.Models
 {
@@ -16,6 +17,7 @@ namespace Coflnet.Payments.Models
         /// Identifier of this group
         /// </summary>
         /// <value></value>
+        [MaxLength(32)]
         public string Slug { get; set; }
         /// <summary>
         /// Products in this group

@@ -66,12 +66,4 @@ namespace Coflnet.Payments.Services
         }
     }
 
-    /// <summary>
-    /// Applies rules to a product based on user ownership
-    /// </summary>
-    public class RuleEngine
-    {
-
-    }
-
 }
