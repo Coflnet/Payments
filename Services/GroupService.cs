@@ -54,15 +54,19 @@ namespace Coflnet.Payments.Services
         /// </summary>
         /// <param name="groupId"></param>
         /// <returns></returns>
-        public async Task AddOrIgnoreGroup(string groupId)
+        public async Task<Group> AddOrIgnoreGroup(string groupId)
         {
-            if (await db.Groups.Where(g => g.Slug == groupId).AnyAsync())
-                return;
-            var group = new Group() { Slug = groupId };
-            db.Groups.Add(group);
-            await db.SaveChangesAsync();
-            // add matching products by slug
-            await UpdateProductsInGroup(groupId, new string[] { groupId });
+            var group = await db.Groups.Where(g => g.Slug == groupId).FirstOrDefaultAsync();
+            if (group == null)
+            {
+                group = new Group() { Slug = groupId };
+                db.Groups.Add(group);
+                await db.SaveChangesAsync();
+                // add matching products by slug
+                await UpdateProductsInGroup(groupId, new string[] { groupId });
+            }
+
+            return group;
         }
     }
 

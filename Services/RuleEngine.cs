@@ -29,16 +29,43 @@ namespace Coflnet.Payments.Services
         /// <param name="product"></param>
         /// <param name="user"></param>
         /// <returns></returns>
-        public async Task ApplyRules(Product product, User user)
+        public async Task<Product> ApplyRules(Product product, User user)
         {
-            var owns = await db.Users.SelectMany(u => u.Owns.SelectMany(o => o.Product.Groups)).ToListAsync();
-            Console.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(owns, Newtonsoft.Json.Formatting.Indented));
+            var allrules = await db.Rules.ToListAsync();
+            var fullUser = await db.Users.Where(u=>u.Id == user.Id).Include(u=>u.Owns).ThenInclude(o=>o.Product).ThenInclude(p=>p.Groups).ToListAsync();
+            var owns = await db.Users.Where(u=>u.Id == user.Id).Include(u=>u.Owns).ThenInclude(o=>o.Product).ThenInclude(p=>p.Groups).SelectMany(u => u.Owns.SelectMany(o => o.Product.Groups)).ToListAsync();
             var groups = await db.Groups.Where(g => g.Products.Contains(product)).ToListAsync();
             var rules = await db.Rules.Where(r => owns.Contains(r.Requires) && groups.Contains(r.Targets)).ToListAsync();
+            var fakeProduct = new Product(product);
             foreach (var rule in rules.OrderByDescending(r=>r.Priority))
             {
-                Console.WriteLine("applying rule " + rule.Slug);
+                Func<Product, decimal> applier = p => p.OwnershipSeconds;
+                if(rule.Flags.HasFlag(Rule.RuleFlags.DISCOUNT))
+                {
+                    applier = p => p.Cost;
+                }
+                var baseVal = applier(product);
+                var change = rule.Amount;
+                if(rule.Flags.HasFlag(Rule.RuleFlags.INVERT))
+                    change = -change;
+                if(rule.Flags.HasFlag(Rule.RuleFlags.PERCENT))
+                    change = baseVal * change / 100;
+                
+                if(rule.Flags.HasFlag(Rule.RuleFlags.DISCOUNT))
+                    fakeProduct.Cost = fakeProduct.Cost - change;
+                else 
+                    fakeProduct.OwnershipSeconds = (long) (fakeProduct.OwnershipSeconds + change);
+                
+                if(rule.Flags.HasFlag(Rule.RuleFlags.EARLY_BREAK))
+                    break;
             }
+            return fakeProduct;
+        }
+
+        internal async Task AddRule(Rule cheaperRule)
+        {
+            db.Add(cheaperRule);
+            await db.SaveChangesAsync();
         }
     }
 

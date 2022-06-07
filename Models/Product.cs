@@ -83,5 +83,26 @@ namespace Coflnet.Payments.Models
             /// </summary> 
             VARIABLE_PRICE = 32
         }
+
+        
+
+        /// <summary>
+        /// Copy constructor
+        /// </summary>
+        public Product(Product other)
+        {
+            Id = other.Id;
+            Title = other.Title;
+            Slug = other.Slug;
+            Description = other.Description;
+            Cost = other.Cost;
+            OwnershipSeconds = other.OwnershipSeconds;
+            Type = other.Type;
+            Groups = other.Groups;
+        }
+
+        public Product()
+        {
+        }
     }
 }
