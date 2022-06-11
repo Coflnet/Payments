@@ -71,7 +71,7 @@ namespace Coflnet.Payments.Services
             await context.SaveChangesAsync();
 
             var result = await rulesEngine.ApplyRules(productB, user);
-            Assert.AreEqual(500, result.Cost);
+            Assert.AreEqual(500, result.ModifiedProduct.Cost);
         }
 
         [Test]
@@ -84,7 +84,7 @@ namespace Coflnet.Payments.Services
             await context.SaveChangesAsync();
 
             var result = await rulesEngine.ApplyRules(productB, user);
-            Assert.AreEqual(220, result.OwnershipSeconds);
+            Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
         }
         [Test]
         public async Task ExtendPercentage()
@@ -96,7 +96,7 @@ namespace Coflnet.Payments.Services
             await context.SaveChangesAsync();
 
             var result = await rulesEngine.ApplyRules(productB, user);
-            Assert.AreEqual(240, result.OwnershipSeconds);
+            Assert.AreEqual(240, result.ModifiedProduct.OwnershipSeconds);
         }
         [Test]
         public async Task EarlyBreak()
@@ -110,7 +110,7 @@ namespace Coflnet.Payments.Services
             await context.SaveChangesAsync();
 
             var result = await rulesEngine.ApplyRules(productB, user);
-            Assert.AreEqual(220, result.OwnershipSeconds);
+            Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
         }
 
         PaymentContext CreateContext() => new PaymentContext(_contextOptions);
