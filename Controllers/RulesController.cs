@@ -8,6 +8,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Payments.Controllers
 {
+    /// <summary>
+    /// Manages rules for payments
+    /// </summary>
     [ApiController]
     [Route("[controller]")]
     public class RulesController
@@ -15,12 +18,23 @@ namespace Payments.Controllers
         private readonly PaymentContext db;
         private readonly RuleEngine ruleEngine;
 
+        /// <summary>
+        /// Constructor
+        /// </summary>
+        /// <param name="context"></param>
+        /// <param name="ruleEngine"></param>
         public RulesController(PaymentContext context, RuleEngine ruleEngine)
         {
             db = context;
             this.ruleEngine = ruleEngine;
         }
 
+        /// <summary>
+        /// Returns all rules
+        /// </summary>
+        /// <param name="offset"></param>
+        /// <param name="amount"></param>
+        /// <returns></returns>
         [HttpGet]
         [Route("")]
         public async Task<IEnumerable<Rule>> GetAll(int offset = 0, int amount = 20)
@@ -28,6 +42,11 @@ namespace Payments.Controllers
             return await db.Rules.Skip(offset).Take(amount).ToListAsync();
         }
 
+        /// <summary>
+        /// Returns a rule by slug
+        /// </summary>
+        /// <param name="ruleSlug"></param>
+        /// <returns></returns>
         [HttpGet]
         [Route("{ruleSlug}")]
         public async Task<Rule> Get(string ruleSlug)
@@ -35,6 +54,11 @@ namespace Payments.Controllers
             return await db.Rules.Where(r => r.Slug == ruleSlug).FirstOrDefaultAsync();
         }
 
+        /// <summary>
+        /// Creates a new rule
+        /// </summary>
+        /// <param name="rule"></param>
+        /// <returns></returns>
         [HttpPost]
         [Route("")]
         public async Task<Rule> CreateNew(Rule rule)
@@ -43,6 +67,10 @@ namespace Payments.Controllers
             return await Get(rule.Slug);
         }
 
+        /// <summary>
+        /// Deletes a rule
+        /// </summary>
+        /// <param name="ruleSlug"></param>
         [HttpDelete]
         [Route("{ruleSlug}")]
         public async Task<Rule> Delete(string ruleSlug)

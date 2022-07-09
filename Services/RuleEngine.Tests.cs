@@ -44,8 +44,8 @@ namespace Coflnet.Payments.Services
             productB = new PurchaseableProduct() { Slug = "B", Cost = 600, OwnershipSeconds = 120 };
             context.AddRange(productA, productB);
             context.SaveChanges();
-            groupA = await groupService.AddOrIgnoreGroup(productA.Slug);
-            groupB = await groupService.AddOrIgnoreGroup(productB.Slug);
+            groupA = await groupService.GetOrAddGroup(productA.Slug);
+            groupB = await groupService.GetOrAddGroup(productB.Slug);
             user = new User() { ExternalId = "1", Balance = 0, Owns = new() };
             user.Owns.Add(new OwnerShip() { Product = productA, User = user });
 

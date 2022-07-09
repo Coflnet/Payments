@@ -4,6 +4,9 @@ using Newtonsoft.Json;
 
 namespace Coflnet.Payments.Models
 {
+    /// <summary>
+    /// A product that can be purchased
+    /// </summary>
     public class Product
     {
         /// <summary>
@@ -84,7 +87,7 @@ namespace Coflnet.Payments.Models
             VARIABLE_PRICE = 32
         }
 
-        
+
 
         /// <summary>
         /// Copy constructor
@@ -101,8 +104,33 @@ namespace Coflnet.Payments.Models
             Groups = other.Groups;
         }
 
+        /// <summary>
+        /// Initialises a new instance of the <see cref="Product"/> class.
+        /// </summary>
         public Product()
         {
+        }
+        /// <inheritdoc/>
+
+        public override string ToString()
+        {
+            return $"{Title} ({Slug})";
+        }
+        /// <inheritdoc/>
+
+        public override bool Equals(object obj)
+        {
+            if (obj is Product other)
+            {
+                return other.Id == Id;
+            }
+            return false;
+        }
+        /// <inheritdoc/>
+
+        public override int GetHashCode()
+        {
+            return Id.GetHashCode();
         }
     }
 }

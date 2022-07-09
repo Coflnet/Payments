@@ -33,7 +33,6 @@ namespace Coflnet.Payments.Services
         public async Task<RuleResult> ApplyRules(Product product, User user)
         {
             var allrules = await db.Rules.ToListAsync();
-            var fullUser = await db.Users.Where(u => u.Id == user.Id).Include(u => u.Owns).ThenInclude(o => o.Product).ThenInclude(p => p.Groups).ToListAsync();
             var owns = await db.Users.Where(u => u.Id == user.Id).Include(u => u.Owns).ThenInclude(o => o.Product).ThenInclude(p => p.Groups).SelectMany(u => u.Owns.SelectMany(o => o.Product.Groups)).ToListAsync();
             var groups = await db.Groups.Where(g => g.Products.Contains(product)).ToListAsync();
             var rules = await db.Rules.Where(r => owns.Contains(r.Requires) && groups.Contains(r.Targets)).ToListAsync();
@@ -88,6 +87,8 @@ namespace Coflnet.Payments.Services
                 if (cheaperRule.Amount == 0)
                     throw new Exception("Rule requires an amount");
             }
+            if (cheaperRule.Amount < 0)
+                throw new Exception("Rule amount must be positive");
 
             db.Add(cheaperRule);
             await db.SaveChangesAsync();

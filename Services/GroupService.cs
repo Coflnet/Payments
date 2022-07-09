@@ -50,11 +50,25 @@ namespace Coflnet.Payments.Services
         }
 
         /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="product"></param>
+        /// <param name="groupSlug"></param>
+        /// <returns></returns>
+        public async Task AddProductToGroup(Product product, string groupSlug)
+        {
+            var group = await GetOrAddGroup(groupSlug);
+            if (!group.Products.Contains(product))
+                group.Products.Add(product);
+            await db.SaveChangesAsync();
+        }
+
+        /// <summary>
         /// Adds a new group if it doesn't exist
         /// </summary>
         /// <param name="groupId"></param>
         /// <returns></returns>
-        public async Task<Group> AddOrIgnoreGroup(string groupId)
+        public async Task<Group> GetOrAddGroup(string groupId)
         {
             var group = await db.Groups.Where(g => g.Slug == groupId).FirstOrDefaultAsync();
             if (group == null)

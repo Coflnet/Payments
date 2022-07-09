@@ -31,6 +31,9 @@ namespace Payments.Controllers
         private readonly UserService userService;
         private readonly PayPalHttpClient paypalClient;
 
+        /// <summary>
+        /// Creates a new instance of the <see cref="TopUpController"/> class
+        /// </summary>
         public TopUpController(ILogger<TopUpController> logger,
             PaymentContext context,
             Coflnet.Payments.Services.ProductService productService,
