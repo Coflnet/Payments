@@ -11,14 +11,14 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Payments.Migrations
 {
     [DbContext(typeof(PaymentContext))]
-    [Migration("20220606160656_groups")]
-    partial class groups
+    [Migration("20220710122941_rules")]
+    partial class rules
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "6.0.0")
+                .HasAnnotation("ProductVersion", "6.0.5")
                 .HasAnnotation("Relational:MaxIdentifierLength", 64);
 
             modelBuilder.Entity("Coflnet.Payments.Models.FiniteTransaction", b =>
@@ -196,7 +196,7 @@ namespace Payments.Migrations
 
                     b.HasIndex("TargetsId");
 
-                    b.ToTable("Rule");
+                    b.ToTable("Rules");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.User", b =>

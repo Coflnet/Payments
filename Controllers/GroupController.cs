@@ -22,7 +22,7 @@ namespace Payments.Controllers
         [Route("")]
         public async Task<IEnumerable<Group>> GetAll(int offset = 0, int amount = 20)
         {
-            return await db.Groups.Skip(offset).Take(amount).ToListAsync();
+            return await db.Groups.OrderBy(g=>g.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
         [HttpGet]

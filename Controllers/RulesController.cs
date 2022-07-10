@@ -39,7 +39,7 @@ namespace Payments.Controllers
         [Route("")]
         public async Task<IEnumerable<Rule>> GetAll(int offset = 0, int amount = 20)
         {
-            return await db.Rules.Skip(offset).Take(amount).ToListAsync();
+            return await db.Rules.OrderBy(r=>r.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
         /// <summary>
@@ -61,9 +61,9 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("")]
-        public async Task<Rule> CreateNew(Rule rule)
+        public async Task<Rule> CreateNew(RuleCreate rule)
         {
-            await ruleEngine.AddRule(rule);
+            await ruleEngine.AddOrUpdateRule(rule);
             return await Get(rule.Slug);
         }
 

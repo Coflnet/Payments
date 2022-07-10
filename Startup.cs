@@ -56,7 +56,9 @@ namespace Coflnet.Payments
             services.AddScoped<TransactionService>();
             services.AddScoped<UserService>();
             services.AddSingleton<ExchangeService>();
+            services.AddScoped<RuleEngine>();
             services.AddScoped<Services.ProductService>();
+            services.AddScoped<GroupService>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA_HOST"]))
                 services.AddSingleton<ITransactionEventProducer, TransactionEventProducer>();

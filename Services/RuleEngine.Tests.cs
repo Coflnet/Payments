@@ -65,23 +65,27 @@ namespace Coflnet.Payments.Services
         public async Task AbsoluteDiscount()
         {
             var rulesEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
-            var cheaperRule = new Rule() { Slug = "cheaperB", Requires = groupA, Targets = groupB, Priority = 1, Amount = 100, Flags = Rule.RuleFlags.DISCOUNT };
-
-            await rulesEngine.AddRule(cheaperRule);
-            await context.SaveChangesAsync();
+            var flags = Rule.RuleFlags.DISCOUNT;
+            await AddRuleWithFlag(rulesEngine, flags);
 
             var result = await rulesEngine.ApplyRules(productB, user);
             Assert.AreEqual(500, result.ModifiedProduct.Cost);
+        }
+
+        private async Task AddRuleWithFlag(RuleEngine rulesEngine, Rule.RuleFlags flags)
+        {
+            var cheaperRule = new RuleCreate() { Slug = "cheaperB", RequiresGroup = groupA.Slug, TargetsGroup = groupB.Slug, Priority = 1, Amount = 100, Flags = flags };
+
+            await rulesEngine.AddOrUpdateRule(cheaperRule);
+            await context.SaveChangesAsync();
         }
 
         [Test]
         public async Task ExtendAbsolute()
         {
             var rulesEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
-            var cheaperRule = new Rule() { Slug = "cheaperB", Requires = groupA, Targets = groupB, Priority = 1, Amount = 100, Flags = Rule.RuleFlags.LONGER };
-
-            await rulesEngine.AddRule(cheaperRule);
-            await context.SaveChangesAsync();
+            var flags = Rule.RuleFlags.LONGER;
+            await AddRuleWithFlag(rulesEngine, flags);
 
             var result = await rulesEngine.ApplyRules(productB, user);
             Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
@@ -90,10 +94,7 @@ namespace Coflnet.Payments.Services
         public async Task ExtendPercentage()
         {
             var rulesEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
-            var cheaperRule = new Rule() { Slug = "cheaperB", Requires = groupA, Targets = groupB, Priority = 1, Amount = 100, Flags = Rule.RuleFlags.LONGER | Rule.RuleFlags.PERCENT };
-
-            await rulesEngine.AddRule(cheaperRule);
-            await context.SaveChangesAsync();
+            await AddRuleWithFlag(rulesEngine, Rule.RuleFlags.LONGER | Rule.RuleFlags.PERCENT );
 
             var result = await rulesEngine.ApplyRules(productB, user);
             Assert.AreEqual(240, result.ModifiedProduct.OwnershipSeconds);
@@ -102,11 +103,11 @@ namespace Coflnet.Payments.Services
         public async Task EarlyBreak()
         {
             var rulesEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
-            var mainRule = new Rule() { Slug = "cheapUnique", Requires = groupA, Targets = groupB, Priority = 2, Amount = 100, Flags = Rule.RuleFlags.LONGER | Rule.RuleFlags.EARLY_BREAK };
-            var cheaperRule = new Rule() { Slug = "cheaperB", Requires = groupA, Targets = groupB, Priority = 1, Amount = 1000, Flags = Rule.RuleFlags.LONGER | Rule.RuleFlags.PERCENT };
+            var mainRule = new RuleCreate() { Slug = "cheapUnique", RequiresGroup = groupA.Slug, TargetsGroup = groupB.Slug, Priority = 2, Amount = 100, Flags = Rule.RuleFlags.LONGER | Rule.RuleFlags.EARLY_BREAK };
+            var cheaperRule = new RuleCreate() { Slug = "cheaperB", RequiresGroup = groupA.Slug, TargetsGroup = groupB.Slug, Priority = 1, Amount = 1000, Flags = Rule.RuleFlags.LONGER | Rule.RuleFlags.PERCENT };
 
-            await rulesEngine.AddRule(mainRule);
-            await rulesEngine.AddRule(cheaperRule);
+            await rulesEngine.AddOrUpdateRule(mainRule);
+            await rulesEngine.AddOrUpdateRule(cheaperRule);
             await context.SaveChangesAsync();
 
             var result = await rulesEngine.ApplyRules(productB, user);

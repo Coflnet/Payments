@@ -70,29 +70,52 @@ namespace Coflnet.Payments.Services
             };
         }
 
-        internal async Task AddRule(Rule cheaperRule)
+        internal async Task AddOrUpdateRule(RuleCreate ruleCreate)
         {
             // check validity
-            if (cheaperRule.Targets == null)
+            if (ruleCreate.TargetsGroup == null)
             {
-                throw new Exception("Rule requires a target");
+                throw new ApiException("Rule requires a target");
             }
-            if (cheaperRule.Flags.HasFlag(Rule.RuleFlags.DISCOUNT))
+            var requires = db.Groups.FirstOrDefault(g => g.Slug == ruleCreate.RequiresGroup);
+            if (requires == null && ruleCreate.RequiresGroup != null)
             {
-                if (cheaperRule.Flags.HasFlag(Rule.RuleFlags.LONGER))
-                    throw new Exception("Rule can only be LONGER or DISCOUNT, not both");
+                throw new ApiException("Rule requires a group that does not exist");
             }
-            if (cheaperRule.Flags.HasFlag(Rule.RuleFlags.LONGER) || cheaperRule.Flags.HasFlag(Rule.RuleFlags.DISCOUNT))
+            var targets = db.Groups.FirstOrDefault(g => g.Slug == ruleCreate.TargetsGroup);
+            if (targets == null)
             {
-                if (cheaperRule.Amount == 0)
-                    throw new Exception("Rule requires an amount");
+                throw new ApiException("Rule targets a group that does not exist");
             }
-            if (cheaperRule.Amount < 0)
-                throw new Exception("Rule amount must be positive");
+            if (ruleCreate.Flags.HasFlag(Rule.RuleFlags.DISCOUNT))
+            {
+                if (ruleCreate.Flags.HasFlag(Rule.RuleFlags.LONGER))
+                    throw new ApiException("Rule can only be LONGER or DISCOUNT, not both");
+            }
+            if (ruleCreate.Flags.HasFlag(Rule.RuleFlags.LONGER) || ruleCreate.Flags.HasFlag(Rule.RuleFlags.DISCOUNT))
+            {
+                if (ruleCreate.Amount == 0)
+                    throw new ApiException("Rule requires an amount");
+            }
+            if (ruleCreate.Amount < 0)
+                throw new ApiException("Rule amount must be positive");
 
-            db.Add(cheaperRule);
+            var rule = new Rule();
+            var ruleFromDb = await db.Rules.FirstOrDefaultAsync(r => r.Slug == ruleCreate.Slug);
+            if (ruleFromDb != null)
+                rule = ruleFromDb;
+            else 
+                db.Rules.Add(rule);
+            
+            rule.Slug = ruleCreate.Slug;
+            rule.Amount = ruleCreate.Amount;
+            rule.Flags = ruleCreate.Flags;
+            rule.Priority = ruleCreate.Priority;
+            rule.Requires = requires;
+            rule.Targets = targets;
             await db.SaveChangesAsync();
         }
+
     }
 
 }

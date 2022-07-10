@@ -101,7 +101,7 @@ public class ProductsServiceTests
         Assert.AreEqual(product.Slug, loadedGroup.Products.First().Slug);
     }
     [Test]
-    public async Task OwnsGroup()
+    public async Task UserOwnsProductInGroup()
     {
         var product = purchaseableProduct;
 

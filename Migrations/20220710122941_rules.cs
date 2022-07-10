@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace Payments.Migrations
 {
-    public partial class groups : Migration
+    public partial class rules : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -50,7 +50,7 @@ namespace Payments.Migrations
                 .Annotation("MySql:CharSet", "utf8mb4");
 
             migrationBuilder.CreateTable(
-                name: "Rule",
+                name: "Rules",
                 columns: table => new
                 {
                     Id = table.Column<int>(type: "int", nullable: false)
@@ -65,14 +65,14 @@ namespace Payments.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Rule", x => x.Id);
+                    table.PrimaryKey("PK_Rules", x => x.Id);
                     table.ForeignKey(
-                        name: "FK_Rule_Groups_RequiresId",
+                        name: "FK_Rules_Groups_RequiresId",
                         column: x => x.RequiresId,
                         principalTable: "Groups",
                         principalColumn: "Id");
                     table.ForeignKey(
-                        name: "FK_Rule_Groups_TargetsId",
+                        name: "FK_Rules_Groups_TargetsId",
                         column: x => x.TargetsId,
                         principalTable: "Groups",
                         principalColumn: "Id",
@@ -98,19 +98,19 @@ namespace Payments.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_Rule_RequiresId",
-                table: "Rule",
+                name: "IX_Rules_RequiresId",
+                table: "Rules",
                 column: "RequiresId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_Rule_Slug",
-                table: "Rule",
+                name: "IX_Rules_Slug",
+                table: "Rules",
                 column: "Slug",
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_Rule_TargetsId",
-                table: "Rule",
+                name: "IX_Rules_TargetsId",
+                table: "Rules",
                 column: "TargetsId");
         }
 
@@ -120,7 +120,7 @@ namespace Payments.Migrations
                 name: "GroupProduct");
 
             migrationBuilder.DropTable(
-                name: "Rule");
+                name: "Rules");
 
             migrationBuilder.DropTable(
                 name: "Groups");

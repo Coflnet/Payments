@@ -70,7 +70,7 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task<Group> GetOrAddGroup(string groupId)
         {
-            var group = await db.Groups.Where(g => g.Slug == groupId).FirstOrDefaultAsync();
+            var group = await db.Groups.Include(g=>g.Products).Where(g => g.Slug == groupId).FirstOrDefaultAsync();
             if (group == null)
             {
                 group = new Group() { Slug = groupId };

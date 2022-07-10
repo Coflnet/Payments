@@ -16,7 +16,7 @@ namespace Payments.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "6.0.0")
+                .HasAnnotation("ProductVersion", "6.0.5")
                 .HasAnnotation("Relational:MaxIdentifierLength", 64);
 
             modelBuilder.Entity("Coflnet.Payments.Models.FiniteTransaction", b =>
@@ -194,7 +194,7 @@ namespace Payments.Migrations
 
                     b.HasIndex("TargetsId");
 
-                    b.ToTable("Rule");
+                    b.ToTable("Rules");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.User", b =>
