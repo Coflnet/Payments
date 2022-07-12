@@ -30,7 +30,7 @@ namespace Coflnet.Payments.Services
         /// <param name="product"></param>
         /// <param name="user"></param>
         /// <returns></returns>
-        public async Task<RuleResult> ApplyRules(Product product, User user)
+        public async Task<RuleResult> GetAdjusted(Product product, User user)
         {
             var allrules = await db.Rules.ToListAsync();
             var owns = await db.Users.Where(u => u.Id == user.Id).Include(u => u.Owns).ThenInclude(o => o.Product).ThenInclude(p => p.Groups).SelectMany(u => u.Owns.SelectMany(o => o.Product.Groups)).ToListAsync();

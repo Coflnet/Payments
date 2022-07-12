@@ -17,12 +17,14 @@ namespace Payments.Controllers
         private readonly ILogger<ProductsController> _logger;
         private readonly PaymentContext db;
         private readonly ProductService productService;
+        private readonly RuleEngine ruleEngine;
 
-        public ProductsController(ILogger<ProductsController> logger, PaymentContext context, ProductService productService)
+        public ProductsController(ILogger<ProductsController> logger, PaymentContext context, ProductService productService, RuleEngine ruleEngine)
         {
             _logger = logger;
             db = context;
             this.productService = productService;
+            this.ruleEngine = ruleEngine;
         }
 
         /// <summary>
@@ -70,6 +72,27 @@ namespace Payments.Controllers
         {
             return await db.Products.Where(p => p.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
                         .OrderBy(p=>p.Id).Skip(offset).Take(amount).ToListAsync();
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="productSlugs"></param>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("user/{userId}")]
+        public async Task<IEnumerable<RuleResult>> GetAdjusted(string userId, IEnumerable<string> productSlugs)
+        {
+            var products = await db.Products.Where(p => productSlugs.Contains(p.Slug)).ToListAsync();
+            var result = new List<RuleResult>();
+            var user = await db.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
+            foreach (var product in products)
+            {
+                var ruleResult = await ruleEngine.GetAdjusted(product, user);
+                result.Add(ruleResult);
+            }
+            return result;
         }
 
         /// <summary>

@@ -68,7 +68,7 @@ namespace Coflnet.Payments.Services
             var flags = Rule.RuleFlags.DISCOUNT;
             await AddRuleWithFlag(rulesEngine, flags);
 
-            var result = await rulesEngine.ApplyRules(productB, user);
+            var result = await rulesEngine.GetAdjusted(productB, user);
             Assert.AreEqual(500, result.ModifiedProduct.Cost);
         }
 
@@ -87,7 +87,7 @@ namespace Coflnet.Payments.Services
             var flags = Rule.RuleFlags.LONGER;
             await AddRuleWithFlag(rulesEngine, flags);
 
-            var result = await rulesEngine.ApplyRules(productB, user);
+            var result = await rulesEngine.GetAdjusted(productB, user);
             Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
         }
         [Test]
@@ -96,7 +96,7 @@ namespace Coflnet.Payments.Services
             var rulesEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
             await AddRuleWithFlag(rulesEngine, Rule.RuleFlags.LONGER | Rule.RuleFlags.PERCENT );
 
-            var result = await rulesEngine.ApplyRules(productB, user);
+            var result = await rulesEngine.GetAdjusted(productB, user);
             Assert.AreEqual(240, result.ModifiedProduct.OwnershipSeconds);
         }
         [Test]
@@ -110,7 +110,7 @@ namespace Coflnet.Payments.Services
             await rulesEngine.AddOrUpdateRule(cheaperRule);
             await context.SaveChangesAsync();
 
-            var result = await rulesEngine.ApplyRules(productB, user);
+            var result = await rulesEngine.GetAdjusted(productB, user);
             Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
         }
 
