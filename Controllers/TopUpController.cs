@@ -69,7 +69,7 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("stripe")]
-        public async Task<IdResponse> CreateStripeSession(string userId, string productId, [FromBody] TopUpOptions topupotions = null)
+        public async Task<TopUpIdResponse> CreateStripeSession(string userId, string productId, [FromBody] TopUpOptions topupotions = null)
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
@@ -104,8 +104,6 @@ namespace Payments.Controllers
                           Metadata = metadata
                       }
                     },
-
-                   // Description = "Unlocks premium features: Subscribe to 100 Thrings, Search with multiple filters and you support the project :)",
                     Quantity = 1,
                   },
                 },
@@ -128,14 +126,8 @@ namespace Payments.Controllers
                 throw new Exception("Payment currently unavailable");
             }
 
-            return new IdResponse { Id = session.Id, DirctLink = session.Url };
+            return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };
         }
-        public class IdResponse
-        {
-            public string Id { get; set; }
-            public string DirctLink { get; set; }
-        }
-
 
 
         /// <summary>
@@ -147,7 +139,7 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("paypal")]
-        public async Task<IdResponse> CreatePayPal(string userId, string productId, [FromBody] TopUpOptions options = null)
+        public async Task<TopUpIdResponse> CreatePayPal(string userId, string productId, [FromBody] TopUpOptions options = null)
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
@@ -210,7 +202,7 @@ namespace Payments.Controllers
             {
                 Console.WriteLine("\t{0}: {1}\tCall Type: {2}", link.Rel, link.Href, link.Method);
             }
-            return new IdResponse()
+            return new TopUpIdResponse()
             {
                 DirctLink = result.Links.Where(l => l.Rel == "approve").FirstOrDefault().Href,
                 Id = result.Id
@@ -239,7 +231,7 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("custom")]
-        public async Task<IdResponse> CreateCustom(string userId, CustomTopUp topUp)
+        public async Task<TopUpIdResponse> CreateCustom(string userId, CustomTopUp topUp)
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(topUp.ProductId);
