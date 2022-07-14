@@ -2,6 +2,9 @@ using System.ComponentModel.DataAnnotations;
 
 namespace Coflnet.Payments.Models
 {
+    /// <summary>
+    /// Base class for Products 
+    /// </summary>
     public class Product
     {
         /// <summary>
