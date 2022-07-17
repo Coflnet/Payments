@@ -35,7 +35,7 @@ namespace Coflnet.Payments.Services
             var allrules = await db.Rules.ToListAsync();
             var owns = await db.Users.Where(u => u.Id == user.Id).Include(u => u.Owns).ThenInclude(o => o.Product).ThenInclude(p => p.Groups).SelectMany(u => u.Owns.SelectMany(o => o.Product.Groups)).ToListAsync();
             var groups = await db.Groups.Where(g => g.Products.Contains(product)).ToListAsync();
-            var rules = await db.Rules.Where(r => owns.Contains(r.Requires) && groups.Contains(r.Targets)).ToListAsync();
+            var rules = await db.Rules.Where(r => (owns.Contains(r.Requires) || r.Requires == null) && groups.Contains(r.Targets)).ToListAsync();
             var fakeProduct = new Product(product);
             var appliedRules = new List<Rule>();
             foreach (var rule in rules.OrderByDescending(r => r.Priority))
@@ -104,9 +104,9 @@ namespace Coflnet.Payments.Services
             var ruleFromDb = await db.Rules.FirstOrDefaultAsync(r => r.Slug == ruleCreate.Slug);
             if (ruleFromDb != null)
                 rule = ruleFromDb;
-            else 
+            else
                 db.Rules.Add(rule);
-            
+
             rule.Slug = ruleCreate.Slug;
             rule.Amount = ruleCreate.Amount;
             rule.Flags = ruleCreate.Flags;

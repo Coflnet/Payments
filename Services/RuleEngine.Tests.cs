@@ -113,6 +113,18 @@ namespace Coflnet.Payments.Services
             var result = await rulesEngine.GetAdjusted(productB, user);
             Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
         }
+        [Test]
+        public async Task RequiresNone()
+        {
+            var rulesEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
+            var cheaperRule = new RuleCreate() { Slug = "cheaperB", TargetsGroup = groupB.Slug, Priority = 1, Amount = 100, Flags = Rule.RuleFlags.LONGER };
+
+            await rulesEngine.AddOrUpdateRule(cheaperRule);
+            await context.SaveChangesAsync();
+
+            var result = await rulesEngine.GetAdjusted(productB, user);
+            Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
+        }
 
         PaymentContext CreateContext() => new PaymentContext(_contextOptions);
 

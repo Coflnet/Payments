@@ -82,7 +82,7 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpGet]
         [Route("user/{userId}")]
-        public async Task<IEnumerable<RuleResult>> GetAdjusted(string userId, IEnumerable<string> productSlugs)
+        public async Task<IEnumerable<RuleResult>> GetAdjusted(string userId, [FromQuery] IEnumerable<string> productSlugs)
         {
             var products = await db.Products.Where(p => productSlugs.Contains(p.Slug)).ToListAsync();
             var result = new List<RuleResult>();
