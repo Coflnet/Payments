@@ -34,6 +34,15 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public DbSet<TopUpProduct> TopUpProducts { get; set; }
+        /// <summary>
+        /// Groups of <see cref="Product"/>
+        /// </summary>
+        /// <value></value>
+        public DbSet<Group> Groups { get; set; }
+        /// <summary>
+        /// Rules to be applied before purchase
+        /// </summary>
+        public DbSet<Rule> Rules { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -64,6 +73,14 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<TopUpProduct>(entity =>
             {
                 entity.HasIndex(e => new { e.Slug, e.ProviderSlug }).IsUnique();
+            });
+            modelBuilder.Entity<Group>(entity =>
+            {
+                entity.HasIndex(e => e.Slug).IsUnique();
+            });
+            modelBuilder.Entity<Rule>(entity =>
+            {
+                entity.HasIndex(e => e.Slug).IsUnique();
             });
         }
     }

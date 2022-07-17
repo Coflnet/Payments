@@ -31,7 +31,7 @@ namespace Coflnet.Payments.Services
             var user = await GetAndInclude(userId, u => u.Include(u => u.Owns));
             if (user == null)
             {
-                user = new Coflnet.Payments.Models.User() { ExternalId = userId, Balance = 0 };
+                user = new Coflnet.Payments.Models.User() { ExternalId = userId, Balance = 0, Owns = new () };
                 db.Users.Add(user);
                 try
                 {
@@ -46,7 +46,8 @@ namespace Coflnet.Payments.Services
             }
             else
             {
-                user.AvailableBalance = user.Balance + await db.PlanedTransactions.Where(t => t.User == user && t.Amount < 0).SumAsync(t => t.Amount);
+                var select = db.PlanedTransactions.Where(t => t.User == user && t.Amount < 0);
+                user.AvailableBalance = user.Balance + (await select.ToListAsync()).Sum(t => t.Amount);
             }
             return user;
         }

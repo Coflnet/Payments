@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using Newtonsoft.Json;
 
 namespace Coflnet.Payments.Models
 {
@@ -43,6 +45,12 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public ProductType Type { get; set; }
+        /// <summary>
+        /// Groups this product is in
+        /// </summary>
+        /// <value></value>
+        [JsonIgnore]
+        public List<Group> Groups { get; set; }
 
         /// <summary>
         /// Types of products
@@ -77,6 +85,52 @@ namespace Coflnet.Payments.Models
             /// The <see cref="Cost"/> is the minimal cost but can be increased
             /// </summary> 
             VARIABLE_PRICE = 32
+        }
+
+
+
+        /// <summary>
+        /// Copy constructor
+        /// </summary>
+        public Product(Product other)
+        {
+            Id = other.Id;
+            Title = other.Title;
+            Slug = other.Slug;
+            Description = other.Description;
+            Cost = other.Cost;
+            OwnershipSeconds = other.OwnershipSeconds;
+            Type = other.Type;
+            Groups = other.Groups;
+        }
+
+        /// <summary>
+        /// Initialises a new instance of the <see cref="Product"/> class.
+        /// </summary>
+        public Product()
+        {
+        }
+        /// <inheritdoc/>
+
+        public override string ToString()
+        {
+            return $"{Title} ({Slug})";
+        }
+        /// <inheritdoc/>
+
+        public override bool Equals(object obj)
+        {
+            if (obj is Product other)
+            {
+                return other.Id == Id;
+            }
+            return false;
+        }
+        /// <inheritdoc/>
+
+        public override int GetHashCode()
+        {
+            return Id.GetHashCode();
         }
     }
 }

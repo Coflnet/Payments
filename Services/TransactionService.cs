@@ -30,7 +30,7 @@ namespace Coflnet.Payments.Services
             db = context;
             this.userService = userService;
             this.transactionEventProducer = transactionEventProducer;
-            transferSettings = config.GetSection("TRANSFER").Get<TransferSettings>();
+            transferSettings = config?.GetSection("TRANSFER").Get<TransferSettings>();
 
         }
 

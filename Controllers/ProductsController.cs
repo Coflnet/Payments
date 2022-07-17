@@ -16,11 +16,15 @@ namespace Payments.Controllers
     {
         private readonly ILogger<ProductsController> _logger;
         private readonly PaymentContext db;
+        private readonly ProductService productService;
+        private readonly RuleEngine ruleEngine;
 
-        public ProductsController(ILogger<ProductsController> logger, PaymentContext context)
+        public ProductsController(ILogger<ProductsController> logger, PaymentContext context, ProductService productService, RuleEngine ruleEngine)
         {
             _logger = logger;
             db = context;
+            this.productService = productService;
+            this.ruleEngine = ruleEngine;
         }
 
         /// <summary>
@@ -43,7 +47,7 @@ namespace Payments.Controllers
         [Route("")]
         public async Task<IEnumerable<PurchaseableProduct>> GetAll(int offset = 0, int amount = 20)
         {
-            return await db.Products.Skip(offset).Take(amount).ToListAsync();
+            return await db.Products.OrderBy(p=>p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
         /// <summary>
@@ -54,7 +58,7 @@ namespace Payments.Controllers
         [Route("topup")]
         public async Task<IEnumerable<TopUpProduct>> GetTopupOptions(int offset = 0, int amount = 20)
         {
-            return await db.TopUpProducts.Skip(offset).Take(amount).ToListAsync();
+            return await db.TopUpProducts.OrderBy(p=>p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
 
@@ -66,33 +70,29 @@ namespace Payments.Controllers
         [Route("services")]
         public async Task<IEnumerable<PurchaseableProduct>> GetServices(int offset = 0, int amount = 20)
         {
-            return await db.Products.Where(p=>p.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE)).Skip(offset).Take(amount).ToListAsync();
+            return await db.Products.Where(p => p.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
+                        .OrderBy(p=>p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
-        [HttpPost]
-        [Route("")]
-        public async Task<PurchaseableProduct> CreateNew(PurchaseableProduct product)
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="productSlugs"></param>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("user/{userId}")]
+        public async Task<IEnumerable<RuleResult>> GetAdjusted(string userId, [FromQuery] IEnumerable<string> productSlugs)
         {
-            db.Add(product);
-            await db.SaveChangesAsync();
-            return await GetProduct(product);
-        }
-        [HttpPost]
-        [Route("topup")]
-        public async Task<TopUpProduct> CreateNewTopup(TopUpProduct product)
-        {
-            db.Add(product);
-            await db.SaveChangesAsync();
-            return product;
-        }
-
-        private async Task<PurchaseableProduct> GetProduct(PurchaseableProduct product)
-        {
-            return await db.Products.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
-        }
-        private async Task<TopUpProduct> GetTopupProduct(TopUpProduct product)
-        {
-            return await db.TopUpProducts.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
+            var products = await db.Products.Where(p => productSlugs.Contains(p.Slug)).ToListAsync();
+            var result = new List<RuleResult>();
+            var user = await db.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
+            foreach (var product in products)
+            {
+                var ruleResult = await ruleEngine.GetAdjusted(product, user);
+                result.Add(ruleResult);
+            }
+            return result;
         }
 
         /// <summary>
@@ -105,12 +105,7 @@ namespace Payments.Controllers
         [Route("")]
         public async Task<PurchaseableProduct> UpdateProduct(PurchaseableProduct product)
         {
-            var oldProduct = await GetProduct(product);
-            InvalidateProduct(oldProduct);
-
-            db.Add(product);
-            await db.SaveChangesAsync();
-            return await db.Products.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
+            return await productService.UpdateOrAddProduct(product);
         }
 
         /// <summary>
@@ -123,24 +118,7 @@ namespace Payments.Controllers
         [Route("topup")]
         public async Task<TopUpProduct> UpdateTopUpProduct(TopUpProduct product)
         {
-            var oldProduct = await GetTopupProduct(product);
-            InvalidateProduct(oldProduct);
-
-            db.Add(product);
-            await db.SaveChangesAsync();
-            return await db.TopUpProducts.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
-        }
-
-        private void InvalidateProduct(Product oldProduct)
-        {
-            if (oldProduct != null)
-            {
-                // change the old slug
-                var newSlug = oldProduct.Slug.Truncate(18) + Convert.ToBase64String(BitConverter.GetBytes(DateTime.UtcNow.Ticks % 100000).Reverse().ToArray());
-                oldProduct.Slug = newSlug.Truncate(20);
-                oldProduct.Type |= Product.ProductType.DISABLED;
-                db.Update(oldProduct);
-            }
+            return await productService.UpdateTopUpProduct(product);
         }
     }
 }
