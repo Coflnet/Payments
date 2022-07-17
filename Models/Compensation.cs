@@ -1,3 +1,5 @@
+using System;
+
 namespace Coflnet.Payments.Models
 {
     public class Compensation
@@ -5,5 +7,6 @@ namespace Coflnet.Payments.Models
         public string ProductId { get; set; }
         public string Reference { get; set; }
         public int Amount { get; set; }
+        public DateTime When { get; set; }
     }
 }
