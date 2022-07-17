@@ -5,7 +5,7 @@ using Newtonsoft.Json;
 namespace Coflnet.Payments.Models
 {
     /// <summary>
-    /// A product that can be purchased
+    /// Base class for Products 
     /// </summary>
     public class Product
     {
