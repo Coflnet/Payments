@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using System;
+using System.Collections.Generic;
 
 namespace Coflnet.Payments.Services
 {
@@ -33,6 +34,15 @@ namespace Coflnet.Payments.Services
                 throw new ApiException($"Group {groupId} not found");
             }
             return group;
+        }
+
+        internal async Task ApplyGroupList(Dictionary<string, string[]> groups)
+        {
+            foreach (var group in groups)
+            {
+                await GetOrAddGroup(group.Key);
+                await UpdateProductsInGroup(group.Key, group.Value);
+            }
         }
 
         /// <summary>

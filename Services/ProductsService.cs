@@ -85,12 +85,44 @@ public class ProductService
     public async Task<TopUpProduct> UpdateTopUpProduct(TopUpProduct product)
     {
         var oldProduct = await GetTopupProduct(product.Slug, false);
+        if (product.Equals(oldProduct))
+            return oldProduct;
         InvalidateProduct(oldProduct);
 
         db.Add(product);
         await groupService.AddProductToGroup(product, product.Slug);
         await db.SaveChangesAsync();
         return await db.TopUpProducts.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
+    }
+
+    public async Task ApplyProductList(List<PurchaseableProduct> products)
+    {
+        await BatchApply(products, db.Products);
+    }
+    public async Task ApplyTopupList(List<TopUpProduct> products)
+    {
+        await BatchApply(products, db.TopUpProducts);
+    }
+
+    private async Task BatchApply<T>(List<T> products, DbSet<T> table) where T : Product
+    {
+        var slugs = products.Select(p => p.Slug).ToHashSet();
+        var existingProducts = await table.Where(p => slugs.Contains(p.Slug)).ToListAsync();
+        var toDeactivate = await table.Where(p => !slugs.Contains(p.Slug) && !p.Type.HasFlag(Product.ProductType.DISABLED)).ToListAsync();
+        foreach (var product in products)
+        {
+            var existing = existingProducts.FirstOrDefault(p => p.Slug == product.Slug);
+            if (product.Equals(existing))
+                continue;
+            InvalidateProduct(existing);
+            db.Add(product);
+            await groupService.AddProductToGroup(product, product.Slug);
+        }
+        foreach (var product in toDeactivate)
+        {
+            product.Type |= Product.ProductType.DISABLED;
+        }
+        await db.SaveChangesAsync();
     }
 
     private void InvalidateProduct(Product oldProduct)
@@ -102,7 +134,6 @@ public class ProductService
         oldProduct.Slug = newSlug.Truncate(20);
         oldProduct.Type |= Product.ProductType.DISABLED;
         db.Update(oldProduct);
-
     }
 }
 

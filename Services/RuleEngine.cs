@@ -70,6 +70,17 @@ namespace Coflnet.Payments.Services
             };
         }
 
+        internal async Task ApplyRuleList(List<RuleCreate> rules)
+        {
+            foreach (var item in rules)
+            {
+                await AddOrUpdateRule(item);
+            }
+            var toDelete = await db.Rules.Where(r => !rules.Select(r => r.Slug).Contains(r.Slug)).ToListAsync();
+            db.Rules.RemoveRange(toDelete);
+            await db.SaveChangesAsync();
+        }
+
         internal async Task AddOrUpdateRule(RuleCreate ruleCreate)
         {
             // check validity

@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 
 namespace Coflnet.Payments.Models
@@ -22,5 +24,36 @@ namespace Coflnet.Payments.Models
         /// <value></value>
         [MaxLength(16)]
         public string ProviderSlug { get; set; }
+
+        public override bool Equals(object obj)
+        {
+            return obj is TopUpProduct product &&
+                   base.Equals(obj) &&
+                   Title == product.Title &&
+                   Slug == product.Slug &&
+                   Description == product.Description &&
+                   Cost == product.Cost &&
+                   OwnershipSeconds == product.OwnershipSeconds &&
+                   Type == product.Type &&
+                   Price == product.Price &&
+                   CurrencyCode == product.CurrencyCode &&
+                   ProviderSlug == product.ProviderSlug;
+        }
+
+        public override int GetHashCode()
+        {
+            HashCode hash = new HashCode();
+            hash.Add(base.GetHashCode());
+            hash.Add(Title);
+            hash.Add(Slug);
+            hash.Add(Description);
+            hash.Add(Cost);
+            hash.Add(OwnershipSeconds);
+            hash.Add(Type);
+            hash.Add(Price);
+            hash.Add(CurrencyCode);
+            hash.Add(ProviderSlug);
+            return hash.ToHashCode();
+        }
     }
 }

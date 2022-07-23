@@ -94,7 +94,7 @@ namespace Coflnet.Payments.Services
         public async Task ExtendPercentage()
         {
             var rulesEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
-            await AddRuleWithFlag(rulesEngine, Rule.RuleFlags.LONGER | Rule.RuleFlags.PERCENT );
+            await AddRuleWithFlag(rulesEngine, Rule.RuleFlags.LONGER | Rule.RuleFlags.PERCENT);
 
             var result = await rulesEngine.GetAdjusted(productB, user);
             Assert.AreEqual(240, result.ModifiedProduct.OwnershipSeconds);
@@ -130,5 +130,4 @@ namespace Coflnet.Payments.Services
 
         public void Dispose() => _connection.Dispose();
     }
-
 }

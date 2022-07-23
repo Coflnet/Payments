@@ -143,8 +143,6 @@ namespace Payments.Controllers
         }
 
 
-
-
         /// <summary>
         /// Purchase a new product if enough funds are available
         /// </summary>
@@ -157,7 +155,5 @@ namespace Payments.Controllers
         {
             return await transactionService.Transfer(userId, request.TargetUser, (decimal)request.Amount, request.Reference);
         }
-
-
     }
 }
