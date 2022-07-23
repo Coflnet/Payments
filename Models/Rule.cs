@@ -46,6 +46,7 @@ public class Rule
     /// <summary>
     /// Flags modifying a <see cref="Rule"/>
     /// </summary>
+    [Flags]
     public enum RuleFlags
     {
         /// <summary>
