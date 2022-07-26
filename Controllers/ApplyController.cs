@@ -35,7 +35,7 @@ namespace Payments.Controllers
             if(state.Products == null || state.Products.Count == 0)
                 throw new ApiException("No products provided, this is likely an mistake, blocking applying of state");
             await productService.ApplyProductList(state.Products);
-            await productService.ApplyTopupList(state.TopUpProducts);
+            await productService.ApplyTopupList(state.TopUps);
             await groupService.ApplyGroupList(state.Groups);
             await ruleEngine.ApplyRuleList(state.Rules);
         }

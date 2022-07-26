@@ -112,8 +112,12 @@ public class ProductService
         foreach (var product in products)
         {
             var existing = existingProducts.FirstOrDefault(p => p.Slug == product.Slug);
-            if (product.Equals(existing))
-                continue;
+            if (product.Cost == existing?.Cost
+                && product.Title == existing?.Title
+                && product.Description == existing?.Description
+                && product.Type == existing?.Type
+                && product.OwnershipSeconds == existing?.OwnershipSeconds)
+                continue; // nothing changed
             InvalidateProduct(existing);
             db.Add(product);
             await groupService.AddProductToGroup(product, product.Slug);
@@ -130,8 +134,8 @@ public class ProductService
         if (oldProduct == null)
             return;
         // change the old slug
-        var newSlug = oldProduct.Slug.Truncate(18) + Convert.ToBase64String(BitConverter.GetBytes(DateTime.UtcNow.Ticks % 100000).Reverse().ToArray());
-        oldProduct.Slug = newSlug.Truncate(20);
+        var newSlug = oldProduct.Slug.Truncate(18) + Convert.ToBase64String(BitConverter.GetBytes(DateTime.UtcNow.Ticks % 10_000_000).Reverse().ToArray());
+        oldProduct.Slug = newSlug.Truncate(32);
         oldProduct.Type |= Product.ProductType.DISABLED;
         db.Update(oldProduct);
     }

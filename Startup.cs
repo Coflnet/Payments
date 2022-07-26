@@ -18,6 +18,7 @@ using Newtonsoft.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using hypixel;
+using Newtonsoft.Json.Converters;
 
 namespace Coflnet.Payments
 {
@@ -35,12 +36,14 @@ namespace Coflnet.Payments
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
-
-            services.AddControllers().AddNewtonsoftJson();
-            services.AddSwaggerGen(c =>
+            services.AddControllers().AddNewtonsoftJson(json =>
+            {
+                json.SerializerSettings.Converters.Add(new StringEnumConverter());
+            });
+            services.AddSwaggerGenNewtonsoftSupport().AddSwaggerGen(c =>
             {
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Payments", Version = "0.0.1", License = new OpenApiLicense { Name = "MIT" } });
-            // Set the comments path for the Swagger JSON and UI.
+                // Set the comments path for the Swagger JSON and UI.
                 var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
                 var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
                 c.IncludeXmlComments(xmlPath);

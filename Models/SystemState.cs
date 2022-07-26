@@ -15,7 +15,7 @@ public class SystemState
     /// <summary>
     /// Topups that are currently active
     /// </summary>
-    public List<TopUpProduct> TopUpProducts { get; set; }
+    public List<TopUpProduct> TopUps { get; set; }
     /// <summary>
     /// What products go into which groups
     /// </summary>

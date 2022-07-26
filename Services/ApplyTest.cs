@@ -54,7 +54,7 @@ namespace Coflnet.Payments.Services
         {
             await applyController.ApplyState(new SystemState()
             {
-                TopUpProducts = new List<TopUpProduct>()
+                TopUps = new List<TopUpProduct>()
                 {
                     new TopUpProduct()
                     {
