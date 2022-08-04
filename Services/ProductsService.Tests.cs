@@ -39,17 +39,22 @@ public class ProductsServiceTests
         groupService = new GroupService(NullLogger<GroupService>.Instance, context);
         service = new ProductService(NullLogger<ProductService>.Instance, context, groupService);
 
-        purchaseableProduct = new PurchaseableProduct
-        {
-            Title = "Test",
-            Slug = "test",
-            Description = "Test",
-            Cost = 1,
-            OwnershipSeconds = 1,
-            Type = Product.ProductType.COLLECTABLE
-        };
+        purchaseableProduct = CreateProduct("test", Product.ProductType.SERVICE);
 
         context.SaveChanges();
+    }
+
+    private static PurchaseableProduct CreateProduct(string slug, Product.ProductType type)
+    {
+        return new PurchaseableProduct
+        {
+            Title = "Test",
+            Slug = slug,
+            Description = "Test",
+            Cost = 1,
+            OwnershipSeconds = 10,
+            Type = type
+        };
     }
 
     [Test]
@@ -106,7 +111,7 @@ public class ProductsServiceTests
         var product = purchaseableProduct;
 
         var userService = new UserService(NullLogger<UserService>.Instance, context);
-        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null);
+        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, null);
         var userController = new UserController(NullLogger<UserController>.Instance, context, transactionService, userService);
         
         await service.UpdateOrAddProduct(product);
@@ -134,6 +139,45 @@ public class ProductsServiceTests
         await userController.Purchase("u1", "different");
         var expires = await userController.GetLongest("u1", new(){"mygroup"});
         Assert.Greater(expires, DateTime.UtcNow.AddSeconds(10));
+    }
+
+    [Test]
+    public async Task InGroupExtendsBaseService()
+    {
+        var userService = new UserService(NullLogger<UserService>.Instance, context);
+        var groupService = new GroupService(NullLogger<GroupService>.Instance, context);
+        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, groupService);
+
+        purchaseableProduct.Type = Product.ProductType.SERVICE;
+        var lowTierProduct = CreateProduct("b", Product.ProductType.SERVICE);
+        await service.UpdateOrAddProduct(lowTierProduct);
+        await groupService.AddProductToGroup(purchaseableProduct, purchaseableProduct.Slug);
+        await groupService.AddProductToGroup(purchaseableProduct, "b");
+
+        var user = await userService.GetOrCreate("u1");
+        user.Balance = 10000;
+        await context.SaveChangesAsync();
+
+        var groups = await groupService.GetGroup("b");
+        var testgroups = await groupService.GetGroup("test");
+
+        await transactionService.PurchaseServie(purchaseableProduct.Slug, user.ExternalId, 1, "test");
+
+        var allOwnerShips = context.Users.SelectMany(u => u.Owns);
+        Assert.AreEqual(2, allOwnerShips.Count());
+        var expiry = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        // both services expire in 10 seconds
+        Assert.That(allOwnerShips.First(o=>o.Product == lowTierProduct).Expires, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
+        Assert.That(allOwnerShips.First(o=>o.Product == purchaseableProduct).Expires, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
+
+
+        await transactionService.PurchaseServie(lowTierProduct.Slug, user.ExternalId, 1, "test");
+        allOwnerShips = context.Users.SelectMany(u => u.Owns);
+        Assert.AreEqual(2, allOwnerShips.Count());
+        // only one product has been extended
+        Assert.That(allOwnerShips.First(o=>o.Product == lowTierProduct).Expires, Is.EqualTo(DateTime.UtcNow + TimeSpan.FromSeconds(20)).Within(TimeSpan.FromSeconds(1)));
+        Assert.That(allOwnerShips.First(o=>o.Product == purchaseableProduct).Expires, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
+
     }
 
     public class NullTransationProducer : ITransactionEventProducer

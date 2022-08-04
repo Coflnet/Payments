@@ -18,20 +18,22 @@ namespace Coflnet.Payments.Services
         private ITransactionEventProducer transactionEventProducer;
         private decimal transactionDeflationRate { get; set; }
         private TransferSettings transferSettings { get; set; }
+        private GroupService groupService;
 
         public TransactionService(
             ILogger<TransactionService> logger,
             PaymentContext context,
             UserService userService,
             ITransactionEventProducer transactionEventProducer,
-            IConfiguration config)
+            IConfiguration config,
+            GroupService groupService)
         {
             this.logger = logger;
             db = context;
             this.userService = userService;
             this.transactionEventProducer = transactionEventProducer;
             transferSettings = config?.GetSection("TRANSFER").Get<TransferSettings>();
-
+            this.groupService = groupService;
         }
 
         /// <summary>
@@ -142,13 +144,9 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task PurchaseProduct(string productSlug, string userId, decimal price = 0)
         {
-            var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
-            if(product == null)
-                throw new ApiException($"product {productSlug} could not be found ");
+            PurchaseableProduct product = await GetProduct(productSlug);
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
-            if (product.Type == PurchaseableProduct.ProductType.DISABLED)
-                throw new ApiException("product can't be purchased");
             var user = await userService.GetOrCreate(userId);
             if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
                 throw new ApiException("already owned");
@@ -164,11 +162,19 @@ namespace Coflnet.Payments.Services
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
-        public async Task PurchaseServie(string productSlug, string userId, int count, string reference)
+        private async Task<PurchaseableProduct> GetProduct(string productSlug)
         {
             var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
-            if (product.Type.HasFlag(PurchaseableProduct.ProductType.DISABLED))
+            if (product == null)
+                throw new ApiException($"product {productSlug} could not be found ");
+            if (product.Type == PurchaseableProduct.ProductType.DISABLED)
                 throw new ApiException("product can't be purchased");
+            return product;
+        }
+
+        public async Task PurchaseServie(string productSlug, string userId, int count, string reference)
+        {
+            var product = await GetProduct(productSlug);
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
             var user = await userService.GetOrCreate(userId);
@@ -179,23 +185,39 @@ namespace Coflnet.Payments.Services
             if (user.AvailableBalance < price)
                 throw new ApiException("insuficcient balance");
 
+            var groupsToExtend = await groupService.GetProductGroupsForProduct(product);
+
             await db.Database.BeginTransactionAsync();
             var transactionEvent = await CreateTransaction(product, user, price * -1, reference);
             var time = TimeSpan.FromSeconds(product.OwnershipSeconds * count);
             if (existingOwnerShip.Any())
             {
-                var currentTime = existingOwnerShip.First().Expires;
-                if(currentTime < DateTime.UtcNow)
-                    existingOwnerShip.First().Expires = DateTime.Now + time;
-                else
-                    existingOwnerShip.First().Expires += time;
+                ExpandOwnership(existingOwnerShip.First(), time);
             }
             else
                 user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow + time, Product = product, User = user });
+            var ownerShips = user.Owns?.Where(p => groupsToExtend.Any(gp => gp == p.Product)).ToList() ?? new List<OwnerShip>();
+            foreach (var item in groupsToExtend)
+            {
+                var match = ownerShips.Where(o => o.Product == item).FirstOrDefault();
+                if(match != null)
+                    ExpandOwnership(match, time);
+                else 
+                    user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow + time, Product = item, User = user });
+            }
             db.Update(user);
             await db.SaveChangesAsync();
             await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
+        }
+
+        private static void ExpandOwnership(OwnerShip existingOwnerShip, TimeSpan time)
+        {
+            var currentTime = existingOwnerShip.Expires;
+            if (currentTime < DateTime.UtcNow)
+                existingOwnerShip.Expires = DateTime.Now + time;
+            else
+                existingOwnerShip.Expires += time;
         }
 
         internal async Task<TransactionEvent> Transfer(string userId, string targetUserId, decimal changeamount, string reference)

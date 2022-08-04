@@ -127,7 +127,7 @@ namespace Payments.Controllers
         }
 
         /// <summary>
-        /// Purchase a new product if enough funds are available
+        /// Purchase/extends a service if enough funds are available
         /// </summary>
         /// <param name="userId"></param>
         /// <param name="productSlug"></param>
@@ -144,7 +144,7 @@ namespace Payments.Controllers
 
 
         /// <summary>
-        /// Purchase a new product if enough funds are available
+        /// Transfers coins to another user
         /// </summary>
         /// <param name="userId"></param>
         /// <param name="request"></param>

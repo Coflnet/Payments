@@ -92,6 +92,12 @@ namespace Coflnet.Payments.Services
 
             return group;
         }
+
+        internal async Task<IEnumerable<PurchaseableProduct>> GetProductGroupsForProduct(PurchaseableProduct id)
+        {
+            return (await db.Products.Where(p => p == id).SelectMany(p => p.Groups.SelectMany(g => g.Products.Where(pi => pi.Slug == g.Slug))).ToListAsync())
+                .Select(p => p as PurchaseableProduct).Where(p => p != null && p.Slug != id.Slug);
+        }
     }
 
 }
