@@ -54,8 +54,10 @@ namespace Coflnet.Payments.Services
         public async Task UpdateProductsInGroup(string groupId, string[] productSlugs)
         {
             var group = await GetGroup(groupId);
-            var products = await db.Products.Where(p => productSlugs.Contains(p.Slug) || p.Slug == groupId).ToListAsync();
+            var currentIds = group.Products.Select(p => p.Id).ToList();
+            var products = await db.Products.Where(p => productSlugs.Contains(p.Slug) || p.Slug == groupId || p.Type.HasFlag(Product.ProductType.DISABLED) && currentIds.Contains(p.Id)).ToListAsync();
             group.Products = products.Select(p => (Product)p).ToList();
+            Console.WriteLine(groupId + Newtonsoft.Json.JsonConvert.SerializeObject(products, Newtonsoft.Json.Formatting.Indented));
             await db.SaveChangesAsync();
         }
 
