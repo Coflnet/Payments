@@ -57,7 +57,6 @@ namespace Coflnet.Payments.Services
             var currentIds = group.Products.Select(p => p.Id).ToList();
             var products = await db.Products.Where(p => productSlugs.Contains(p.Slug) || p.Slug == groupId || p.Type.HasFlag(Product.ProductType.DISABLED) && currentIds.Contains(p.Id)).ToListAsync();
             group.Products = products.Select(p => (Product)p).ToList();
-            Console.WriteLine(groupId + Newtonsoft.Json.JsonConvert.SerializeObject(products, Newtonsoft.Json.Formatting.Indented));
             await db.SaveChangesAsync();
         }
 
@@ -97,7 +96,7 @@ namespace Coflnet.Payments.Services
 
         internal async Task<IEnumerable<PurchaseableProduct>> GetProductGroupsForProduct(PurchaseableProduct id)
         {
-            return (await db.Products.Where(p => p == id).SelectMany(p => p.Groups.SelectMany(g => g.Products.Where(pi => pi.Slug == g.Slug))).ToListAsync())
+            return (await db.Products.Where(p => p == id).SelectMany(p => p.Groups.SelectMany(g => g.Products.Where(pi => pi.Slug == g.Slug || pi.Type.HasFlag(Product.ProductType.DISABLED)))).ToListAsync())
                 .Select(p => p as PurchaseableProduct).Where(p => p != null && p.Slug != id.Slug);
         }
     }
