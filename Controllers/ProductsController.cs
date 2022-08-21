@@ -17,9 +17,9 @@ namespace Payments.Controllers
         private readonly ILogger<ProductsController> _logger;
         private readonly PaymentContext db;
         private readonly ProductService productService;
-        private readonly RuleEngine ruleEngine;
+        private readonly IRuleEngine ruleEngine;
 
-        public ProductsController(ILogger<ProductsController> logger, PaymentContext context, ProductService productService, RuleEngine ruleEngine)
+        public ProductsController(ILogger<ProductsController> logger, PaymentContext context, ProductService productService, IRuleEngine ruleEngine)
         {
             _logger = logger;
             db = context;
