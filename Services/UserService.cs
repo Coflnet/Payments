@@ -28,7 +28,7 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task<User> GetOrCreate(string userId)
         {
-            var user = await GetAndInclude(userId, u => u.Include(u => u.Owns));
+            var user = await GetAndInclude(userId, u => u.Include(u => u.Owns).ThenInclude(o=>o.Product));
             if (user == null)
             {
                 user = new Coflnet.Payments.Models.User() { ExternalId = userId, Balance = 0, Owns = new () };

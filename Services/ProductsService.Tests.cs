@@ -144,6 +144,7 @@ public class ProductsServiceTests
     [Test]
     public async Task InGroupExtendsBaseService()
     {
+        const string highTier = "test";
         var userService = new UserService(NullLogger<UserService>.Instance, context);
         var groupService = new GroupService(NullLogger<GroupService>.Instance, context);
         var ruleEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
@@ -160,12 +161,12 @@ public class ProductsServiceTests
         await context.SaveChangesAsync();
 
         var groups = await groupService.GetGroup(lowTierProduct.Slug);
-        var testgroups = await groupService.GetGroup("test");
+        var testgroups = await groupService.GetGroup(highTier);
 
 
         var allOwnerShipsPrev = await context.Users.SelectMany(u => u.Owns).ToListAsync();
 
-        await transactionService.PurchaseServie(extendsLowTier.Slug, user.ExternalId, 1, "test");
+        await transactionService.PurchaseServie(extendsLowTier.Slug, user.ExternalId, 1, highTier);
 
         var allOwnerShips = await context.Users.SelectMany(u => u.Owns).ToListAsync();
         //Assert.AreEqual(2, allOwnerShips.Count());
@@ -177,12 +178,19 @@ public class ProductsServiceTests
         Assert.That(allOwnerShips.First(o => o.Product == extendsLowTier).Expires, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
 
 
-        await transactionService.PurchaseServie(lowTierProduct.Slug, user.ExternalId, 1, "test");
+        await transactionService.PurchaseServie(lowTierProduct.Slug, user.ExternalId, 1, highTier);
         allOwnerShips = await context.Users.SelectMany(u => u.Owns).ToListAsync();
-        Assert.AreEqual(2, allOwnerShips.Count());
+        Assert.AreEqual(2, allOwnerShips.Count(), Newtonsoft.Json.JsonConvert.SerializeObject(allOwnerShips,Newtonsoft.Json.Formatting.Indented));
         // only one product has been extended
         Assert.That(await userService.GetLongest(user.ExternalId, new() { lowTierProduct.Slug }), Is.EqualTo(DateTime.UtcNow + TimeSpan.FromSeconds(20)).Within(TimeSpan.FromSeconds(1)));
         Assert.That(await userService.GetLongest(user.ExternalId, new() { extendsLowTier.Slug }), Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
+
+        // product has been extended again
+        await transactionService.PurchaseServie(lowTierProduct.Slug, user.ExternalId, 1, "second buy");
+        Assert.That(await userService.GetLongest(user.ExternalId, new() { lowTierProduct.Slug }), Is.EqualTo(DateTime.UtcNow + TimeSpan.FromSeconds(30)).Within(TimeSpan.FromSeconds(1)));
+        // product has been extended again
+        await transactionService.PurchaseServie(extendsLowTier.Slug, user.ExternalId, 1, "second buy");
+        Assert.That(await userService.GetLongest(user.ExternalId, new() { lowTierProduct.Slug }), Is.EqualTo(DateTime.UtcNow + TimeSpan.FromSeconds(40)).Within(TimeSpan.FromSeconds(1)));
 
     }
 

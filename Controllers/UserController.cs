@@ -100,13 +100,36 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("{userId}/owns")]
+        [Obsolete("lookup with {userId}/owns/until")]
         public async Task<IEnumerable<OwnerShip>> GetAllOwnerships(string userId, [FromBody] HashSet<string> slugs)
         {
             var user = await GetOrCreate(userId);
             var select = db.Users.Where(u => u.ExternalId == userId)
-                    .Include(p=>p.Owns).ThenInclude(o=>o.Product)
-                    .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g=>slugs.Contains(g.Slug))));
+                    .Include(p => p.Owns).ThenInclude(o => o.Product)
+                    .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))));
             return await select.ToListAsync();
+        }
+
+        /// <summary>
+        /// Returns all ownership data for an user out of a list of interested 
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="slugs"></param>
+        /// <returns></returns>
+        [HttpPost]
+        [Route("{userId}/owns/until")]
+        public async Task<Dictionary<string, DateTime>> GetAllOwnershipsLookup(string userId, [FromBody] HashSet<string> slugs)
+        {
+            var user = await GetOrCreate(userId);
+            var select = db.Users.Where(u => u.ExternalId == userId)
+                    .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))))
+                    .SelectMany(p => p.Product.Groups, (o, group) => new { o.Expires, group.Slug })
+                    .AsNoTracking();
+            var result = await select.ToListAsync();
+            return result.GroupBy(r => r.Slug)
+                .Select(g => g.OrderByDescending(r => r.Expires).First())
+                .Where(r=>slugs.Contains(r.Slug))
+                .ToDictionary(r => r.Slug, r => r.Expires);
         }
 
         /// <summary>

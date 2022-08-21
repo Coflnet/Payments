@@ -183,27 +183,34 @@ namespace Coflnet.Payments.Services
 
             var user = await userService.GetOrCreate(userId);
             var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
-            var existingOwnerShip = user.Owns?.Where(p => p.Product.Id == adjustedProduct.Id) ?? new List<OwnerShip>();
+            var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
                 throw new ApiException("already owned for too long");
             var price = adjustedProduct.Cost * count;
             if (user.AvailableBalance < price)
                 throw new ApiException("insuficcient balance");
 
+            var allProductsToExtend = await db.Products.Where(p => p.Slug == productSlug).SelectMany(p => p.Groups, (p, g) => g.Products.Where(p => p.Slug == g.Slug).First()).ToListAsync();
 
             await db.Database.BeginTransactionAsync();
             var transactionEvent = await CreateTransaction(dbProduct, user, price * -1, reference, adjustedProduct.OwnershipSeconds);
             var time = TimeSpan.FromSeconds(adjustedProduct.OwnershipSeconds * count);
-            var existingExpiry = await userService.GetLongest(userId, new() { productSlug });
-            var newExpiry = GetNewExpiry(existingExpiry, time);
-            if (existingOwnerShip.Any())
+            foreach (var item in allProductsToExtend)
             {
-                existingOwnerShip.First().Expires = newExpiry;
+                var existingExpiry = await userService.GetLongest(userId, new() { item.Slug });
+                Console.WriteLine(item.Slug + " exires at " + existingExpiry);
+                var newExpiry = GetNewExpiry(existingExpiry, time);
+                existingOwnerShip = user.Owns?.Where(p => p.Product.Id == item.Id);
+                if (existingOwnerShip.Any())
+                {
+                    existingOwnerShip.First().Expires = newExpiry;
+                }
+                else
+                {
+                    user.Owns.Add(new OwnerShip() { Expires = newExpiry, Product = item as PurchaseableProduct, User = user });
+                }
             }
-            else
-            {
-                user.Owns.Add(new OwnerShip() { Expires = newExpiry, Product = dbProduct, User = user });
-            }
+
             db.Update(user);
             await db.SaveChangesAsync();
             await db.Database.CommitTransactionAsync();
