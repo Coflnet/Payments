@@ -19,6 +19,7 @@ namespace Coflnet.Payments.Services
         private decimal transactionDeflationRate { get; set; }
         private TransferSettings transferSettings { get; set; }
         private GroupService groupService;
+        private IRuleEngine ruleEngine;
 
         public TransactionService(
             ILogger<TransactionService> logger,
@@ -26,7 +27,8 @@ namespace Coflnet.Payments.Services
             UserService userService,
             ITransactionEventProducer transactionEventProducer,
             IConfiguration config,
-            GroupService groupService)
+            GroupService groupService,
+            IRuleEngine ruleEngine)
         {
             this.logger = logger;
             db = context;
@@ -34,6 +36,7 @@ namespace Coflnet.Payments.Services
             this.transactionEventProducer = transactionEventProducer;
             transferSettings = config?.GetSection("TRANSFER").Get<TransferSettings>();
             this.groupService = groupService;
+            this.ruleEngine = ruleEngine;
         }
 
         /// <summary>
@@ -52,9 +55,9 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("user doesn't exist");
             await db.Database.BeginTransactionAsync();
             var changeamount = product.Cost;
-            if(customAmount != 0)
-                if(customAmount < product.Cost)
-                throw new ApiException("custom amount is to smal for product");
+            if (customAmount != 0)
+                if (customAmount < product.Cost)
+                    throw new ApiException("custom amount is to smal for product");
                 else
                     changeamount = customAmount;
             await CreateAndProduceTransaction(product, user, changeamount, reference);
@@ -99,7 +102,7 @@ namespace Coflnet.Payments.Services
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
-        private async Task<TransactionEvent> CreateTransaction(Product product, User user, decimal changeamount, string reference = "")
+        private async Task<TransactionEvent> CreateTransaction(Product product, User user, decimal changeamount, string reference = "", long adjustedOwnerShipTime = 0)
         {
             var transaction = new FiniteTransaction()
             {
@@ -124,7 +127,7 @@ namespace Coflnet.Payments.Services
             {
                 Amount = Decimal.ToDouble(changeamount),
                 Id = transaction.Id,
-                OwnedSeconds = product.OwnershipSeconds,
+                OwnedSeconds = adjustedOwnerShipTime == 0 ? product.OwnershipSeconds : adjustedOwnerShipTime,
                 ProductId = product.Id,
                 ProductSlug = product.Slug,
                 Reference = reference,
@@ -174,36 +177,32 @@ namespace Coflnet.Payments.Services
 
         public async Task PurchaseServie(string productSlug, string userId, int count, string reference)
         {
-            var product = await GetProduct(productSlug);
-            if (!product.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
+            var dbProduct = await GetProduct(productSlug);
+            if (!dbProduct.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
+
             var user = await userService.GetOrCreate(userId);
-            var existingOwnerShip = user.Owns?.Where(p => p.Product == product) ?? new List<OwnerShip>();
+            var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
+            var existingOwnerShip = user.Owns?.Where(p => p.Product.Id == adjustedProduct.Id) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
                 throw new ApiException("already owned for too long");
-            var price = product.Cost * count;
+            var price = adjustedProduct.Cost * count;
             if (user.AvailableBalance < price)
                 throw new ApiException("insuficcient balance");
 
-            var groupsToExtend = await groupService.GetProductGroupsForProduct(product);
 
             await db.Database.BeginTransactionAsync();
-            var transactionEvent = await CreateTransaction(product, user, price * -1, reference);
-            var time = TimeSpan.FromSeconds(product.OwnershipSeconds * count);
+            var transactionEvent = await CreateTransaction(dbProduct, user, price * -1, reference, adjustedProduct.OwnershipSeconds);
+            var time = TimeSpan.FromSeconds(adjustedProduct.OwnershipSeconds * count);
+            var existingExpiry = await userService.GetLongest(userId, new() { productSlug });
+            var newExpiry = GetNewExpiry(existingExpiry, time);
             if (existingOwnerShip.Any())
             {
-                ExpandOwnership(existingOwnerShip.First(), time);
+                existingOwnerShip.First().Expires = newExpiry;
             }
             else
-                user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow + time, Product = product, User = user });
-            var ownerShips = user.Owns?.Where(p => groupsToExtend.Any(gp => gp == p.Product)).ToList() ?? new List<OwnerShip>();
-            foreach (var item in groupsToExtend)
             {
-                var match = ownerShips.Where(o => o.Product == item).FirstOrDefault();
-                if(match != null)
-                    ExpandOwnership(match, time);
-                else 
-                    user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow + time, Product = item, User = user });
+                user.Owns.Add(new OwnerShip() { Expires = newExpiry, Product = dbProduct, User = user });
             }
             db.Update(user);
             await db.SaveChangesAsync();
@@ -211,13 +210,12 @@ namespace Coflnet.Payments.Services
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
-        private static void ExpandOwnership(OwnerShip existingOwnerShip, TimeSpan time)
+        private static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
         {
-            var currentTime = existingOwnerShip.Expires;
             if (currentTime < DateTime.UtcNow)
-                existingOwnerShip.Expires = DateTime.Now + time;
+                return DateTime.UtcNow + time;
             else
-                existingOwnerShip.Expires += time;
+                return currentTime += time;
         }
 
         internal async Task<TransactionEvent> Transfer(string userId, string targetUserId, decimal changeamount, string reference)
@@ -225,10 +223,10 @@ namespace Coflnet.Payments.Services
             if (changeamount < 1)
                 throw new ApiException("The minimum transaction amount is 1");
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
-            var initiatingUser = await userService.GetAndInclude(userId, u=>u);
+            var initiatingUser = await userService.GetAndInclude(userId, u => u);
             var minTime = DateTime.UtcNow - TimeSpan.FromDays(30);
-            var transactionCount = db.FiniteTransactions.Where(t=>t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).Count();
-            if(transactionCount >= transferSettings.Limit)
+            var transactionCount = db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).Count();
+            if (transactionCount >= transferSettings.Limit)
                 throw new ApiException($"You reached the maximium of {transferSettings.Limit} transactions per {transferSettings.PeriodDays} days");
             var targetUser = await userService.GetOrCreate(targetUserId);
             await db.Database.BeginTransactionAsync();

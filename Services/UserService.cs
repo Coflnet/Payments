@@ -73,5 +73,12 @@ namespace Coflnet.Payments.Services
             var productList = await db.Groups.Where(g => g.Slug == slug).SelectMany(g => g.Products).Select(p=>p.Id).ToListAsync();
             return await db.Users.Where(u => u.Owns.Where(o => productList.Contains(o.Product.Id)  && o.Expires > when).Any()).ToListAsync();
         }
+
+        internal async Task<DateTime> GetLongest(string userId, HashSet<string> slugs)
+        {
+            return await db.Users.Where(u => u.ExternalId == userId)
+                    .Select(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g=>slugs.Contains(g.Slug)))
+                    .Select(p => p.Expires).OrderByDescending(p => p).FirstOrDefault()).OrderByDescending(p => p).FirstOrDefaultAsync();
+        }
     }
 }

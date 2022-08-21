@@ -17,7 +17,7 @@ public class ProductsServiceTests
     private PaymentContext context;
     private ProductService service;
     private GroupService groupService;
-    private PurchaseableProduct purchaseableProduct;
+    private PurchaseableProduct extendsLowTier;
     [SetUp]
     public async Task Setup()
     {
@@ -39,7 +39,7 @@ public class ProductsServiceTests
         groupService = new GroupService(NullLogger<GroupService>.Instance, context);
         service = new ProductService(NullLogger<ProductService>.Instance, context, groupService);
 
-        purchaseableProduct = CreateProduct("test", Product.ProductType.SERVICE);
+        extendsLowTier = CreateProduct("test", Product.ProductType.SERVICE);
 
         context.SaveChanges();
     }
@@ -60,7 +60,7 @@ public class ProductsServiceTests
     [Test]
     public async Task AddProduct()
     {
-        var product = purchaseableProduct;
+        var product = extendsLowTier;
         await service.UpdateOrAddProduct(product);
 
         var loadedProduct = await service.GetProduct("test");
@@ -97,7 +97,7 @@ public class ProductsServiceTests
     [Test]
     public async Task ProductIsInGroup()
     {
-        var product = purchaseableProduct;
+        var product = extendsLowTier;
         await service.UpdateOrAddProduct(product);
 
         await groupService.AddProductToGroup(product, "mygroup");
@@ -108,12 +108,12 @@ public class ProductsServiceTests
     [Test]
     public async Task UserOwnsProductInGroup()
     {
-        var product = purchaseableProduct;
+        var product = extendsLowTier;
 
         var userService = new UserService(NullLogger<UserService>.Instance, context);
-        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, null);
+        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, null, null);
         var userController = new UserController(NullLogger<UserController>.Instance, context, transactionService, userService);
-        
+
         await service.UpdateOrAddProduct(product);
 
         var otherProduct = new PurchaseableProduct
@@ -137,7 +137,7 @@ public class ProductsServiceTests
         user.Balance = 10000;
         await context.SaveChangesAsync();
         await userController.Purchase("u1", "different");
-        var expires = await userController.GetLongest("u1", new(){"mygroup"});
+        var expires = await userController.GetLongest("u1", new() { "mygroup" });
         Assert.Greater(expires, DateTime.UtcNow.AddSeconds(10));
     }
 
@@ -146,37 +146,43 @@ public class ProductsServiceTests
     {
         var userService = new UserService(NullLogger<UserService>.Instance, context);
         var groupService = new GroupService(NullLogger<GroupService>.Instance, context);
-        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, groupService);
+        var ruleEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
+        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, groupService, ruleEngine);
 
-        purchaseableProduct.Type = Product.ProductType.SERVICE;
-        var lowTierProduct = CreateProduct("b", Product.ProductType.SERVICE);
+        extendsLowTier.Type = Product.ProductType.SERVICE;
+        var lowTierProduct = CreateProduct("lowTier", Product.ProductType.SERVICE);
         await service.UpdateOrAddProduct(lowTierProduct);
-        await groupService.AddProductToGroup(purchaseableProduct, purchaseableProduct.Slug);
-        await groupService.AddProductToGroup(purchaseableProduct, "b");
+        await groupService.AddProductToGroup(extendsLowTier, extendsLowTier.Slug);
+        await groupService.AddProductToGroup(extendsLowTier, lowTierProduct.Slug);
 
         var user = await userService.GetOrCreate("u1");
         user.Balance = 10000;
         await context.SaveChangesAsync();
 
-        var groups = await groupService.GetGroup("b");
+        var groups = await groupService.GetGroup(lowTierProduct.Slug);
         var testgroups = await groupService.GetGroup("test");
 
-        await transactionService.PurchaseServie(purchaseableProduct.Slug, user.ExternalId, 1, "test");
 
-        var allOwnerShips = context.Users.SelectMany(u => u.Owns);
-        Assert.AreEqual(2, allOwnerShips.Count());
+        var allOwnerShipsPrev = await context.Users.SelectMany(u => u.Owns).ToListAsync();
+
+        await transactionService.PurchaseServie(extendsLowTier.Slug, user.ExternalId, 1, "test");
+
+        var allOwnerShips = await context.Users.SelectMany(u => u.Owns).ToListAsync();
+        //Assert.AreEqual(2, allOwnerShips.Count());
         var expiry = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        Console.WriteLine("expiry: " +expiry);
         // both services expire in 10 seconds
-        Assert.That(allOwnerShips.First(o=>o.Product == lowTierProduct).Expires, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
-        Assert.That(allOwnerShips.First(o=>o.Product == purchaseableProduct).Expires, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
+        Assert.That(await userService.GetLongest(user.ExternalId, new() { extendsLowTier.Slug }), Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
+        Assert.That(await userService.GetLongest(user.ExternalId, new() { lowTierProduct.Slug }), Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
+        Assert.That(allOwnerShips.First(o => o.Product == extendsLowTier).Expires, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
 
 
         await transactionService.PurchaseServie(lowTierProduct.Slug, user.ExternalId, 1, "test");
-        allOwnerShips = context.Users.SelectMany(u => u.Owns);
+        allOwnerShips = await context.Users.SelectMany(u => u.Owns).ToListAsync();
         Assert.AreEqual(2, allOwnerShips.Count());
         // only one product has been extended
-        Assert.That(allOwnerShips.First(o=>o.Product == lowTierProduct).Expires, Is.EqualTo(DateTime.UtcNow + TimeSpan.FromSeconds(20)).Within(TimeSpan.FromSeconds(1)));
-        Assert.That(allOwnerShips.First(o=>o.Product == purchaseableProduct).Expires, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
+        Assert.That(await userService.GetLongest(user.ExternalId, new() { lowTierProduct.Slug }), Is.EqualTo(DateTime.UtcNow + TimeSpan.FromSeconds(20)).Within(TimeSpan.FromSeconds(1)));
+        Assert.That(await userService.GetLongest(user.ExternalId, new() { extendsLowTier.Slug }), Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
 
     }
 

@@ -8,10 +8,17 @@ using System.Collections.Generic;
 
 namespace Coflnet.Payments.Services
 {
+    public interface IRuleEngine
+    {
+        Task ApplyRuleList(List<RuleCreate> rules);
+        Task<RuleResult> GetAdjusted(Product product, User user);
+    }
+
+
     /// <summary>
     /// Applies rules to a product based on user ownership
     /// </summary>
-    public class RuleEngine
+    public class RuleEngine : IRuleEngine
     {
         private ILogger<RuleEngine> logger;
         private PaymentContext db;
@@ -70,7 +77,7 @@ namespace Coflnet.Payments.Services
             };
         }
 
-        internal async Task ApplyRuleList(List<RuleCreate> rules)
+        public async Task ApplyRuleList(List<RuleCreate> rules)
         {
             foreach (var item in rules)
             {

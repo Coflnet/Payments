@@ -59,7 +59,7 @@ namespace Coflnet.Payments
             services.AddScoped<TransactionService>();
             services.AddScoped<UserService>();
             services.AddSingleton<ExchangeService>();
-            services.AddScoped<RuleEngine>();
+            services.AddScoped<IRuleEngine, RuleEngine>();
             services.AddScoped<Services.ProductService>();
             services.AddScoped<GroupService>();
 

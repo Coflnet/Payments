@@ -90,9 +90,7 @@ namespace Payments.Controllers
         [Route("{userId}/owns/longest")]
         public async Task<DateTime> GetLongest(string userId, [FromBody] HashSet<string> slugs)
         {
-            return await db.Users.Where(u => u.ExternalId == userId)
-                    .Select(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g=>slugs.Contains(g.Slug)))
-                    .Select(p => p.Expires).OrderByDescending(p => p).FirstOrDefault()).FirstOrDefaultAsync();
+            return await userService.GetLongest(userId, slugs);
         }
         /// <summary>
         /// Returns all ownership data for an user out of a list of interested 
