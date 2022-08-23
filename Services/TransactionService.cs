@@ -50,17 +50,14 @@ namespace Coflnet.Payments.Services
         public async Task AddTopUp(int productId, string userId, string reference, long customAmount = 0)
         {
             var product = db.TopUpProducts.Where(p => p.Id == productId).FirstOrDefault();
-            var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
-            if (user == null)
-                throw new ApiException("user doesn't exist");
-            await db.Database.BeginTransactionAsync();
+
             var changeamount = product.Cost;
             if (customAmount != 0)
                 if (customAmount < product.Cost)
                     throw new ApiException("custom amount is to smal for product");
                 else
                     changeamount = customAmount;
-            await CreateAndProduceTransaction(product, user, changeamount, reference);
+            await CreateTransactionInTransaction(product, userId, changeamount, reference);
         }
 
 
@@ -75,9 +72,6 @@ namespace Coflnet.Payments.Services
             var product = db.TopUpProducts.Where(p => p.Slug == topup.ProductId && p.ProviderSlug == "custom").FirstOrDefault();
             if (product == null)
                 throw new ApiException($"{topup.ProductId} is not a valid custom topup option ");
-            var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
-            if (user == null)
-                throw new ApiException("user doesn't exist");
             var changeamount = product.Cost;
             // adjust amount if its valid
             if (topup.Amount != 0 && topup.Amount < product.Cost)
@@ -85,9 +79,21 @@ namespace Coflnet.Payments.Services
                     changeamount = topup.Amount;
                 else
                     logger.LogWarning($"Variable price is disabled for {topup.ProductId} but a value of {topup.Amount} was passed");
-            await CreateTransactionInTransaction(product, user, changeamount, topup.Reference);
+            await CreateTransactionInTransaction(product, userId, changeamount, topup.Reference);
         }
 
+        public async Task CreateTransactionInTransaction(TopUpProduct product, string userId, decimal changeamount, string reference)
+        {
+            await db.Database.BeginTransactionAsync();
+
+            var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
+            if (user == null)
+            {
+                await db.Database.RollbackTransactionAsync();
+                throw new ApiException("user doesn't exist");
+            }
+            await CreateAndProduceTransaction(product, user, changeamount, reference);
+        }        
         public async Task CreateTransactionInTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
         {
             await db.Database.BeginTransactionAsync();
