@@ -55,7 +55,8 @@ namespace Payments.Controllers
             Id = t.Id.ToString(),
             Amount = t.Amount,
             ProductId = t.Product.Slug,
-            Reference = t.Reference
+            Reference = t.Reference,
+            TimeStamp = t.Timestamp
         };
 
         [HttpPost]
@@ -118,6 +119,7 @@ namespace Payments.Controllers
             public string ProductId { get; set; }
             public string Reference { get; set; }
             public decimal Amount { get; set; }
+            public DateTime TimeStamp { get; set; }
         }
     }
 }
