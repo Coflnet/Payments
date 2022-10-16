@@ -12,6 +12,7 @@ namespace Coflnet.Payments.Services
     {
         Task ApplyRuleList(List<RuleCreate> rules);
         Task<RuleResult> GetAdjusted(Product product, User user);
+        Task AddOrUpdateRule(RuleCreate rule);
     }
 
 
@@ -88,7 +89,7 @@ namespace Coflnet.Payments.Services
             await db.SaveChangesAsync();
         }
 
-        internal async Task AddOrUpdateRule(RuleCreate ruleCreate)
+        public async Task AddOrUpdateRule(RuleCreate ruleCreate)
         {
             // check validity
             if (ruleCreate.TargetsGroup == null)
