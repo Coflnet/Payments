@@ -12,9 +12,9 @@ namespace Payments.Controllers
         private readonly PaymentContext db;
         private readonly ProductService productService;
         private readonly GroupService groupService;
-        private readonly RuleEngine ruleEngine;
+        private readonly IRuleEngine ruleEngine;
 
-        public ApplyController(PaymentContext db, ProductService productService, GroupService groupService, RuleEngine ruleEngine)
+        public ApplyController(PaymentContext db, ProductService productService, GroupService groupService, IRuleEngine ruleEngine)
         {
             this.db = db;
             this.productService = productService;

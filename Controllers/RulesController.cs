@@ -16,14 +16,14 @@ namespace Payments.Controllers
     public class RulesController
     {
         private readonly PaymentContext db;
-        private readonly RuleEngine ruleEngine;
+        private readonly IRuleEngine ruleEngine;
 
         /// <summary>
         /// Constructor
         /// </summary>
         /// <param name="context"></param>
         /// <param name="ruleEngine"></param>
-        public RulesController(PaymentContext context, RuleEngine ruleEngine)
+        public RulesController(PaymentContext context, IRuleEngine ruleEngine)
         {
             db = context;
             this.ruleEngine = ruleEngine;
