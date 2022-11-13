@@ -6,6 +6,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Coflnet.Payments.Services
 {
@@ -93,7 +94,7 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("user doesn't exist");
             }
             await CreateAndProduceTransaction(product, user, changeamount, reference);
-        }        
+        }
         public async Task CreateTransactionInTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
         {
             using var dbTransaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
@@ -190,6 +191,11 @@ namespace Coflnet.Payments.Services
             using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
             var user = await userService.GetOrCreate(userId);
             var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
+            await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, transaction, user, adjustedProduct);
+        }
+
+        private async Task ExecuteServicePurchase(string productSlug, string userId, int count, string reference, Product dbProduct, IDbContextTransaction transaction, User user, Product adjustedProduct)
+        {
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
             {
@@ -228,6 +234,22 @@ namespace Coflnet.Payments.Services
             await db.SaveChangesAsync();
             await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
+        }
+
+        internal async Task RevertPurchase(string userId, int transactionId)
+        {
+            var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t=>t.Product).FirstOrDefault();
+            var dbProduct = await GetProduct("revert");
+
+            using var dbTransaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+            var user = await userService.GetOrCreate(userId);
+            var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
+            adjustedProduct.Cost = transaction.Amount;
+            if(!transaction.Product.Type.HasFlag(Product.ProductType.TOP_UP))
+                adjustedProduct.Cost *= -1;
+            adjustedProduct.OwnershipSeconds *= -1;
+            adjustedProduct.Slug = "revert";
+            await ExecuteServicePurchase(transaction.Product.Slug, userId, 1, $"refund transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
         }
 
         private static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
@@ -275,7 +297,7 @@ namespace Coflnet.Payments.Services
             /// Creates a new instance <see cref="DupplicateTransactionException"/>
             /// </summary>
             /// <returns></returns>
-            public DupplicateTransactionException() : base("This transaction already happened (same reference)")
+            public DupplicateTransactionException() : base("This transaction already happened (same reference found)")
             {
             }
         }

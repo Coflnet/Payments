@@ -163,6 +163,19 @@ namespace Payments.Controllers
             return Ok();
         }
 
+        /// <summary>
+        /// Undo the purchase of a service
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="transactionId"></param>
+        /// <returns></returns>
+        [HttpDelete]
+        [Route("{userId}/{transactionId}")]
+        public async Task<ActionResult<User>> RevertServicePUrchase(string userId, int transactionId)
+        {
+            await transactionService.RevertPurchase(userId, transactionId);
+            return Ok();
+        }
 
         /// <summary>
         /// Transfers coins to another user
