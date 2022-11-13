@@ -245,8 +245,6 @@ namespace Coflnet.Payments.Services
             var user = await userService.GetOrCreate(userId);
             var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
             adjustedProduct.Cost = transaction.Amount;
-            if(!transaction.Product.Type.HasFlag(Product.ProductType.TOP_UP))
-                adjustedProduct.Cost *= -1;
             adjustedProduct.OwnershipSeconds *= -1;
             adjustedProduct.Slug = "revert";
             await ExecuteServicePurchase(transaction.Product.Slug, userId, 1, $"refund transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
