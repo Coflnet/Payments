@@ -135,7 +135,11 @@ namespace Payments.Controllers
                 PayPalCheckoutSdk.Orders.Order order = null;
                 if (webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
                 {
-
+                    var address = webhookResult.Resource.PurchaseUnits[0].ShippingDetail.AddressPortable;
+                    var country = address.CountryCode;
+                    var postalCode = address.PostalCode;
+                    if(!DoWeSellto(country, postalCode))
+                        return Ok(); // ignore order
                     // completing order
                     order = await CompleteOrder(paypalClient, webhookResult.Resource.Id);
                     _logger.LogInformation("completing order " + webhookResult.Resource.Id);
@@ -195,6 +199,13 @@ namespace Payments.Controllers
             }
 
             return Ok();
+        }
+
+        private static bool DoWeSellto(string country, string postalCode)
+        {
+            if (country == "GB" && postalCode.StartsWith("BT"))
+                return false; // registration too complicated for northern ireland
+            return true;
         }
 
         private async Task<PayPalCheckoutSdk.Orders.Order> CompleteOrder(PayPalCheckoutSdk.Core.PayPalHttpClient client, string id)
