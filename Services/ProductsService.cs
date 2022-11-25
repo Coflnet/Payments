@@ -114,6 +114,7 @@ public class ProductService
             var existing = existingProducts.FirstOrDefault(p => p.Slug == product.Slug);
             if (product.Cost == existing?.Cost
                 && product.Title == existing?.Title
+                && (!(product is TopUpProduct topup) || topup.Price == (existing as TopUpProduct)?.Price)
                 && product.Description == existing?.Description
                 && product.Type == existing?.Type
                 && product.OwnershipSeconds == existing?.OwnershipSeconds)
