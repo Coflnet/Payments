@@ -121,7 +121,7 @@ namespace Coflnet.Payments
                         using var span = OpenTracing.Util.GlobalTracer.Instance.BuildSpan("error").WithTag("error", "true").StartActive();
                         span.Span.Log(exceptionHandlerPathFeature?.Error?.Message);
                         span.Span.Log(exceptionHandlerPathFeature?.Error?.StackTrace);
-                        var traceId = System.Net.Dns.GetHostName().Replace("commands", "").Trim('-') + "." + span.Span.Context.TraceId;
+                        var traceId = System.Net.Dns.GetHostName().Replace("payment", "").Trim('-') + "." + span.Span.Context.TraceId;
                         await context.Response.WriteAsync(
                             JsonConvert.SerializeObject(new
                             {

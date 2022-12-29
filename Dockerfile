@@ -1,15 +1,15 @@
-FROM mcr.microsoft.com/dotnet/sdk:6.0 as build
+FROM mcr.microsoft.com/dotnet/sdk:7.0 as build
 WORKDIR /build
 COPY Payments.csproj Payments.csproj
 RUN dotnet restore
 COPY . .
 RUN dotnet test
-RUN dotnet publish -c release
+RUN dotnet publish -c release -o /app
 
-FROM mcr.microsoft.com/dotnet/aspnet:6.0
+FROM mcr.microsoft.com/dotnet/aspnet:7.0
 WORKDIR /app
 
-COPY --from=build /build/bin/release/net6.0/publish/ .
+COPY --from=build /app .
 
 ENV ASPNETCORE_URLS=http://+:8000
 

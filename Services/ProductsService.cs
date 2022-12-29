@@ -121,6 +121,7 @@ public class ProductService
                 continue; // nothing changed
             InvalidateProduct(existing);
             db.Add(product);
+            logger.LogInformation($"Adding product {product.Slug}");
             await groupService.AddProductToGroup(product, product.Slug);
         }
         foreach (var product in toDeactivate)
@@ -139,6 +140,7 @@ public class ProductService
         oldProduct.Slug = newSlug.Truncate(32);
         oldProduct.Type |= Product.ProductType.DISABLED;
         db.Update(oldProduct);
+        logger.LogInformation($"Disabling old product {oldProduct.Slug}");
     }
 }
 
