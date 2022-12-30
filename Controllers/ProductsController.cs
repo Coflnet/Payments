@@ -105,7 +105,20 @@ namespace Payments.Controllers
         [ResponseCache(Duration = 20, Location = ResponseCacheLocation.Any)]
         public async Task<int> GetOwnerCount(string serviceSlug)
         {
-            return await db.Users.Where(u => u.Owns.Any(o => serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug))).CountAsync();
+            return (await GetUsers(serviceSlug)).Count();
+        }
+
+        /// <summary>
+        /// Gets all userIds owning a service
+        /// </summary>
+        /// <param name="serviceSlug"></param>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("service/{serviceSlug}/ids")]
+        [ResponseCache(Duration = 10, Location = ResponseCacheLocation.Any)]
+        public async Task<IEnumerable<string>> GetUsers(string serviceSlug)
+        {
+            return await db.Users.Where(u => u.Owns.Any(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Expires > DateTime.UtcNow)).Select(u => u.ExternalId).ToListAsync();
         }
 
         /// <summary>
