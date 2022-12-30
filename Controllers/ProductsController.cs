@@ -47,7 +47,7 @@ namespace Payments.Controllers
         [Route("")]
         public async Task<IEnumerable<PurchaseableProduct>> GetAll(int offset = 0, int amount = 20)
         {
-            return await db.Products.OrderBy(p=>p.Id).Skip(offset).Take(amount).ToListAsync();
+            return await db.Products.OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
         /// <summary>
@@ -58,7 +58,7 @@ namespace Payments.Controllers
         [Route("topup")]
         public async Task<IEnumerable<TopUpProduct>> GetTopupOptions(int offset = 0, int amount = 20)
         {
-            return await db.TopUpProducts.OrderBy(p=>p.Id).Skip(offset).Take(amount).ToListAsync();
+            return await db.TopUpProducts.OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
 
@@ -71,7 +71,7 @@ namespace Payments.Controllers
         public async Task<IEnumerable<PurchaseableProduct>> GetServices(int offset = 0, int amount = 20)
         {
             return await db.Products.Where(p => p.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
-                        .OrderBy(p=>p.Id).Skip(offset).Take(amount).ToListAsync();
+                        .OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
         /// <summary>
@@ -93,6 +93,19 @@ namespace Payments.Controllers
                 result.Add(ruleResult);
             }
             return result;
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="serviceSlug"></param>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("service/{serviceSlug}/count")]
+        [ResponseCache(Duration = 20, Location = ResponseCacheLocation.Any)]
+        public async Task<int> GetOwnerCount(string serviceSlug)
+        {
+            return await db.Users.Where(u => u.Owns.Any(o => serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug))).CountAsync();
         }
 
         /// <summary>
