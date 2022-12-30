@@ -75,7 +75,7 @@ namespace Payments.Controllers
         }
 
         /// <summary>
-        /// 
+        /// Get adjusted prices for a user
         /// </summary>
         /// <param name="userId"></param>
         /// <param name="productSlugs"></param>
@@ -96,7 +96,7 @@ namespace Payments.Controllers
         }
 
         /// <summary>
-        /// 
+        /// Count of users owning a service
         /// </summary>
         /// <param name="serviceSlug"></param>
         /// <returns></returns>
