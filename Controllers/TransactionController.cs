@@ -97,9 +97,9 @@ namespace Payments.Controllers
         [Route("planed/u/{userId}/t/{transactionId}/")]
         public async Task<PlanedTransaction> DeletePlanedTransactions(string userId, int transactionId)
         {
-            var userTask = userService.GetOrCreate(userId);
+            var user = await userService.GetOrCreate(userId);
             var trans = await db.PlanedTransactions.Where(t => t.Id == transactionId).FirstOrDefaultAsync();
-            if (trans.User != await userTask)
+            if (trans.User != user)
                 throw new ApiException("this user doesn't own the given transaction");
             db.PlanedTransactions.Remove(trans);
             await db.SaveChangesAsync();
