@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore.Storage;
+using System.Data;
 
 namespace Coflnet.Payments.Services
 {
@@ -85,7 +86,7 @@ namespace Coflnet.Payments.Services
 
         public async Task CreateTransactionInTransaction(TopUpProduct product, string userId, decimal changeamount, string reference)
         {
-            using var dbTransaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
 
             var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
             if (user == null)
@@ -97,7 +98,7 @@ namespace Coflnet.Payments.Services
         }
         public async Task CreateTransactionInTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
         {
-            using var dbTransaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
             await CreateAndProduceTransaction(product, user, changeamount, reference);
         }
 
@@ -157,7 +158,7 @@ namespace Coflnet.Payments.Services
             PurchaseableProduct product = await GetProduct(productSlug);
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
-            using var dbTransaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
             var user = await userService.GetOrCreate(userId);
             if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
                 throw new ApiException("already owned");
@@ -188,7 +189,7 @@ namespace Coflnet.Payments.Services
             if (!dbProduct.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
 
-            using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+            using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
             var user = await userService.GetOrCreate(userId);
             var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
             await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, transaction, user, adjustedProduct);
@@ -241,7 +242,7 @@ namespace Coflnet.Payments.Services
             var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t=>t.Product).FirstOrDefault();
             var dbProduct = await GetProduct("revert");
 
-            using var dbTransaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
             var user = await userService.GetOrCreate(userId);
             var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
             adjustedProduct.Cost = transaction.Amount;
@@ -263,7 +264,7 @@ namespace Coflnet.Payments.Services
             if (changeamount < 1)
                 throw new ApiException("The minimum transaction amount is 1");
 
-            using var dbTransaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
             var initiatingUser = await userService.GetAndInclude(userId, u => u);
             var minTime = DateTime.UtcNow - TimeSpan.FromDays(30);
