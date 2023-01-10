@@ -12,8 +12,7 @@ using Microsoft.Extensions.Logging;
 using PayPalCheckoutSdk.Orders;
 using PayPalHttp;
 using Stripe;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Linq;
 using System.Runtime.Serialization;
 using PayPalCheckoutSdk.Core;
 
@@ -138,8 +137,15 @@ namespace Payments.Controllers
                     var address = webhookResult.Resource.PurchaseUnits[0].ShippingDetail.AddressPortable;
                     var country = address.CountryCode;
                     var postalCode = address.PostalCode;
-                    if(!DoWeSellto(country, postalCode))
+                    if (!DoWeSellto(country, postalCode))
                         return Ok(); // ignore order
+                    // check that there are not too many orders
+                    var userId = webhookResult.Resource.PurchaseUnits[0].CustomId;
+                    if (await HasToManyTopups(userId))
+                    {
+                        _logger.LogInformation($"too many orders for user {userId} aborting");
+                        return Ok();
+                    }
                     // completing order
                     order = await CompleteOrder(paypalClient, webhookResult.Resource.Id);
                     _logger.LogInformation("completing order " + webhookResult.Resource.Id);
@@ -199,6 +205,13 @@ namespace Payments.Controllers
             }
 
             return Ok();
+        }
+
+        internal async Task<bool> HasToManyTopups(string userId)
+        {
+            return await db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First()
+                                        && t.Product.Type.HasFlag(Coflnet.Payments.Models.Product.ProductType.TOP_UP)
+                                            && t.Timestamp > DateTime.Now.AddDays(-1)).CountAsync() >= 2;
         }
 
         private static bool DoWeSellto(string country, string postalCode)
