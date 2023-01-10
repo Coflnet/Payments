@@ -268,9 +268,12 @@ namespace Coflnet.Payments.Services
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
             var initiatingUser = await userService.GetAndInclude(userId, u => u);
             var minTime = DateTime.UtcNow - TimeSpan.FromDays(30);
-            var transactionCount = db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).Count();
+            var transactionCount = await db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).CountAsync();
             if (transactionCount >= transferSettings.Limit)
                 throw new ApiException($"You reached the maximium of {transferSettings.Limit} transactions per {transferSettings.PeriodDays} days");
+            var receivedCount = await db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).CountAsync();
+            if(transactionCount > transferSettings.Limit / 2)
+                    throw new ApiException($"The target user has received too many transfers recently");
             var targetUser = await userService.GetOrCreate(targetUserId);
             var senderDeduct = -(changeamount);
             if (db.FiniteTransactions.Where(t =>
