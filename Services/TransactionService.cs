@@ -239,7 +239,7 @@ namespace Coflnet.Payments.Services
 
         internal async Task RevertPurchase(string userId, int transactionId)
         {
-            var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t=>t.Product).FirstOrDefault();
+            var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t => t.Product).FirstOrDefault();
             var dbProduct = await GetProduct("revert");
 
             using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
@@ -271,10 +271,10 @@ namespace Coflnet.Payments.Services
             var transactionCount = await db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).CountAsync();
             if (transactionCount >= transferSettings.Limit)
                 throw new ApiException($"You reached the maximium of {transferSettings.Limit} transactions per {transferSettings.PeriodDays} days");
-            var receivedCount = await db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).CountAsync();
-            if(transactionCount > transferSettings.Limit / 2)
-                    throw new ApiException($"The target user has received too many transfers recently");
             var targetUser = await userService.GetOrCreate(targetUserId);
+            var receivedCount = await db.FiniteTransactions.Where(t => t.User == targetUser && t.Product == product && t.Timestamp > minTime && t.Amount > 0).CountAsync();
+            if (transactionCount > transferSettings.Limit / 2)
+                throw new ApiException($"The target user has received too many transfers recently");
             var senderDeduct = -(changeamount);
             if (db.FiniteTransactions.Where(t =>
                  t.Amount == senderDeduct && t.Product == product && t.Reference == reference && t.User == initiatingUser)
