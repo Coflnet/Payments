@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using Newtonsoft.Json;
+using System;
 
 namespace Coflnet.Payments.Models
 {
@@ -55,6 +56,7 @@ namespace Coflnet.Payments.Models
         /// <summary>
         /// Types of products
         /// </summary>
+        [Flags]
         public enum ProductType
         {
             /// <summary>
