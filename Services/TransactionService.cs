@@ -272,9 +272,7 @@ namespace Coflnet.Payments.Services
             if (transactionCount >= transferSettings.Limit)
                 throw new ApiException($"You reached the maximium of {transferSettings.Limit} transactions per {transferSettings.PeriodDays} days");
             var targetUser = await userService.GetOrCreate(targetUserId);
-            var received = await db.FiniteTransactions.Where(t => t.User == targetUser && t.Product == product && t.Timestamp > minTime && t.Amount > 0).ToListAsync();
-            if (received.Count(r=>r.Amount > 100) > transferSettings.Limit / 2 || received.Sum(r => r.Amount) > (transferSettings.Limit * 100) && received.Count > transferSettings.Limit / 2)
-                throw new ApiException($"The target user has received too many transfers recently");
+            await AssertNotToManyTransfersReceived(product, minTime, targetUser);
             var senderDeduct = -(changeamount);
             if (db.FiniteTransactions.Where(t =>
                  t.Amount == senderDeduct && t.Product == product && t.Reference == reference && t.User == initiatingUser)
@@ -288,6 +286,13 @@ namespace Coflnet.Payments.Services
             await transactionEventProducer.ProduceEvent(transactionEvent);
             await transactionEventProducer.ProduceEvent(receiveTransaction);
             return transactionEvent;
+        }
+
+        private async Task AssertNotToManyTransfersReceived(PurchaseableProduct product, DateTime minTime, User targetUser)
+        {
+            var received = await db.FiniteTransactions.Where(t => t.User == targetUser && t.Product == product && t.Timestamp > minTime && t.Amount > 0).ToListAsync();
+            if (received.Count(r => r.Amount > 100) > transferSettings.Limit / 2 || received.Sum(r => r.Amount) > (transferSettings.Limit * 100) && received.Count > transferSettings.Limit / 2)
+                throw new ApiException($"The target user has received too many transfers recently");
         }
 
         /// <summary>

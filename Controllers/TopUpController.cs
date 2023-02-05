@@ -205,6 +205,7 @@ namespace Payments.Controllers
             {
                 Console.WriteLine("\t{0}: {1}\tCall Type: {2}", link.Rel, link.Href, link.Method);
             }
+            
             return new TopUpIdResponse()
             {
                 DirctLink = result.Links.Where(l => l.Rel == "approve").FirstOrDefault().Href,

@@ -43,6 +43,10 @@ namespace Coflnet.Payments.Models
         /// Rules to be applied before purchase
         /// </summary>
         public DbSet<Rule> Rules { get; set; }
+        /// <summary>
+        /// Payment requests
+        /// </summary>
+        public DbSet<PaymentRequest> PaymentRequests { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -64,6 +68,14 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<User>(entity =>
             {
                 entity.HasIndex(e => e.ExternalId).IsUnique();
+                entity.HasIndex(e => e.Ip);
+            });
+
+            modelBuilder.Entity<PaymentRequest>(entity =>
+            {
+                entity.HasIndex(e => e.DeviceFingerprint);
+                entity.HasIndex(e => e.CreateOnIp);
+                entity.HasIndex(e => new { e.CreatedAt, e.SessionId });
             });
 
             modelBuilder.Entity<PurchaseableProduct>(entity =>
