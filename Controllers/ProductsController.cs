@@ -109,6 +109,26 @@ namespace Payments.Controllers
         }
 
         /// <summary>
+        /// List of periods some user owned a service
+        /// </summary>
+        /// <param name="serviceSlug"></param>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("service/{serviceSlug}/owned")]
+        [ResponseCache(Duration = 20, Location = ResponseCacheLocation.Any)]
+        public async Task<IEnumerable<(string userId, DateTime start, DateTime end)>> GetOwnerHistory(string serviceSlug, DateTime? start = null, DateTime? end = null)
+        {
+            if (start == null)
+                start = DateTime.UtcNow.AddYears(-1);
+            if (end == null)
+                end = DateTime.UtcNow;
+            var list = await db.OwnerShips.Where(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Expires > start && o.Expires < end)
+                        .Select(o => new { o.User.ExternalId, o.Product.OwnershipSeconds, o.Expires }).ToListAsync();
+
+            return list.Select(o => (o.ExternalId, o.Expires.AddSeconds(-o.OwnershipSeconds), o.Expires));
+        }
+
+        /// <summary>
         /// Gets all userIds owning a service
         /// </summary>
         /// <param name="serviceSlug"></param>

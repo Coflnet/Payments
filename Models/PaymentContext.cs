@@ -44,6 +44,10 @@ namespace Coflnet.Payments.Models
         /// </summary>
         public DbSet<Rule> Rules { get; set; }
         /// <summary>
+        /// Things a <see cref="User"/> owns
+        /// </summary>
+        public DbSet<OwnerShip> OwnerShips { get; set; }
+        /// <summary>
         /// Payment requests
         /// </summary>
         public DbSet<PaymentRequest> PaymentRequests { get; set; }
@@ -93,6 +97,10 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<Rule>(entity =>
             {
                 entity.HasIndex(e => e.Slug).IsUnique();
+            });
+            modelBuilder.Entity<OwnerShip>(entity =>
+            {
+                entity.ToTable("OwnerShip");
             });
         }
     }
