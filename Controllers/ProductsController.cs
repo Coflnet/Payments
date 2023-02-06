@@ -122,10 +122,10 @@ namespace Payments.Controllers
                 start = DateTime.UtcNow.AddYears(-1);
             if (end == null)
                 end = DateTime.UtcNow;
-            var list = await db.OwnerShips.Where(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Expires > start && o.Expires < end)
-                        .Select(o => new { o.User.ExternalId, o.Product.OwnershipSeconds, o.Expires }).ToListAsync();
+            var list = await db.FiniteTransactions.Where(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Timestamp > start && o.Timestamp < end)
+                        .Select(o => new { o.User.ExternalId, o.Product.OwnershipSeconds, o.Timestamp }).ToListAsync();
 
-            return list.Select(o => (o.ExternalId, o.Expires.AddSeconds(-o.OwnershipSeconds), o.Expires));
+            return list.Select(o => (o.ExternalId, o.Timestamp, o.Timestamp.AddSeconds(o.OwnershipSeconds)));
         }
 
         /// <summary>
