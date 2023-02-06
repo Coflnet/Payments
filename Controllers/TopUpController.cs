@@ -76,7 +76,12 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             var product = await productService.GetTopupProduct(productId);
+            if (product == null)
+                throw new ApiException("Product not found");
+
             GetPriceAndCoins(topupotions, product, out decimal eurPrice, out decimal coinAmount);
+
+            await AttemptBlockFraud(topupotions, user, product, eurPrice);
 
             var metadata = new Dictionary<string, string>() {
                 { "productId", product.Id.ToString() },
@@ -130,6 +135,35 @@ namespace Payments.Controllers
             }
 
             return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };
+        }
+
+        private async Task AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
+        {
+            using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+            // check existing requests 
+            var existingRequests = await db.PaymentRequests
+                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == topupotions.UserIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-1))
+                .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
+                .ToListAsync();
+            if (existingRequests.Count(r=>r.CreatedAt >= DateTime.UtcNow.AddMinutes(15)) > 1)
+                throw new ApiException("Too many payment requests from you, please try again later");
+            if(existingRequests.Count > 3)
+                throw new ApiException("Too many payment requests from you, please try again later");
+
+            var request = new PaymentRequest()
+            {
+                User = user,
+                ProductId = product,
+                CreatedAt = DateTime.UtcNow,
+                State = PaymentRequest.Status.CREATED,
+                Amount = eurPrice,
+                CreateOnIp = topupotions.UserIp,
+                DeviceFingerprint = topupotions.Fingerprint,
+                Locale = topupotions.Locale,
+                Provider = product.ProviderSlug
+            };
+            db.PaymentRequests.Add(request);
+            await db.SaveChangesAsync();
         }
 
 
@@ -205,7 +239,7 @@ namespace Payments.Controllers
             {
                 Console.WriteLine("\t{0}: {1}\tCall Type: {2}", link.Rel, link.Href, link.Method);
             }
-            
+
             return new TopUpIdResponse()
             {
                 DirctLink = result.Links.Where(l => l.Rel == "approve").FirstOrDefault().Href,
@@ -253,11 +287,11 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("compensate")]
-        public async Task<(int,int)> Compensate(Compensation details)
+        public async Task<(int, int)> Compensate(Compensation details)
         {
             var product = await productService.GetTopupProduct("compensation");
             var eurPrice = product.Price;
-            if(details.When == default)
+            if (details.When == default)
                 details.When = DateTime.UtcNow;
             var users = await userService.GetUsersOwning(details.ProductId, details.When);
             var failedCount = 0;
