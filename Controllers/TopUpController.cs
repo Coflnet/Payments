@@ -92,9 +92,9 @@ namespace Payments.Controllers
                 PaymentMethodTypes = new List<string>
                 {
                   "card",
-                  // "bancontact",
-                  // "giropay",
-                  // "ideal",
+                  "bancontact",
+                  "giropay",
+                  "ideal",
                 },
 
                 LineItems = new List<SessionLineItemOptions>
