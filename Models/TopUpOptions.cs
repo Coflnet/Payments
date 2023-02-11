@@ -26,7 +26,8 @@ public class TopUpOptions
     /// <summary>
     /// The ip of the user
     /// </summary>
-    public System.Net.IPAddress UserIp { get; set; }
+    [MaxLength(45)]
+    public string UserIp { get; set; }
     /// <summary>
     /// Locale of the user
     /// </summary>

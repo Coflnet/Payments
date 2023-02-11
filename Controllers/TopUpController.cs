@@ -142,14 +142,16 @@ namespace Payments.Controllers
         private async Task AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
         {
             using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+            if (!System.Net.IPAddress.TryParse(topupotions.UserIp, out var userIp))
+                throw new ApiException("Invalid user IP");
             // check existing requests 
             var existingRequests = await db.PaymentRequests
-                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == topupotions.UserIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-1))
+                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-1))
                 .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
                 .ToListAsync();
-            if (existingRequests.Count(r=>r.CreatedAt >= DateTime.UtcNow.AddMinutes(15)) > 1)
+            if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(15)) > 1)
                 throw new ApiException("Too many payment requests from you, please try again later");
-            if(existingRequests.Count > 3)
+            if (existingRequests.Count > 3)
                 throw new ApiException("Too many payment requests from you, please try again later");
 
             var request = new PaymentRequest()
@@ -159,7 +161,7 @@ namespace Payments.Controllers
                 CreatedAt = DateTime.UtcNow,
                 State = PaymentRequest.Status.CREATED,
                 Amount = eurPrice,
-                CreateOnIp = topupotions.UserIp,
+                CreateOnIp = userIp,
                 DeviceFingerprint = topupotions.Fingerprint,
                 Locale = topupotions.Locale,
                 Provider = product.ProviderSlug
