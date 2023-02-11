@@ -116,7 +116,7 @@ namespace Payments.Controllers
         [HttpGet]
         [Route("service/{serviceSlug}/owned")]
         [ResponseCache(Duration = 20, Location = ResponseCacheLocation.Any)]
-        public async Task<IEnumerable<(string userId, DateTime start, DateTime end)>> GetOwnerHistory(string serviceSlug, DateTime? start = null, DateTime? end = null)
+        public async Task<IEnumerable<OwnershipTimeFrame>> GetOwnerHistory(string serviceSlug, DateTime? start = null, DateTime? end = null)
         {
             if (start == null)
                 start = DateTime.UtcNow.AddYears(-1);
@@ -125,7 +125,7 @@ namespace Payments.Controllers
             var list = await db.FiniteTransactions.Where(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Timestamp > start && o.Timestamp < end)
                         .Select(o => new { o.User.ExternalId, o.Product.OwnershipSeconds, o.Timestamp }).ToListAsync();
 
-            return list.Select(o => (o.ExternalId, o.Timestamp, o.Timestamp.AddSeconds(o.OwnershipSeconds)));
+            return list.Select(o => new OwnershipTimeFrame(o.ExternalId, o.Timestamp, o.Timestamp.AddSeconds(o.OwnershipSeconds)));
         }
 
         /// <summary>
