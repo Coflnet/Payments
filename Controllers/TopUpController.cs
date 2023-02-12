@@ -87,7 +87,7 @@ namespace Payments.Controllers
             {
                 user.Locale = topupotions?.Locale;
                 user.Ip = System.Net.IPAddress.Parse(topupotions.UserIp);
-                user.Country = topupotions?.Locale.Split('-')[1];
+                user.Country = topupotions?.Locale.Split('-').Last();
                 await db.SaveChangesAsync();
             }
 
@@ -154,13 +154,13 @@ namespace Payments.Controllers
                 throw new ApiException("Invalid user IP");
             // check existing requests 
             var existingRequests = await db.PaymentRequests
-                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-1))
+                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-.01))
                 .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
                 .ToListAsync();
             if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(10)) > 1)
                 throw new ApiException("Too many payment requests from you, please try again later");
             if (existingRequests.Count > 3)
-                throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions.Fingerprint.Substring(0, 5)}");
+                throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
 
             var request = new PaymentRequest()
             {
