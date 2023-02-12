@@ -83,6 +83,14 @@ namespace Payments.Controllers
 
             await AttemptBlockFraud(topupotions, user, product, eurPrice);
 
+            if (user.Locale == null && topupotions?.UserIp != null)
+            {
+                user.Locale = topupotions?.Locale;
+                user.Ip = System.Net.IPAddress.Parse(topupotions.UserIp);
+                user.Country = topupotions?.Locale.Split('-')[1];
+                await db.SaveChangesAsync();
+            }
+
             var metadata = new Dictionary<string, string>() {
                 { "productId", product.Id.ToString() },
                 { "coinAmount", coinAmount.ToString() } };
@@ -149,10 +157,10 @@ namespace Payments.Controllers
                 .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-1))
                 .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
                 .ToListAsync();
-            if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(15)) > 1)
+            if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(10)) > 1)
                 throw new ApiException("Too many payment requests from you, please try again later");
             if (existingRequests.Count > 3)
-                throw new ApiException("Too many payment requests from you, please try again later");
+                throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions.Fingerprint.Substring(0, 5)}");
 
             var request = new PaymentRequest()
             {
@@ -166,8 +174,10 @@ namespace Payments.Controllers
                 Locale = topupotions.Locale,
                 Provider = product.ProviderSlug
             };
-            db.PaymentRequests.Add(request);
+            db.Add(request);
             await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+            _logger.LogInformation("Created payment request {requestId} for user {userId}", request.Id, user.Id);
         }
 
 
