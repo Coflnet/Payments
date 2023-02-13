@@ -86,7 +86,7 @@ namespace Payments.Controllers
             if (user.Locale == null && topupotions?.UserIp != null)
             {
                 user.Locale = topupotions?.Locale;
-                user.Ip = System.Net.IPAddress.Parse(topupotions.UserIp);
+                user.Ip = System.Net.IPAddress.Parse(topupotions.UserIp).ToString();
                 user.Country = topupotions?.Locale.Split('-').Last();
                 await db.SaveChangesAsync();
             }

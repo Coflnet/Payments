@@ -50,7 +50,7 @@ public class User
     /// The ip of the user
     /// </summary>
     [MaxLength(45)]
-    public System.Net.IPAddress Ip { get; set; }
+    public string Ip { get; set; }
     /// <summary>
     /// Locale of the user
     /// </summary>
