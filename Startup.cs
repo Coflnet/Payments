@@ -63,7 +63,7 @@ namespace Coflnet.Payments
             services.AddScoped<Services.ProductService>();
             services.AddScoped<GroupService>();
 
-            if (string.IsNullOrEmpty(Configuration["KAFKA_HOST"]))
+            if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))
                 services.AddSingleton<ITransactionEventProducer, TransactionEventProducer>();
             else
                 services.AddSingleton<ITransactionEventProducer, KafkaTransactionEventProducer>();

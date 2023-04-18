@@ -60,6 +60,8 @@ namespace Coflnet.Payments.Services
                 SaslUsername = configuration["USERNAME"],
                 SaslPassword = configuration["PASSWORD"],
             };
+            Console.WriteLine("SASL username is " + producerConfig.SaslUsername);
+            Console.WriteLine("SASL password is set " + string.IsNullOrWhiteSpace(producerConfig.SaslPassword));
             if(!string.IsNullOrEmpty(producerConfig.SaslUsername))
             {
                 if(!string.IsNullOrEmpty(producerConfig.SslKeyLocation))
