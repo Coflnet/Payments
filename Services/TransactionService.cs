@@ -178,7 +178,7 @@ namespace Coflnet.Payments.Services
             var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
             if (product == null)
                 throw new ApiException($"product {productSlug} could not be found ");
-            if (product.Type == PurchaseableProduct.ProductType.DISABLED)
+            if (product.Type.HasFlag(PurchaseableProduct.ProductType.DISABLED))
                 throw new ApiException("product can't be purchased");
             return product;
         }
