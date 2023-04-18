@@ -96,7 +96,6 @@ namespace Payments.Controllers
                 { "coinAmount", coinAmount.ToString() } };
             var options = new SessionCreateOptions
             {
-                // stripe only supports card at the moment..
                 PaymentMethodTypes = new List<string>
                 {
                   "card",
