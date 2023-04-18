@@ -24,9 +24,7 @@ namespace Coflnet.Payments.Services
         {
             this.configuration = configuration.GetSection("KAFKA");
             this.logger = logger;
-            UpdateConfig();
             logger.LogInformation("activated Kafka event logger with hosts " + producerConfig.BootstrapServers);
-            CreateTopicIfNotExists();
         }
 
         private void CreateTopicIfNotExists()
@@ -71,6 +69,7 @@ namespace Coflnet.Payments.Services
                     producerConfig.SecurityProtocol = SecurityProtocol.SaslPlaintext;
                 producerConfig.SaslMechanism = SaslMechanism.ScramSha256;
             }
+            CreateTopicIfNotExists();
         }
 
         /// <summary>
