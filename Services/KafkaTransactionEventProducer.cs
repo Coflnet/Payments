@@ -24,7 +24,7 @@ namespace Coflnet.Payments.Services
         {
             this.configuration = configuration.GetSection("KAFKA");
             this.logger = logger;
-            logger.LogInformation("activated Kafka event logger with hosts " + producerConfig.BootstrapServers);
+            logger.LogInformation("activated Kafka event logger with hosts " + configuration["BROKERS"]);
         }
 
         private void CreateTopicIfNotExists()
