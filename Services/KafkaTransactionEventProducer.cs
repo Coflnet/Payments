@@ -31,6 +31,7 @@ namespace Coflnet.Payments.Services
 
         private void CreateTopicIfNotExists()
         {
+            logger.LogInformation(JsonConvert.SerializeObject(new AdminClientConfig(producerConfig)));
             var adminClient = new AdminClientBuilder(producerConfig).Build();
             var meta = adminClient.GetMetadata(configuration["TRANSACTION_TOPIC:NAME"], TimeSpan.FromSeconds(10));
             if (meta.Topics.Count == 0 || meta.Topics[0].Error.Code != ErrorCode.NoError)
