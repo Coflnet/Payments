@@ -24,22 +24,23 @@ namespace Coflnet.Payments.Services
         {
             this.configuration = configuration.GetSection("KAFKA");
             this.logger = logger;
+            UpdateConfig();
             logger.LogInformation("activated Kafka event logger with hosts " + configuration["BROKERS"]);
+            Task.Run(() => CreateTopicIfNotExists());
         }
 
-        private void CreateTopicIfNotExists()
+        private async Task CreateTopicIfNotExists()
         {
-            logger.LogInformation(JsonConvert.SerializeObject(new AdminClientConfig(producerConfig)));
             var adminClient = new AdminClientBuilder(producerConfig).Build();
             var meta = adminClient.GetMetadata(configuration["TRANSACTION_TOPIC:NAME"], TimeSpan.FromSeconds(10));
             if (meta.Topics.Count == 0 || meta.Topics[0].Error.Code != ErrorCode.NoError)
             {
                 logger.LogWarning("Topic " + configuration["TRANSACTION_TOPIC:NAME"] + " does not exist, creating it");
-                adminClient.CreateTopicsAsync(new TopicSpecification[] { new TopicSpecification() {
+                await adminClient.CreateTopicsAsync(new TopicSpecification[] { new TopicSpecification() {
                     Name = configuration["TRANSACTION_TOPIC:NAME"],
                     NumPartitions = configuration.GetValue<int>("TRANSACTION_TOPIC:NUM_PARTITIONS"),
                     ReplicationFactor = configuration.GetValue<short>("TRANSACTION_TOPIC:REPLICATION_FACTOR"),
-                     } }).Wait();
+                     } });
             }
             else
                 logger.LogInformation("Metadata for topic " + configuration["TRANSACTION_TOPIC:NAME"] + " is " + JsonConvert.SerializeObject(meta.Topics[0]));
@@ -59,8 +60,6 @@ namespace Coflnet.Payments.Services
                 SaslUsername = configuration["USERNAME"],
                 SaslPassword = configuration["PASSWORD"],
             };
-            Console.WriteLine("SASL username is " + producerConfig.SaslUsername);
-            Console.WriteLine("SASL password length " + configuration["PASSWORD"]?.Length);
             if(!string.IsNullOrEmpty(producerConfig.SaslUsername))
             {
                 if(!string.IsNullOrEmpty(producerConfig.SslKeyLocation))
@@ -69,7 +68,6 @@ namespace Coflnet.Payments.Services
                     producerConfig.SecurityProtocol = SecurityProtocol.SaslPlaintext;
                 producerConfig.SaslMechanism = SaslMechanism.ScramSha256;
             }
-            CreateTopicIfNotExists();
         }
 
         /// <summary>
@@ -79,7 +77,6 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task ProduceEvent(TransactionEvent transactionEvent)
         {
-            UpdateConfig();
             using (var p = new ProducerBuilder<Null, TransactionEvent>(producerConfig).SetValueSerializer(serializer).Build())
             {
                 var result = await p.ProduceAsync(configuration["TRANSACTION_TOPIC:NAME"], new Message<Null, TransactionEvent>()
@@ -87,7 +84,6 @@ namespace Coflnet.Payments.Services
                     Value = transactionEvent,
                     Timestamp = new Timestamp(transactionEvent.Timestamp)
                 });
-                logger.LogInformation("Produced event " + result.TopicPartitionOffset + " " + JsonConvert.SerializeObject(transactionEvent));
             }
         }
 

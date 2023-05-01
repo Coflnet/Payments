@@ -124,8 +124,11 @@ public class ProductService
             logger.LogInformation($"Adding product {product.Slug}");
             await groupService.AddProductToGroup(product, product.Slug);
         }
+        var specialProduct = new string[] { "revert", "compensation", "transfer" };
         foreach (var product in toDeactivate)
         {
+            if (specialProduct.Contains(product.Slug))
+                continue;
             product.Type |= Product.ProductType.DISABLED;
         }
         await db.SaveChangesAsync();
