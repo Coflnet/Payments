@@ -153,7 +153,7 @@ namespace Payments.Controllers
                 throw new ApiException("Invalid user IP");
             // check existing requests 
             var existingRequests = await db.PaymentRequests
-                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-.01))
+                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-.1))
                 .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
                 .ToListAsync();
             if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(10)) > 1)
