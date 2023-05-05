@@ -81,7 +81,7 @@ namespace Payments.Controllers
 
             GetPriceAndCoins(topupotions, product, out decimal eurPrice, out decimal coinAmount);
 
-            await AttemptBlockFraud(topupotions, user, product, eurPrice);
+            var instance = await AttemptBlockFraud(topupotions, user, product, eurPrice);
 
             if (user.Locale == null && topupotions?.UserIp != null)
             {
@@ -142,11 +142,13 @@ namespace Payments.Controllers
                 _logger.LogError(e, "Stripe checkout session could not be created");
                 throw new Exception("Payment currently unavailable");
             }
+            instance.SessionId = session.Id;
+            await db.SaveChangesAsync();
 
             return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };
         }
 
-        private async Task AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
+        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
         {
             using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
             if (!System.Net.IPAddress.TryParse(topupotions.UserIp, out var userIp))
@@ -176,7 +178,8 @@ namespace Payments.Controllers
             db.Add(request);
             await db.SaveChangesAsync();
             await transaction.CommitAsync();
-            _logger.LogInformation("Created payment request {requestId} for user {userId}", request.Id, user.Id);
+            _logger.LogInformation("Created payment request {requestId} for user {userId}, existing {existingCount}", request.Id, user.Id, existingRequests.Count);
+            return request;
         }
 
 
