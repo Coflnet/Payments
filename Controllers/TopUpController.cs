@@ -154,11 +154,12 @@ namespace Payments.Controllers
             if (!System.Net.IPAddress.TryParse(topupotions.UserIp, out var userIp))
                 throw new ApiException("Invalid user IP");
             // check existing requests 
+            var minTime = DateTime.UtcNow.AddHours(-10);
             var existingRequests = await db.PaymentRequests
-                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > DateTime.UtcNow.AddDays(-.1))
+                .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp || r.DeviceFingerprint == topupotions.Fingerprint) && r.CreatedAt > minTime)
                 .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
                 .ToListAsync();
-            if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(10)) > 1)
+            if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(-10)) > 1)
                 throw new ApiException("Too many payment requests from you, please try again later");
             if (existingRequests.Count > 3)
                 throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
