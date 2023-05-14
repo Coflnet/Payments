@@ -77,10 +77,11 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task ProduceEvent(TransactionEvent transactionEvent)
         {
-            using (var p = new ProducerBuilder<Null, TransactionEvent>(producerConfig).SetValueSerializer(serializer).Build())
+            using (var p = new ProducerBuilder<string, TransactionEvent>(producerConfig).SetValueSerializer(serializer).Build())
             {
-                var result = await p.ProduceAsync(configuration["TRANSACTION_TOPIC:NAME"], new Message<Null, TransactionEvent>()
+                var result = await p.ProduceAsync(configuration["TRANSACTION_TOPIC:NAME"], new Message<string, TransactionEvent>()
                 {
+                    Key = transactionEvent.UserId,
                     Value = transactionEvent,
                     Timestamp = new Timestamp(transactionEvent.Timestamp)
                 });
