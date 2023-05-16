@@ -204,7 +204,7 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("already owned for too long");
             }
             var price = adjustedProduct.Cost * count;
-            if (user.AvailableBalance < price)
+            if (user.AvailableBalance < price && adjustedProduct.Slug == "revert")
             {
                 await transaction.RollbackAsync();
                 logger.LogError($"User {user.ExternalId} doesn't have the required {price} amount to purchase {productSlug} (only {user.AvailableBalance} available)");
@@ -248,7 +248,7 @@ namespace Coflnet.Payments.Services
             adjustedProduct.Cost = transaction.Amount;
             adjustedProduct.OwnershipSeconds *= -1;
             adjustedProduct.Slug = "revert";
-            await ExecuteServicePurchase(transaction.Product.Slug, userId, 1, $"refund transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
+            await ExecuteServicePurchase(transaction.Product.Slug, userId, 1, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
         }
 
         private static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
