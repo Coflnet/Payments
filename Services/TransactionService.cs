@@ -204,7 +204,7 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("already owned for too long");
             }
             var price = adjustedProduct.Cost * count;
-            if (user.AvailableBalance < price && adjustedProduct.Slug == "revert")
+            if (user.AvailableBalance < price && adjustedProduct.Slug != "revert")
             {
                 await transaction.RollbackAsync();
                 logger.LogError($"User {user.ExternalId} doesn't have the required {price} amount to purchase {productSlug} (only {user.AvailableBalance} available)");
