@@ -95,24 +95,24 @@ namespace Payments.Controllers
                 }
                 else if (stripeEvent.Type == Events.ChargeFailed)
                 {
-                    _logger.LogInformation("stripe charge failed");
                     var charge = stripeEvent.Data.Object as Stripe.Charge;
-                    var itentId = charge.PaymentIntentId;
-                    var transaction = await db.PaymentRequests.Where(t => t.SessionId == itentId).FirstOrDefaultAsync();
+                    var intentId = charge.PaymentIntentId;
+                    _logger.LogInformation("stripe charge failed " + intentId);
+                    var transaction = await db.PaymentRequests.Where(t => t.SessionId == intentId).FirstOrDefaultAsync();
                     if (transaction != null)
                     {
                         if (transaction.State == PaymentRequest.Status.FAILED)
                         {
                             // already failed once before tell stripe to expire the checkout session
                             var service = new SessionService();
-                            var session = await service.ListAsync(new SessionListOptions { PaymentIntent = itentId });
+                            var session = await service.ListAsync(new SessionListOptions { PaymentIntent = intentId });
                             if (session.Count() > 0)
                             {
+                                _logger.LogInformation($"stripe charge failed again, canceling session {intentId} {session.FirstOrDefault().Id}");
                                 await service.ExpireAsync(session.FirstOrDefault().Id);
-                                _logger.LogInformation($"stripe charge failed again, canceling session {itentId} {session.FirstOrDefault().Id}");
                             }
                             else
-                                _logger.LogInformation($"no session found for {itentId}");
+                                _logger.LogInformation($"no session found for {intentId}");
                             return Ok();
                         }
                         transaction.State = PaymentRequest.Status.FAILED;
