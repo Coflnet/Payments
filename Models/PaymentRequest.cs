@@ -94,7 +94,7 @@ public class PaymentRequest
         /// </summary>
         EXPIRED,
         /// <summary>
-        /// The payment request was failed
+        /// The payment request has failed
         /// </summary>
         FAILED,
     }

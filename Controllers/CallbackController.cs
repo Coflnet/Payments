@@ -92,9 +92,29 @@ namespace Payments.Controllers
                         // this already happened so was successful
                     }
                 }
+                else if (stripeEvent.Type == Events.ChargeFailed)
+                {
+                    _logger.LogInformation("stripe charge failed");
+                    var charge = stripeEvent.Data.Object as Stripe.Charge;
+                    var itentId = charge.PaymentIntentId;
+                    var transaction = await db.PaymentRequests.Where(t => t.SessionId == itentId).FirstOrDefaultAsync();
+                    if (transaction != null)
+                    {
+                        if (transaction.State == PaymentRequest.Status.FAILED)
+                        {
+                            // already failed once before tell stripe to cancel the session
+                            var service = new PaymentIntentService();
+                            var intent = service.Cancel(itentId);
+                            _logger.LogInformation($"stripe charge failed again, canceling session {itentId}");
+                            return Ok();
+                        }
+                        transaction.State = PaymentRequest.Status.FAILED;
+                        await db.SaveChangesAsync();
+                    }
+                }
                 else
                 {
-                    _logger.LogWarning("sripe is not comlete type of " + stripeEvent.Type);
+                    _logger.LogWarning("stripe is not comlete type of " + stripeEvent.Type);
                 }
 
                 return Ok();
