@@ -15,6 +15,7 @@ using Stripe;
 using System.Linq;
 using System.Runtime.Serialization;
 using PayPalCheckoutSdk.Core;
+using Stripe.Checkout;
 
 namespace Payments.Controllers
 {
@@ -102,10 +103,16 @@ namespace Payments.Controllers
                     {
                         if (transaction.State == PaymentRequest.Status.FAILED)
                         {
-                            // already failed once before tell stripe to cancel the session
-                            var service = new PaymentIntentService();
-                            var intent = service.Cancel(itentId);
-                            _logger.LogInformation($"stripe charge failed again, canceling session {itentId}");
+                            // already failed once before tell stripe to expire the checkout session
+                            var service = new SessionService();
+                            var session = await service.ListAsync(new SessionListOptions { PaymentIntent = itentId });
+                            if (session.Count() > 0)
+                            {
+                                await service.ExpireAsync(session.FirstOrDefault().Id);
+                                _logger.LogInformation($"stripe charge failed again, canceling session {itentId} {session.FirstOrDefault().Id}");
+                            }
+                            else
+                                _logger.LogInformation($"no session found for {itentId}");
                             return Ok();
                         }
                         transaction.State = PaymentRequest.Status.FAILED;
