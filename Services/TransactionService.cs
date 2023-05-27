@@ -246,10 +246,11 @@ namespace Coflnet.Payments.Services
             using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
             var user = await userService.GetOrCreate(userId);
             var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
-            adjustedProduct.Cost = transaction.Amount;
+            var count = (int)Math.Round(transaction.Amount / transaction.Product.Cost);
+            adjustedProduct.Cost = transaction.Amount / count;
             adjustedProduct.OwnershipSeconds = -transaction.Product.OwnershipSeconds;
             adjustedProduct.Slug = "revert";
-            await ExecuteServicePurchase(transaction.Product.Slug, userId, 1, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
+            await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
         }
 
         private static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
