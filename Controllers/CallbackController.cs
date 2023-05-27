@@ -86,7 +86,7 @@ namespace Payments.Controllers
                     int.TryParse(session.Metadata.GetValueOrDefault("coinAmount", "0"), out int coinAmount);
                     try
                     {
-                        await transactionService.AddTopUp(productId, session.ClientReferenceId, session.Id, coinAmount);
+                        await transactionService.AddTopUp(productId, session.ClientReferenceId, session.PaymentIntentId, coinAmount);
                     }
                     catch (TransactionService.DupplicateTransactionException)
                     {
@@ -116,6 +116,24 @@ namespace Payments.Controllers
                             return Ok();
                         }
                         transaction.State = PaymentRequest.Status.FAILED;
+                        await db.SaveChangesAsync();
+                    }
+                }
+                else if (stripeEvent.Type == Events.ChargeRefunded)
+                {
+                    var charge = stripeEvent.Data.Object as Stripe.Charge;
+                    var intentId = charge.PaymentIntentId;
+                    _logger.LogInformation("stripe charge refunded " + intentId);
+                    var payment = await db.PaymentRequests.Where(t => t.SessionId == intentId).FirstOrDefaultAsync();
+                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == intentId).Select(t=> new {UserId=t.User.ExternalId,t.Id}).FirstOrDefaultAsync();
+                    if(transaction != null)
+                    {
+                        _logger.LogInformation($"reverting purchase {transaction.Id} from {transaction.UserId} because of refund");
+                        await transactionService.RevertPurchase(transaction.UserId, transaction.Id);
+                    }
+                    if (payment != null)
+                    {
+                        payment.State = PaymentRequest.Status.REFUNDED;
                         await db.SaveChangesAsync();
                     }
                 }

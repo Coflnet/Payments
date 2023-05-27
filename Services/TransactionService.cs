@@ -238,7 +238,7 @@ namespace Coflnet.Payments.Services
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
-        internal async Task RevertPurchase(string userId, int transactionId)
+        internal async Task RevertPurchase(string userId, long transactionId)
         {
             var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t => t.Product).FirstOrDefault();
             var dbProduct = await GetProduct("revert");
