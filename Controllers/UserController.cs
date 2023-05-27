@@ -171,10 +171,9 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpDelete]
         [Route("{userId}/{transactionId}")]
-        public async Task<ActionResult<User>> RevertServicePUrchase(string userId, int transactionId)
+        public async Task<TransactionEvent> RevertServicePUrchase(string userId, int transactionId)
         {
-            await transactionService.RevertPurchase(userId, transactionId);
-            return Ok();
+            return await transactionService.RevertPurchase(userId, transactionId);
         }
 
         /// <summary>

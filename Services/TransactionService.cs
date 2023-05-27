@@ -195,7 +195,7 @@ namespace Coflnet.Payments.Services
             await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, transaction, user, adjustedProduct);
         }
 
-        private async Task ExecuteServicePurchase(string productSlug, string userId, int count, string reference, Product dbProduct, IDbContextTransaction transaction, User user, Product adjustedProduct)
+        private async Task<TransactionEvent> ExecuteServicePurchase(string productSlug, string userId, int count, string reference, Product dbProduct, IDbContextTransaction transaction, User user, Product adjustedProduct)
         {
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
@@ -236,9 +236,10 @@ namespace Coflnet.Payments.Services
             await db.SaveChangesAsync();
             await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
+            return transactionEvent;
         }
 
-        internal async Task RevertPurchase(string userId, long transactionId)
+        internal async Task<TransactionEvent> RevertPurchase(string userId, long transactionId)
         {
             var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t => t.Product).FirstOrDefault();
             var dbProduct = await GetProduct("revert");
@@ -250,7 +251,7 @@ namespace Coflnet.Payments.Services
             adjustedProduct.Cost = -transaction.Amount / count;
             adjustedProduct.OwnershipSeconds = -transaction.Product.OwnershipSeconds;
             adjustedProduct.Slug = "revert";
-            await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
+            return await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
         }
 
         private static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
