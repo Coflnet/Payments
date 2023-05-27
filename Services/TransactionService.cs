@@ -220,6 +220,7 @@ namespace Coflnet.Payments.Services
                 var existingExpiry = await userService.GetLongest(userId, new() { item.Slug });
                 Console.WriteLine(item.Slug + " exires at " + existingExpiry);
                 var newExpiry = GetNewExpiry(existingExpiry, time);
+                logger.LogInformation($"User {user.ExternalId} has {existingExpiry} for {item.Slug} and will be extended to {newExpiry} by {time}");
                 existingOwnerShip = user.Owns?.Where(p => p.Product.Id == item.Id);
                 if (existingOwnerShip.Any())
                 {
@@ -246,7 +247,7 @@ namespace Coflnet.Payments.Services
             var user = await userService.GetOrCreate(userId);
             var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
             adjustedProduct.Cost = transaction.Amount;
-            adjustedProduct.OwnershipSeconds *= -1;
+            adjustedProduct.OwnershipSeconds = -transaction.Product.OwnershipSeconds;
             adjustedProduct.Slug = "revert";
             await ExecuteServicePurchase(transaction.Product.Slug, userId, 1, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
         }
