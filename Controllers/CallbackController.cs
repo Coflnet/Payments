@@ -125,8 +125,8 @@ namespace Payments.Controllers
                     var intentId = charge.PaymentIntentId;
                     _logger.LogInformation("stripe charge refunded " + intentId);
                     var payment = await db.PaymentRequests.Where(t => t.SessionId == intentId).FirstOrDefaultAsync();
-                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == intentId).Select(t=> new {UserId=t.User.ExternalId,t.Id}).FirstOrDefaultAsync();
-                    if(transaction != null)
+                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == intentId).Select(t => new { UserId = t.User.ExternalId, t.Id }).FirstOrDefaultAsync();
+                    if (transaction != null)
                     {
                         _logger.LogInformation($"reverting purchase {transaction.Id} from {transaction.UserId} because of refund");
                         await transactionService.RevertPurchase(transaction.UserId, transaction.Id);
@@ -263,6 +263,8 @@ namespace Payments.Controllers
         {
             if (country == "GB" && postalCode.StartsWith("BT"))
                 return false; // registration too complicated for northern ireland
+            if (country == "AE")
+                return false; // can't register for taxes as a foreigner
             return true;
         }
 
