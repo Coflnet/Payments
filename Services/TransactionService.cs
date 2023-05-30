@@ -162,7 +162,7 @@ namespace Coflnet.Payments.Services
             var user = await userService.GetOrCreate(userId);
             if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
                 throw new ApiException("already owned");
-            if (user.AvailableBalance < price)
+            if (user.AvailableBalance < price || price < 0)
                 throw new ApiException("insuficcient balance");
 
             var transactionEvent = await CreateTransaction(product, user, price * -1);
