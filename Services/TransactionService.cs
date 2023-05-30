@@ -127,7 +127,7 @@ namespace Coflnet.Payments.Services
                 throw new DupplicateTransactionException();
             db.FiniteTransactions.Add(transaction);
             user.Balance += changeamount;
-            if (user.Balance < 0 && product.Slug != "revert")
+            if (user.Balance < 0 && product.Slug != "revert" && changeamount < 0)
                 throw new InsufficientFundsException(changeamount, user.Balance);
             db.Update(user);
             await db.SaveChangesAsync();
