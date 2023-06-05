@@ -161,7 +161,7 @@ namespace Payments.Controllers
                 .ToListAsync();
             if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(-10)) > 1)
                 throw new ApiException("Too many payment requests from you, please try again later");
-            if (existingRequests.Count > 3)
+            if (existingRequests.Count > 5 || existingRequests.Count > 3 && existingRequests.Select(e=>e.CreateOnIp).Distinct().Count() < 3)
                 throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
 
             var request = new PaymentRequest()
