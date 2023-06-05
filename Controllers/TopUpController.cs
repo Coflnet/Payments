@@ -142,7 +142,7 @@ namespace Payments.Controllers
                 _logger.LogError(e, "Stripe checkout session could not be created");
                 throw new Exception("Payment currently unavailable");
             }
-            instance.SessionId = session.PaymentIntentId;
+            instance.SessionId = session.Id;
             await db.SaveChangesAsync();
 
             return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };

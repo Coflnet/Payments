@@ -87,6 +87,13 @@ namespace Payments.Controllers
                     try
                     {
                         await transactionService.AddTopUp(productId, session.ClientReferenceId, session.PaymentIntentId, coinAmount);
+                        var transaction = await db.PaymentRequests.Where(t => t.SessionId == session.Id).FirstOrDefaultAsync();
+                        if (transaction != null)
+                        {
+                            transaction.State = PaymentRequest.Status.PAID;
+                            transaction.SessionId = session.PaymentIntentId;
+                            await db.SaveChangesAsync();
+                        }
                     }
                     catch (TransactionService.DupplicateTransactionException)
                     {
