@@ -36,10 +36,15 @@ namespace Payments.Controllers
 
         [HttpGet]
         [Route("u/{userId}")]
-        public async Task<List<ExternalTransaction>> Purchase(string userId)
+        public async Task<List<ExternalTransaction>> Purchase(string userId, int offset = 0, int limit = 100)
         {
             var user = await userService.GetOrCreate(userId);
-            return await db.FiniteTransactions.Where(f => f.User == user).Select(selector).ToListAsync();
+            return await db.FiniteTransactions.Where(f => f.User == user)
+                .OrderByDescending(t => t.Timestamp)
+                .Select(selector)
+                .Skip(offset)
+                .Take(limit)
+                .ToListAsync();
         }
 
         [HttpGet]
