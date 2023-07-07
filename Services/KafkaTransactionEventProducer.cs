@@ -31,26 +31,33 @@ namespace Coflnet.Payments.Services
 
         private async Task CreateTopicIfNotExists()
         {
-            var adminClient = new AdminClientBuilder(producerConfig).Build();
-            await MakeSureTopicExists(adminClient, "TRANSACTION_TOPIC");
-            await MakeSureTopicExists(adminClient, "PAYMENT_TOPIC");
+            try
+            {
+                var adminClient = new AdminClientBuilder(producerConfig).Build();
+                await MakeSureTopicExists(adminClient, "TRANSACTION_TOPIC");
+                await MakeSureTopicExists(adminClient, "PAYMENT_TOPIC");
+            }
+            catch (System.Exception e)
+            {
+                logger.LogError(e, "Error creating topics");
+            }
         }
 
         private async Task MakeSureTopicExists(IAdminClient adminClient, string topicConfigKey)
         {
             var configPart = configuration.GetSection(topicConfigKey);
-            var meta = adminClient.GetMetadata(configuration["NAME"], TimeSpan.FromSeconds(10));
+            var meta = adminClient.GetMetadata(configPart["NAME"], TimeSpan.FromSeconds(10));
             if (meta.Topics.Count == 0 || meta.Topics[0].Error.Code != ErrorCode.NoError)
             {
-                logger.LogWarning("Topic " + configuration["NAME"] + " does not exist, creating it");
+                logger.LogWarning("Topic " + configPart["NAME"] + " does not exist, creating it");
                 await adminClient.CreateTopicsAsync(new TopicSpecification[] { new TopicSpecification() {
-                    Name = configuration["NAME"],
-                    NumPartitions = configuration.GetValue<int>("NUM_PARTITIONS"),
-                    ReplicationFactor = configuration.GetValue<short>("REPLICATION_FACTOR"),
+                    Name = configPart["NAME"],
+                    NumPartitions = configPart.GetValue<int>("NUM_PARTITIONS"),
+                    ReplicationFactor = configPart.GetValue<short>("REPLICATION_FACTOR"),
                      } });
             }
             else
-                logger.LogInformation("Metadata for topic " + configuration["NAME"] + " is " + JsonConvert.SerializeObject(meta.Topics[0]));
+                logger.LogInformation("Metadata for topic " + configPart["NAME"] + " is " + JsonConvert.SerializeObject(meta.Topics[0]));
         }
 
         private void UpdateConfig()
