@@ -11,7 +11,7 @@ namespace Coflnet.Payments.Services
     /// <summary>
     /// produce events into Kafka
     /// </summary>
-    public class KafkaTransactionEventProducer : ITransactionEventProducer
+    public class KafkaTransactionEventProducer : ITransactionEventProducer, IPaymentEventProducer
     {
         IConfiguration configuration;
         ILogger<KafkaTransactionEventProducer> logger;
@@ -32,18 +32,25 @@ namespace Coflnet.Payments.Services
         private async Task CreateTopicIfNotExists()
         {
             var adminClient = new AdminClientBuilder(producerConfig).Build();
-            var meta = adminClient.GetMetadata(configuration["TRANSACTION_TOPIC:NAME"], TimeSpan.FromSeconds(10));
+            await MakeSureTopicExists(adminClient, "TRANSACTION_TOPIC");
+            await MakeSureTopicExists(adminClient, "PAYMENT_TOPIC");
+        }
+
+        private async Task MakeSureTopicExists(IAdminClient adminClient, string topicConfigKey)
+        {
+            var configPart = configuration.GetSection(topicConfigKey);
+            var meta = adminClient.GetMetadata(configuration["NAME"], TimeSpan.FromSeconds(10));
             if (meta.Topics.Count == 0 || meta.Topics[0].Error.Code != ErrorCode.NoError)
             {
-                logger.LogWarning("Topic " + configuration["TRANSACTION_TOPIC:NAME"] + " does not exist, creating it");
+                logger.LogWarning("Topic " + configuration["NAME"] + " does not exist, creating it");
                 await adminClient.CreateTopicsAsync(new TopicSpecification[] { new TopicSpecification() {
-                    Name = configuration["TRANSACTION_TOPIC:NAME"],
-                    NumPartitions = configuration.GetValue<int>("TRANSACTION_TOPIC:NUM_PARTITIONS"),
-                    ReplicationFactor = configuration.GetValue<short>("TRANSACTION_TOPIC:REPLICATION_FACTOR"),
+                    Name = configuration["NAME"],
+                    NumPartitions = configuration.GetValue<int>("NUM_PARTITIONS"),
+                    ReplicationFactor = configuration.GetValue<short>("REPLICATION_FACTOR"),
                      } });
             }
             else
-                logger.LogInformation("Metadata for topic " + configuration["TRANSACTION_TOPIC:NAME"] + " is " + JsonConvert.SerializeObject(meta.Topics[0]));
+                logger.LogInformation("Metadata for topic " + configuration["NAME"] + " is " + JsonConvert.SerializeObject(meta.Topics[0]));
         }
 
         private void UpdateConfig()
@@ -60,9 +67,9 @@ namespace Coflnet.Payments.Services
                 SaslUsername = configuration["USERNAME"],
                 SaslPassword = configuration["PASSWORD"],
             };
-            if(!string.IsNullOrEmpty(producerConfig.SaslUsername))
+            if (!string.IsNullOrEmpty(producerConfig.SaslUsername))
             {
-                if(!string.IsNullOrEmpty(producerConfig.SslKeyLocation))
+                if (!string.IsNullOrEmpty(producerConfig.SslKeyLocation))
                     producerConfig.SecurityProtocol = SecurityProtocol.SaslSsl;
                 else
                     producerConfig.SecurityProtocol = SecurityProtocol.SaslPlaintext;
@@ -88,9 +95,34 @@ namespace Coflnet.Payments.Services
             }
         }
 
+        /// <summary>
+        /// Produces payment events (money payed)
+        /// </summary>
+        /// <param name="paymentEvent"></param>
+        /// <returns></returns>
+        public async Task ProduceEvent(PaymentEvent paymentEvent)
+        {
+            using (var p = new ProducerBuilder<string, PaymentEvent>(producerConfig).SetValueSerializer(new PaymentEventSerializer()).Build())
+            {
+                var result = await p.ProduceAsync(configuration["PAYMENT_TOPIC:NAME"], new Message<string, PaymentEvent>()
+                {
+                    Key = paymentEvent.PaymentProviderTransactionId,
+                    Value = paymentEvent,
+                    Timestamp = new Timestamp(paymentEvent.Timestamp)
+                });
+            }
+        }
+
         public class TransactionEventSerializer : ISerializer<TransactionEvent>
         {
             public byte[] Serialize(TransactionEvent data, SerializationContext context)
+            {
+                return System.Text.Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(data));
+            }
+        }
+        public class PaymentEventSerializer : ISerializer<PaymentEvent>
+        {
+            public byte[] Serialize(PaymentEvent data, SerializationContext context)
             {
                 return System.Text.Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(data));
             }

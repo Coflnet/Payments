@@ -64,9 +64,15 @@ namespace Coflnet.Payments
             services.AddScoped<GroupService>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))
+            {
                 services.AddSingleton<ITransactionEventProducer, TransactionEventProducer>();
+                services.AddSingleton<IPaymentEventProducer, TransactionEventProducer>();
+            }
             else
+            {
                 services.AddSingleton<ITransactionEventProducer, KafkaTransactionEventProducer>();
+                services.AddSingleton<IPaymentEventProducer, KafkaTransactionEventProducer>();
+            }
 
 
             // Creating correct paypalEnvironment

@@ -30,6 +30,7 @@ namespace Payments.Controllers
         private readonly PaymentContext db;
         private string signingSecret;
         private TransactionService transactionService;
+        private IPaymentEventProducer paymentEventProducer;
         private readonly PayPalHttpClient paypalClient;
 
         public CallbackController(
@@ -37,13 +38,15 @@ namespace Payments.Controllers
             ILogger<CallbackController> logger,
             PaymentContext context,
             TransactionService transactionService,
-            PayPalHttpClient paypalClient)
+            PayPalHttpClient paypalClient,
+            IPaymentEventProducer paymentEventProducer)
         {
             _logger = logger;
             db = context;
             signingSecret = config["STRIPE:SIGNING_SECRET"];
             this.transactionService = transactionService;
             this.paypalClient = paypalClient;
+            this.paymentEventProducer = paymentEventProducer;
         }
 
         /// <summary>
@@ -99,6 +102,19 @@ namespace Payments.Controllers
                     {
                         // this already happened so was successful
                     }
+                    await paymentEventProducer.ProduceEvent(new PaymentEvent
+                    {
+                        PayedAmount = (session.AmountTotal ?? throw new Exception("wtf need amount")) / 100.0,
+                        ProductId = productId.ToString(),
+                        UserId = session.ClientReferenceId,
+                        CountryCode = session.CustomerDetails.Address.Country,
+                        PostalCode = session.CustomerDetails.Address.PostalCode,
+                        Currency = session.Currency,
+                        PaymentMethod = session.PaymentMethodTypes[0],
+                        PaymentProvider = "stripe",
+                        PaymentProviderTransactionId = session.PaymentIntentId,
+                        Timestamp = DateTime.UtcNow
+                    });
                 }
                 else if (stripeEvent.Type == Events.ChargeFailed)
                 {
@@ -240,7 +256,7 @@ namespace Payments.Controllers
                 if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.UtcNow.Subtract(TimeSpan.FromHours(1)))
                     throw new Exception("the provied order id is too old, please contact support for manual review");
 
-                var transactionId = order.Id;
+                var transactionId = order.Links.Where(l => l.Rel == "self").First().Href.Split('/').Last();
                 var product = order.PurchaseUnits[0];
                 var topupInfo = product.CustomId.Split(';');
                 _logger.LogInformation($"user {product.ReferenceId} purchased '{product.CustomId}' via PayPal {transactionId}");
@@ -248,6 +264,20 @@ namespace Payments.Controllers
                 if (topupInfo.Length >= 2)
                     int.TryParse(topupInfo[1], out exactCoinAmount);
                 await transactionService.AddTopUp(int.Parse(topupInfo[0]), product.ReferenceId, order.Id, exactCoinAmount);
+
+                await paymentEventProducer.ProduceEvent(new PaymentEvent
+                {
+                    PayedAmount = double.Parse(amount.Value),
+                    ProductId = topupInfo[0],
+                    UserId = product.ReferenceId,
+                    CountryCode = product.ShippingDetail.AddressPortable.CountryCode,
+                    PostalCode = product.ShippingDetail.AddressPortable.PostalCode,
+                    Currency = amount.CurrencyCode,
+                    PaymentMethod = "paypal",
+                    PaymentProvider = "paypal",
+                    PaymentProviderTransactionId = transactionId,
+                    Timestamp = DateTime.UtcNow
+                });
 
             }
             catch (Exception ex)
