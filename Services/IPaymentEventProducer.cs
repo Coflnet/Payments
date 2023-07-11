@@ -1,4 +1,5 @@
 using System.Threading.Tasks;
+using Coflnet.Payments.Models;
 
 namespace Coflnet.Payments.Services
 {

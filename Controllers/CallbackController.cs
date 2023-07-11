@@ -107,13 +107,20 @@ namespace Payments.Controllers
                         PayedAmount = (session.AmountTotal ?? throw new Exception("wtf need amount")) / 100.0,
                         ProductId = productId.ToString(),
                         UserId = session.ClientReferenceId,
-                        CountryCode = session.CustomerDetails.Address.Country,
-                        PostalCode = session.CustomerDetails.Address.PostalCode,
+                        Address = new Coflnet.Payments.Models.Address()
+                        {
+                            CountryCode = session.CustomerDetails.Address.Country,
+                            PostalCode = session.CustomerDetails.Address.PostalCode,
+                            City = session.CustomerDetails.Address.City,
+                            Line1 = session.CustomerDetails.Address.Line1,
+                            Line2 = session.CustomerDetails.Address.Line2
+                        },
+                        FullName = session.CustomerDetails.Name,
                         Currency = session.Currency,
                         PaymentMethod = session.PaymentMethodTypes[0],
                         PaymentProvider = "stripe",
                         PaymentProviderTransactionId = session.PaymentIntentId,
-                        Timestamp = DateTime.UtcNow
+                        Timestamp = session.Created
                     });
                 }
                 else if (stripeEvent.Type == Events.ChargeFailed)
@@ -270,13 +277,20 @@ namespace Payments.Controllers
                     PayedAmount = double.Parse(amount.Value),
                     ProductId = topupInfo[0],
                     UserId = product.ReferenceId,
-                    CountryCode = product.ShippingDetail.AddressPortable.CountryCode,
-                    PostalCode = product.ShippingDetail.AddressPortable.PostalCode,
+                    FullName = product.ShippingDetail.Name.FullName,
+                    Address = new Coflnet.Payments.Models.Address()
+                    {
+                        CountryCode = product.ShippingDetail.AddressPortable.CountryCode,
+                        PostalCode = product.ShippingDetail.AddressPortable.PostalCode,
+                        City = product.ShippingDetail.AddressPortable.AdminArea2,
+                        Line1 = product.ShippingDetail.AddressPortable.AddressLine1,
+                        Line2 = product.ShippingDetail.AddressPortable.AddressLine2
+                    },
                     Currency = amount.CurrencyCode,
                     PaymentMethod = "paypal",
                     PaymentProvider = "paypal",
                     PaymentProviderTransactionId = transactionId,
-                    Timestamp = DateTime.UtcNow
+                    Timestamp = DateTime.Parse(order.CreateTime)
                 });
 
             }
