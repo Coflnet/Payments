@@ -229,8 +229,36 @@ namespace Payments.Controllers
                 {
                     dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
                     var id = (string)data.resource.supplementary_data.related_ids.order_id;
-                    _logger.LogInformation("received confirmation for purchase " + id);
 
+                    var refundableId = webhookResult.Resource.Links.Where(l => l.Rel == "self").First().Href.Split('/').Last();
+                    _logger.LogInformation("received confirmation for purchase " + id);
+                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).FirstOrDefaultAsync();
+                    if (transaction != null)
+                    {
+                        transaction.Reference = refundableId;
+                        await db.SaveChangesAsync();
+                        _logger.LogInformation($"updated transaction {transaction.Id} with refundable id {refundableId}");
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"no transaction found for {id}");
+                    }
+
+                    return Ok();
+                }
+                else if (webhookResult.EventType == "PAYMENT.CAPTURE.REFUNDED")
+                {
+                    dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+                    var id = webhookResult.Resource.Links.Where(l => l.Rel == "up").First().Href.Split('/').Last();
+                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).Include(t=>t.User).FirstOrDefaultAsync();
+                    _logger.LogInformation($"refunded payment, reverting topup {id} from {transaction.User.ExternalId} because of refund");
+                    await transactionService.RevertPurchase(transaction.User.ExternalId, transaction.Id);
+
+                    return Ok();
+                }
+                else
+                {
+                    _logger.LogWarning("paypal is not comlete type of " + webhookResult.EventType);
                     return Ok();
                 }
 
