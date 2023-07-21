@@ -116,6 +116,7 @@ namespace Payments.Controllers
                             Line2 = session.CustomerDetails.Address.Line2
                         },
                         FullName = session.CustomerDetails.Name,
+                        Email = session.CustomerDetails.Email,
                         Currency = session.Currency,
                         PaymentMethod = session.PaymentMethodTypes[0],
                         PaymentProvider = "stripe",
@@ -306,6 +307,9 @@ namespace Payments.Controllers
                     ProductId = topupInfo[0],
                     UserId = product.ReferenceId,
                     FullName = product.ShippingDetail.Name.FullName,
+                    FirstName = order.Payer.Name.GivenName,
+                    LastName = order.Payer.Name.Surname,
+                    Email = order.Payer.Email,
                     Address = new Coflnet.Payments.Models.Address()
                     {
                         CountryCode = product.ShippingDetail.AddressPortable.CountryCode,
