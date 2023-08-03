@@ -47,7 +47,7 @@ namespace Payments.Controllers
         [Route("")]
         public async Task<IEnumerable<PurchaseableProduct>> GetAll(int offset = 0, int amount = 20)
         {
-            return await db.Products.OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
+            return await db.Products.Where(p=>!p.Type.HasFlag(Product.ProductType.DISABLED)).OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
         /// <summary>
@@ -70,7 +70,7 @@ namespace Payments.Controllers
         [Route("services")]
         public async Task<IEnumerable<PurchaseableProduct>> GetServices(int offset = 0, int amount = 20)
         {
-            return await db.Products.Where(p => p.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
+            return await db.Products.Where(p => p.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE) && !p.Type.HasFlag(Product.ProductType.DISABLED))
                         .OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
