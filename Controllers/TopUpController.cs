@@ -196,6 +196,8 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreatePayPal(string userId, string productId, [FromBody] TopUpOptions options = null)
         {
             var user = await userService.GetOrCreate(userId);
+            if(!CallbackController.DoWeSellto(user.Country, null))
+                throw new ApiException("We are sorry but we can not sell to your country at this time");
             var product = await productService.GetTopupProduct(productId);
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };

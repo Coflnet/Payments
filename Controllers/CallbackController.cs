@@ -213,10 +213,14 @@ namespace Payments.Controllers
                     var address = webhookResult.Resource.PurchaseUnits[0].ShippingDetail.AddressPortable;
                     var country = address.CountryCode;
                     var postalCode = address.PostalCode;
-                    if (!DoWeSellto(country, postalCode))
-                        return Ok(); // ignore order
-                    // check that there are not too many orders
                     var userId = webhookResult.Resource.PurchaseUnits[0].CustomId;
+                    if (!DoWeSellto(country, postalCode))
+                    {
+                        db.Users.Where(u => u.ExternalId == userId).FirstOrDefault().Country = country;
+                        await db.SaveChangesAsync();
+                        return Ok(); // ignore order
+                    }
+                    // check that there are not too many orders
                     if (await HasToManyTopups(userId))
                     {
                         _logger.LogInformation($"too many orders for user {userId} aborting");
@@ -251,7 +255,7 @@ namespace Payments.Controllers
                 {
                     dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
                     var id = webhookResult.Resource.Links.Where(l => l.Rel == "up").First().Href.Split('/').Last();
-                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).Include(t=>t.User).FirstOrDefaultAsync();
+                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).Include(t => t.User).FirstOrDefaultAsync();
                     _logger.LogInformation($"refunded payment, reverting topup {id} from {transaction.User.ExternalId} because of refund");
                     await transactionService.RevertPurchase(transaction.User.ExternalId, transaction.Id);
 
@@ -342,7 +346,7 @@ namespace Payments.Controllers
                                             && t.Timestamp > DateTime.Now.AddDays(-1)).CountAsync() >= 2;
         }
 
-        private static bool DoWeSellto(string country, string postalCode)
+        public static bool DoWeSellto(string country, string postalCode)
         {
             if (country == "GB" && postalCode.StartsWith("BT"))
                 return false; // registration too complicated for northern ireland
