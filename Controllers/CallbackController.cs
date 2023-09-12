@@ -329,7 +329,7 @@ namespace Payments.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "paypal checkout");
-                // return StatusCode(400);
+                return StatusCode(400);
             }
 
             return Ok();
