@@ -207,7 +207,6 @@ namespace Payments.Controllers
                 _logger.LogInformation("reading json");
                 json = await new StreamReader(Request.Body).ReadToEndAsync();
                 var webhookResult = Newtonsoft.Json.JsonConvert.DeserializeObject<PayPalWebhook>(json);
-                PayPalCheckoutSdk.Orders.Order order = null;
                 if (webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
                 {
                     var address = webhookResult.Resource.PurchaseUnits[0].ShippingDetail.AddressPortable;
@@ -227,7 +226,7 @@ namespace Payments.Controllers
                         return Ok();
                     }
                     // completing order
-                    order = await CompleteOrder(paypalClient, webhookResult.Resource.Id);
+                    await CompleteOrder(paypalClient, webhookResult.Resource.Id);
                     _logger.LogInformation("completing order " + webhookResult.Resource.Id);
                 }
                 else if (webhookResult.EventType == "PAYMENT.CAPTURE.COMPLETED")
@@ -282,7 +281,7 @@ namespace Payments.Controllers
                     throw new ApiException("The provided orderId has not vaid payment asociated");
                 }
                 //4. Save the transaction in your database. Implement logic to save transaction to your database for future reference.
-                order = response.Result<PayPalCheckoutSdk.Orders.Order>();
+                var order = response.Result<PayPalCheckoutSdk.Orders.Order>();
                 _logger.LogInformation("Retrieved Order Status");
                 AmountWithBreakdown amount = order.PurchaseUnits[0].AmountWithBreakdown;
                 _logger.LogInformation("Total Amount: {0} {1}", amount.CurrencyCode, amount.Value);
@@ -355,16 +354,25 @@ namespace Payments.Controllers
             return true;
         }
 
-        private async Task<PayPalCheckoutSdk.Orders.Order> CompleteOrder(PayPalCheckoutSdk.Core.PayPalHttpClient client, string id)
+        private async Task CompleteOrder(PayPalCheckoutSdk.Core.PayPalHttpClient client, string id)
         {
             var request = new OrdersCaptureRequest(id);
             request.RequestBody(new OrderActionRequest());
-            HttpResponse responsea = await client.Execute(request);
-            var statusCode = responsea.StatusCode;
-            var result = responsea.Result<PayPalCheckoutSdk.Orders.Order>();
-            _logger.LogInformation("Status: {0}", result.Status);
-            _logger.LogInformation("Capture Id: {0}", result.Id);
-            return result;
+            try
+            {
+
+                HttpResponse responsea = await client.Execute(request);
+                var statusCode = responsea.StatusCode;
+                var result = responsea.Result<PayPalCheckoutSdk.Orders.Order>();
+                _logger.LogInformation("Status: {0}", result.Status);
+                _logger.LogInformation("Capture Id: {0}", result.Id);
+            }
+            catch (PayPalHttp.HttpException e)
+            {
+                if (e.Message.Contains("ORDER_ALREADY_CAPTURED"))
+                    return;
+                _logger.LogError(e, "paypal order capture");
+            }
         }
 
         [DataContract]
