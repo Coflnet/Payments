@@ -99,6 +99,7 @@ namespace Coflnet.Payments.Services
         public async Task CreateTransactionInTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
         {
             using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            user = await db.Users.Where(u => u.Id == user.Id).FirstOrDefaultAsync(); // reload user for transaction lock
             await CreateAndProduceTransaction(product, user, changeamount, reference);
         }
 
