@@ -227,7 +227,8 @@ namespace Payments.Controllers
                     }
                     // completing order
                     await CompleteOrder(paypalClient, webhookResult.Resource.Id);
-                    _logger.LogInformation("completing order " + webhookResult.Resource.Id);
+                    _logger.LogInformation("completed order " + webhookResult.Resource.Id);
+                    return Ok();
                 }
                 else if (webhookResult.EventType == "PAYMENT.CAPTURE.COMPLETED")
                 {
@@ -236,6 +237,12 @@ namespace Payments.Controllers
 
                     var refundableId = webhookResult.Resource.Links.Where(l => l.Rel == "self").First().Href.Split('/').Last();
                     _logger.LogInformation("received confirmation for purchase " + id);
+                    var existing = await db.FiniteTransactions.Where(t => t.Reference == refundableId).FirstOrDefaultAsync();
+                    if (existing != null)
+                    {
+                        _logger.LogInformation($"already have transaction for {refundableId} {existing.Id}");
+                        return Ok();
+                    }
                     var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).FirstOrDefaultAsync();
                     if (transaction != null)
                     {
@@ -248,7 +255,6 @@ namespace Payments.Controllers
                         _logger.LogInformation($"no transaction found for {id}");
                     }
 
-                    return Ok();
                 }
                 else if (webhookResult.EventType == "PAYMENT.CAPTURE.REFUNDED")
                 {
