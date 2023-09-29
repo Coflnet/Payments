@@ -301,7 +301,7 @@ namespace Payments.Controllers
 
                 _logger.LogInformation("Status: {0}", order.Status);
 
-                _logger.LogInformation("Order Id: {0}", order.Id);
+                _logger.LogInformation("Order: {0}", Newtonsoft.Json.JsonConvert.SerializeObject(order));
                 _logger.LogInformation("ReferenceId: {0}", referenceId ?? throw new Exception("no reference id"));
                 //if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.UtcNow.Subtract(TimeSpan.FromHours(1)))
                 //    throw new Exception("the provied order id is too old, please contact support for manual review");
@@ -336,7 +336,7 @@ namespace Payments.Controllers
                     PaymentMethod = "paypal",
                     PaymentProvider = "paypal",
                     PaymentProviderTransactionId = transactionId,
-                    Timestamp = DateTime.Parse(order.CreateTime)
+                    Timestamp = string.IsNullOrEmpty(order.CreateTime) ? DateTime.Now : DateTime.Parse(order.CreateTime)
                 });
 
             }
