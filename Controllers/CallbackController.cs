@@ -202,6 +202,7 @@ namespace Payments.Controllers
                 syncIOFeature.AllowSynchronousIO = true;
             }
             string json = "";
+            string referenceId = "";
             try
             {
                 _logger.LogInformation("reading json");
@@ -244,6 +245,7 @@ namespace Payments.Controllers
                         return Ok();
                     }
                     var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).FirstOrDefaultAsync();
+                    referenceId = refundableId;
                     if (transaction != null)
                     {
                         transaction.Reference = refundableId;
@@ -300,8 +302,9 @@ namespace Payments.Controllers
                 _logger.LogInformation("Status: {0}", order.Status);
 
                 _logger.LogInformation("Order Id: {0}", order.Id);
-                if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.UtcNow.Subtract(TimeSpan.FromHours(1)))
-                    throw new Exception("the provied order id is too old, please contact support for manual review");
+                _logger.LogInformation("ReferenceId: {0}", referenceId ?? throw new Exception("no reference id"));
+                //if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.UtcNow.Subtract(TimeSpan.FromHours(1)))
+                //    throw new Exception("the provied order id is too old, please contact support for manual review");
 
                 var transactionId = order.Links.Where(l => l.Rel == "self").First().Href.Split('/').Last();
                 var product = order.PurchaseUnits[0];
@@ -310,7 +313,7 @@ namespace Payments.Controllers
                 var exactCoinAmount = 0;
                 if (topupInfo.Length >= 2)
                     int.TryParse(topupInfo[1], out exactCoinAmount);
-                await transactionService.AddTopUp(int.Parse(topupInfo[0]), product.ReferenceId, order.Id, exactCoinAmount);
+                await transactionService.AddTopUp(int.Parse(topupInfo[0]), product.ReferenceId, referenceId, exactCoinAmount);
 
                 await paymentEventProducer.ProduceEvent(new PaymentEvent
                 {
