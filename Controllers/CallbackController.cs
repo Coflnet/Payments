@@ -277,8 +277,10 @@ namespace Payments.Controllers
                 _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(webhookResult));
                 try
                 {
-                    OrdersGetRequest getRequest = new OrdersGetRequest(webhookResult.Resource.Id);
-                    _logger.LogInformation("getting order " + webhookResult.Resource.Id);
+                    dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+                    var id = (string)data.resource.supplementary_data.related_ids.order_id;
+                    OrdersGetRequest getRequest = new OrdersGetRequest(id);
+                    _logger.LogInformation($"getting order  {id} from " + webhookResult.Resource.Id);
                     response = paypalClient.Execute(getRequest).Result;
                 }
                 catch (Exception e)
