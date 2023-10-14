@@ -16,6 +16,8 @@ using System.Linq;
 using System.Runtime.Serialization;
 using PayPalCheckoutSdk.Core;
 using Stripe.Checkout;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace Payments.Controllers
 {
@@ -29,6 +31,7 @@ namespace Payments.Controllers
         private readonly ILogger<CallbackController> _logger;
         private readonly PaymentContext db;
         private string signingSecret;
+        private string lemonSqueezySecret;
         private TransactionService transactionService;
         private IPaymentEventProducer paymentEventProducer;
         private readonly PayPalHttpClient paypalClient;
@@ -44,6 +47,7 @@ namespace Payments.Controllers
             _logger = logger;
             db = context;
             signingSecret = config["STRIPE:SIGNING_SECRET"];
+            lemonSqueezySecret = config["LEMONSQUEEZY:SECRET"] ?? throw new Exception("Lemon Squeezy Secret not set");
             this.transactionService = transactionService;
             this.paypalClient = paypalClient;
             this.paymentEventProducer = paymentEventProducer;
@@ -187,6 +191,50 @@ namespace Payments.Controllers
             }
         }
 
+        [HttpPost]
+        [Route("lemonsqueezy")]
+        public async Task<IActionResult> LemonSqueezy([FromHeader(Name = "x-signature")] string signature)
+        {
+            var syncIOFeature = HttpContext.Features.Get<IHttpBodyControlFeature>();
+            if (syncIOFeature != null)
+            {
+                syncIOFeature.AllowSynchronousIO = true;
+            }
+            var json = new StreamReader(Request.Body).ReadToEnd();
+            // check hex signature hmac
+            var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(lemonSqueezySecret));
+            var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(json));
+            var hashString = BitConverter.ToString(hash).Replace("-", "").ToLower();
+            if (hashString != signature)
+            {
+                _logger.LogWarning($"lemonsqueezy signature mismatch {hashString} != {signature}");
+                return StatusCode(400);
+            }
+            var webhook = System.Text.Json.JsonSerializer.Deserialize<Coflnet.Payments.Models.LemonSqueezy.Webhook>(json, new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+            });
+            var data = webhook.Data;
+            var meta = webhook.Meta;
+            if (meta.EventName == "order_created" && data.Attributes.Status == "paid")
+            {
+                await transactionService.AddTopUp(meta.CustomData.ProductId, meta.CustomData.UserId, data.Attributes.Identifier, meta.CustomData.CoinAmount);
+                await db.SaveChangesAsync();
+                _logger.LogInformation($"lemonsqueezy topup {meta.CustomData.ProductId} {meta.CustomData.UserId} {data.Attributes.Identifier} {meta.CustomData.CoinAmount}");
+            }
+            else if (meta.EventName == "order_refunded" && data.Attributes.Status == "refunded")
+            {
+                await RevertTopUpWithReference(data.Attributes.Identifier);
+            }
+            else
+            {
+                _logger.LogWarning($"lemonsqueezy unknown type {data.Type}");
+                return StatusCode(500);
+            }
+            return Ok();
+        }
+
         /// <summary>
         /// accept callbacks from paypal
         /// </summary>
@@ -262,10 +310,8 @@ namespace Payments.Controllers
                 {
                     dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
                     var id = webhookResult.Resource.Links.Where(l => l.Rel == "up").First().Href.Split('/').Last();
-                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).Include(t => t.User).FirstOrDefaultAsync();
+                    FiniteTransaction transaction = await RevertTopUpWithReference(id);
                     _logger.LogInformation($"refunded payment, reverting topup {id} from {transaction.User.ExternalId} because of refund");
-                    await transactionService.RevertPurchase(transaction.User.ExternalId, transaction.Id);
-
                     return Ok();
                 }
                 else
@@ -347,6 +393,13 @@ namespace Payments.Controllers
             }
 
             return Ok();
+        }
+
+        private async Task<FiniteTransaction> RevertTopUpWithReference(string id)
+        {
+            var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).Include(t => t.User).FirstOrDefaultAsync();
+            await transactionService.RevertPurchase(transaction.User.ExternalId, transaction.Id);
+            return transaction;
         }
 
         internal async Task<bool> HasToManyTopups(string userId)

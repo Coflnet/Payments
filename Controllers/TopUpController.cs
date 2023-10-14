@@ -8,10 +8,12 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using PayPalCheckoutSdk.Core;
 using PayPalCheckoutSdk.Orders;
 using PayPalHttp;
-using Stripe;
+using RestSharp;
 using Stripe.Checkout;
 
 namespace Payments.Controllers
@@ -161,7 +163,7 @@ namespace Payments.Controllers
                 .ToListAsync();
             if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(-10)) > 1)
                 throw new ApiException("Too many payment requests from you, please try again later");
-            if (existingRequests.Count > 5 || existingRequests.Count > 3 && existingRequests.Select(e=>e.CreateOnIp).Distinct().Count() < 3)
+            if (existingRequests.Count > 5 || existingRequests.Count > 3 && existingRequests.Select(e => e.CreateOnIp).Distinct().Count() < 3)
                 throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
 
             var request = new PaymentRequest()
@@ -196,7 +198,7 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreatePayPal(string userId, string productId, [FromBody] TopUpOptions options = null)
         {
             var user = await userService.GetOrCreate(userId);
-            if(!CallbackController.DoWeSellto(user.Country, null))
+            if (!CallbackController.DoWeSellto(user.Country, null))
                 throw new ApiException("We are sorry but we can not sell to your country at this time");
             var product = await productService.GetTopupProduct(productId);
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
@@ -263,6 +265,88 @@ namespace Payments.Controllers
             {
                 DirctLink = result.Links.Where(l => l.Rel == "approve").FirstOrDefault().Href,
                 Id = result.Id
+            };
+        }
+
+        [HttpPost]
+        [Route("lemonsqueezy")]
+        public async Task<TopUpIdResponse> CreateLemonSqueezy(string userId, string productId, [FromBody] TopUpOptions options = null)
+        {
+            var user = await userService.GetOrCreate(userId);
+            if (!CallbackController.DoWeSellto(user.Country, null))
+                throw new ApiException("We are sorry but we can not sell to your country at this time");
+            var product = await productService.GetTopupProduct(productId);
+            GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
+            var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
+
+            var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");
+            var request = new RestRequest("", Method.Post);
+            request.AddHeader("Accept", "application/vnd.api+json");
+            request.AddHeader("Content-Type", "application/vnd.api+json");
+            request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+            var createData = new
+            {
+
+                data = new
+                {
+                    type = "checkouts",
+                    attributes = new
+                    {
+                        custom_price = (int)(eurPrice * 100),
+                        product_options = new
+                        {
+                            name = product.Title,
+                            redirect_url = options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"],
+                            receipt_button_text = "Go to your account",
+                            description = product.Description ?? "Will be credited to your account",
+                        },
+                        test_mode = true,
+                        checkout_data = new
+                        {
+                            email = options?.UserEmail,
+                            custom = new
+                            {
+                                user_id = user.ExternalId.ToString(),
+                                product_id = product.Id.ToString(),
+                                coin_amount =( (int)coinAmount).ToString()
+                            },
+                        },
+                        expires_at = DateTime.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    },
+                    relationships = new
+                    {
+                        store = new
+                        {
+                            data = new
+                            {
+                                type = "stores",
+                                id = "12595"
+                            }
+                        },
+                        variant = new
+                        {
+                            data = new
+                            {
+                                type = "variants",
+                                id = "134503"
+                            }
+                        }
+                    }
+                }
+            };
+            var json = JsonConvert.SerializeObject(createData, new JsonSerializerSettings() { NullValueHandling = NullValueHandling.Ignore });
+            request.AddJsonBody(json);
+            _logger.LogInformation($"Creating lemonsqueezy checkout with: \n{json}");
+            var response = await restclient.ExecuteAsync(request);
+            _logger.LogInformation(response.Content);
+            var result = JsonConvert.DeserializeObject(response.Content);
+            var data = JObject.Parse(result.ToString());
+            var checkoutId = (string)data["data"]["id"];
+            var link = (string)data["data"]["attributes"]["url"];
+            return new TopUpIdResponse()
+            {
+                DirctLink = link,
+                Id = checkoutId
             };
         }
 
