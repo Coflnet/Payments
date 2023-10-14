@@ -77,7 +77,7 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreateStripeSession(string userId, string productId, [FromBody] TopUpOptions topupotions = null)
         {
             var user = await userService.GetOrCreate(userId);
-            var product = await productService.GetTopupProduct(productId);
+            var product = await GetTopupProduct(productId, "stripe");
             if (product == null)
                 throw new ApiException("Product not found");
 
@@ -200,7 +200,7 @@ namespace Payments.Controllers
             var user = await userService.GetOrCreate(userId);
             if (!CallbackController.DoWeSellto(user.Country, null))
                 throw new ApiException("We are sorry but we can not sell to your country at this time");
-            var product = await productService.GetTopupProduct(productId);
+            var product = await GetTopupProduct(productId, "paypal");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var order = new OrderRequest()
@@ -275,7 +275,7 @@ namespace Payments.Controllers
             var user = await userService.GetOrCreate(userId);
             if (!CallbackController.DoWeSellto(user.Country, null))
                 throw new ApiException("We are sorry but we can not sell to your country at this time");
-            var product = await productService.GetTopupProduct(productId);
+            TopUpProduct product = await GetTopupProduct(productId, "lemonsqueezy");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
 
@@ -308,7 +308,7 @@ namespace Payments.Controllers
                             {
                                 user_id = user.ExternalId.ToString(),
                                 product_id = product.Id.ToString(),
-                                coin_amount =( (int)coinAmount).ToString()
+                                coin_amount = ((int)coinAmount).ToString()
                             },
                         },
                         expires_at = DateTime.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -348,6 +348,14 @@ namespace Payments.Controllers
                 DirctLink = link,
                 Id = checkoutId
             };
+        }
+
+        private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)
+        {
+            var product = await productService.GetTopupProduct(productId);
+            if (product.ProviderSlug != provider)
+                throw new ApiException("Product is not purchaseable via this provider");
+            return product;
         }
 
         private static void GetPriceAndCoins(TopUpOptions options, TopUpProduct product, out decimal eurPrice, out decimal coinAmount)
