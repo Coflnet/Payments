@@ -77,6 +77,7 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreateStripeSession(string userId, string productId, [FromBody] TopUpOptions topupotions = null)
         {
             var user = await userService.GetOrCreate(userId);
+            AssertUserCountry(topupotions);
             var product = await GetTopupProduct(productId, "stripe");
             if (product == null)
                 throw new ApiException("Product not found");
@@ -150,6 +151,12 @@ namespace Payments.Controllers
             return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };
         }
 
+        private static void AssertUserCountry(TopUpOptions topupotions)
+        {
+            if (!CallbackController.DoWeSellto(topupotions.Locale, null))
+                throw new ApiException($"We are sorry but we can not sell to your country ({topupotions.Locale}) at this time");
+        }
+
         private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
         {
             using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
@@ -198,8 +205,7 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreatePayPal(string userId, string productId, [FromBody] TopUpOptions options = null)
         {
             var user = await userService.GetOrCreate(userId);
-            if (!CallbackController.DoWeSellto(user.Country, null))
-                throw new ApiException("We are sorry but we can not sell to your country at this time");
+            AssertUserCountry(options);
             var product = await GetTopupProduct(productId, "paypal");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
@@ -273,8 +279,6 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreateLemonSqueezy(string userId, string productId, [FromBody] TopUpOptions options = null)
         {
             var user = await userService.GetOrCreate(userId);
-            if (!CallbackController.DoWeSellto(user.Country, null))
-                throw new ApiException("We are sorry but we can not sell to your country at this time");
             TopUpProduct product = await GetTopupProduct(productId, "lemonsqueezy");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
