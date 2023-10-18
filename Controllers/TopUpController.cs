@@ -304,7 +304,6 @@ namespace Payments.Controllers
                             receipt_button_text = "Go to your account",
                             description = product.Description ?? "Will be credited to your account",
                         },
-                        test_mode = true,
                         checkout_data = new
                         {
                             email = options?.UserEmail,
@@ -324,7 +323,7 @@ namespace Payments.Controllers
                             data = new
                             {
                                 type = "stores",
-                                id = "12595"
+                                id = config["LEMONSQUEEZY:STORE_ID"]
                             }
                         },
                         variant = new
@@ -332,7 +331,7 @@ namespace Payments.Controllers
                             data = new
                             {
                                 type = "variants",
-                                id = "134503"
+                                id = config["LEMONSQUEEZY:VARIANT_ID"]
                             }
                         }
                     }
