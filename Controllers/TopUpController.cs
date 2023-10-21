@@ -99,14 +99,6 @@ namespace Payments.Controllers
                 { "coinAmount", coinAmount.ToString() } };
             var options = new SessionCreateOptions
             {
-                PaymentMethodTypes = new List<string>
-                {
-                  "card",
-                  "bancontact",
-                  "giropay",
-                  "ideal",
-                },
-
                 LineItems = new List<SessionLineItemOptions>
                 {
                   new SessionLineItemOptions
