@@ -261,11 +261,17 @@ namespace Payments.Controllers
                     var address = webhookResult.Resource.PurchaseUnits[0].ShippingDetail.AddressPortable;
                     var country = address.CountryCode;
                     var postalCode = address.PostalCode;
+                    var state = address.AdminArea2;
                     var userId = webhookResult.Resource.PurchaseUnits[0].CustomId;
                     if (!DoWeSellto(country, postalCode))
                     {
                         db.Users.Where(u => u.ExternalId == userId).FirstOrDefault().Country = country;
                         await db.SaveChangesAsync();
+                        return Ok(); // ignore order
+                    }
+                    _logger.LogInformation($"received order from {userId} {country} {postalCode} {state} {json}");
+                    if((state == "MD" || state == "KY") && country == "US")
+                    {
                         return Ok(); // ignore order
                     }
                     // check that there are not too many orders
