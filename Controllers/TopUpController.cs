@@ -217,7 +217,7 @@ namespace Payments.Controllers
                                 ItemTotal = moneyValue
                             }
                         },
-                        CustomId = product.Id.ToString() + ";" + coinAmount  + ";" + user.ExternalId,
+                        CustomId = product.Id.ToString() + ";" + coinAmount.ToString("0.##")  + ";" + user.ExternalId,
                         ReferenceId = user.ExternalId,
                         Description = product.Title,
                         Items = new List<Item>(){
