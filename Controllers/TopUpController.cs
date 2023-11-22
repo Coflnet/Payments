@@ -364,6 +364,8 @@ namespace Payments.Controllers
                     throw new ApiException($"The topUpAmount has to be bigger than the cost of product {product.Slug} ({product.Cost.ToString("0,##")})");
                 eurPrice = Math.Round(eurPrice * targetCoins / product.Cost, 2);
                 coinAmount = targetCoins;
+                // format with dot as thousands seperator
+                product.Title = product.Title.Replace(product.Cost.ToString("0,##"), targetCoins.ToString("0,##"));
             }
         }
 

@@ -17,6 +17,7 @@ namespace Coflnet.Payments
         /// <param name="args"></param>
         public static void Main(string[] args)
         {
+            Console.WriteLine("Starting Payments " + 1_000.ToString("0,0"));
             CreateHostBuilder(args).Build().Run();
         }
 
