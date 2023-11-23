@@ -365,7 +365,7 @@ namespace Payments.Controllers
                 eurPrice = Math.Round(eurPrice * targetCoins / product.Cost, 2);
                 coinAmount = targetCoins;
                 // format with dot as thousands seperator
-                product.Title = product.Title.Replace(product.Cost.ToString("0,##"), targetCoins.ToString("0,##"));
+                product.Title = product.Title.Replace(".",",").Replace(product.Cost.ToString("0,##"), targetCoins.ToString("0,##"));
             }
         }
 
