@@ -75,9 +75,7 @@ namespace Payments.Controllers
         public async Task<DateTime> Get(string userId, string productSlug)
         {
             var user = await GetOrCreate(userId);
-            return await db.Users.Where(u => u.ExternalId == userId)
-                    .Select(u => u.Owns.Where(o => o.Product == db.Products.Where(p => p.Slug == productSlug).First())
-                    .Select(p => p.Expires).FirstOrDefault()).FirstOrDefaultAsync();
+            return (await GetAllOwnershipsLookup(userId, new HashSet<string>() { productSlug })).Values.FirstOrDefault();
         }
 
         /// <summary>
@@ -128,7 +126,7 @@ namespace Payments.Controllers
             var result = await select.ToListAsync();
             return result.GroupBy(r => r.Slug)
                 .Select(g => g.OrderByDescending(r => r.Expires).First())
-                .Where(r=>slugs.Contains(r.Slug))
+                .Where(r => slugs.Contains(r.Slug))
                 .ToDictionary(r => r.Slug, r => r.Expires);
         }
 
