@@ -39,6 +39,7 @@ namespace Coflnet.Payments
             services.AddControllers().AddNewtonsoftJson(json =>
             {
                 json.SerializerSettings.Converters.Add(new StringEnumConverter());
+                json.SerializerSettings.DateTimeZoneHandling = DateTimeZoneHandling.RoundtripKind;
             });
             services.AddSwaggerGenNewtonsoftSupport().AddSwaggerGen(c =>
             {
