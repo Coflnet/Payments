@@ -256,6 +256,7 @@ namespace Payments.Controllers
                 _logger.LogInformation("reading json");
                 json = await new StreamReader(Request.Body).ReadToEndAsync();
                 var webhookResult = Newtonsoft.Json.JsonConvert.DeserializeObject<PayPalWebhook>(json);
+                _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(webhookResult));
                 if (webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
                 {
                     var address = webhookResult.Resource.PurchaseUnits[0].ShippingDetail.AddressPortable;
@@ -329,7 +330,6 @@ namespace Payments.Controllers
 
                 //3. Call PayPal to get the transaction
                 PayPalHttp.HttpResponse response;
-                _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(webhookResult));
                 try
                 {
                     dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
