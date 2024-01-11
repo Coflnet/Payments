@@ -350,7 +350,8 @@ namespace Payments.Controllers
             var product = await productService.GetTopupProduct(productId);
             if (product.ProviderSlug != provider)
                 throw new ApiException("Product is not purchaseable via this provider");
-            return product;
+            // readonly copy
+            return new(product);
         }
 
         private static void GetPriceAndCoins(TopUpOptions options, TopUpProduct product, out decimal eurPrice, out decimal coinAmount)

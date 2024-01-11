@@ -25,6 +25,21 @@ namespace Coflnet.Payments.Models
         [MaxLength(16)]
         public string ProviderSlug { get; set; }
 
+        /// <summary>
+        /// copy constructor
+        /// </summary>
+        /// <param name="product"></param>
+        public TopUpProduct(TopUpProduct product) : base(product)
+        {
+            Price = product.Price;
+            CurrencyCode = product.CurrencyCode;
+            ProviderSlug = product.ProviderSlug;
+        }
+
+        public TopUpProduct()
+        {
+        }
+
         public override bool Equals(object obj)
         {
             return obj is TopUpProduct product &&
