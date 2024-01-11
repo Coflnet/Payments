@@ -168,7 +168,7 @@ namespace Payments.Controllers
             var request = new PaymentRequest()
             {
                 User = user,
-                ProductId = product,
+                ProductId = db.TopUpProducts.Find(product.Id),
                 CreatedAt = DateTime.UtcNow,
                 State = PaymentRequest.Status.CREATED,
                 Amount = eurPrice,
