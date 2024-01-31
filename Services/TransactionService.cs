@@ -298,7 +298,8 @@ namespace Coflnet.Payments.Services
         private async Task AssertNotToManyTransfersReceived(PurchaseableProduct product, DateTime minTime, User targetUser)
         {
             var received = await db.FiniteTransactions.Where(t => t.User == targetUser && t.Product == product && t.Timestamp > minTime && t.Amount > 0).ToListAsync();
-            if (received.Count(r => r.Amount > 100) <= transferSettings.Limit / 2 && (received.Sum(r => r.Amount) <= (transferSettings.Limit * 100) || received.Count <= transferSettings.Limit / 2))
+            if (received.Count(r => r.Amount > 100) <= transferSettings.Limit / 2 && received.Where(r => r.Amount > 100).Sum(r => r.Amount) <= (transferSettings.Limit * 100)
+                || received.Count <= transferSettings.Limit / 2)
                 return;
             var ends = received.Select(r => r.Timestamp).OrderBy(d => d).First() + TimeSpan.FromDays(transferSettings.PeriodDays) - DateTime.UtcNow;
             throw new ApiException($"The target user has received too many transfers recently. Can receive again in {(int)ends.TotalHours + 1} hours");
