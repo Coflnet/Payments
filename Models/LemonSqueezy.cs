@@ -16,7 +16,7 @@ public class Attributes
         string currency,
         string currencyRate,
         string taxName,
-        string taxRate,
+        double taxRate,
         string status,
         string statusFormatted,
         bool refunded,
@@ -101,7 +101,7 @@ public class Attributes
     public string TaxName { get; }
 
     [JsonPropertyName("tax_rate")]
-    public string TaxRate { get; }
+    public double TaxRate { get; }
 
     [JsonPropertyName("status")]
     public string Status { get; }

@@ -210,6 +210,7 @@ namespace Payments.Controllers
                 _logger.LogWarning($"lemonsqueezy signature mismatch {hashString} != {signature}");
                 return StatusCode(400);
             }
+            _logger.LogInformation("received callback from lemonsqueezy --\n{data}", json);
             var webhook = System.Text.Json.JsonSerializer.Deserialize<Coflnet.Payments.Models.LemonSqueezy.Webhook>(json, new System.Text.Json.JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true,
