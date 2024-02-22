@@ -28,7 +28,8 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task<User> GetOrCreate(string userId)
         {
-            var user = await GetAndInclude(userId, u => u.Include(u => u.Owns).ThenInclude(o=>o.Product));
+            var userTask = ()=>GetAndInclude(userId, u => u.Include(u => u.Owns).ThenInclude(o => o.Product));
+            var user = await userTask();
             if (user == null)
             {
                 user = new Coflnet.Payments.Models.User() { ExternalId = userId, Balance = 0, Owns = new () };
@@ -36,12 +37,14 @@ namespace Coflnet.Payments.Services
                 try
                 {
                     await db.SaveChangesAsync();
+                    // select from db
+                    return await userTask();
                 }
                 catch (Exception e)
                 {
                     if (!e.ToString().Contains("Duplicate entry"))
-                        throw e;
-                    return await GetAndInclude(userId, u => u.Include(u => u.Owns));
+                        throw;
+                    return await userTask();
                 }
             }
             else
