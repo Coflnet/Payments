@@ -419,7 +419,7 @@ namespace Payments.Controllers
 
         public static bool DoWeSellto(string country, string postalCode)
         {
-            if (country == "GB" && postalCode.StartsWith("BT"))
+            if (country == "GB" && (postalCode?.StartsWith("BT") ?? false))
                 return false; // registration too complicated for northern ireland
             if (country == "AE")
                 return false; // can't register for taxes as a foreigner
