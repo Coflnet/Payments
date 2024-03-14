@@ -273,8 +273,6 @@ namespace Payments.Controllers
             var user = await userService.GetOrCreate(userId);
             TopUpProduct product = await GetTopupProduct(productId, "lemonsqueezy");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
-            if (!productId.Contains("5400"))
-                throw new ApiException("Sorry, currently only the 5400 CoflCoins are available via lemonsqueezy.");
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
 
             var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");
