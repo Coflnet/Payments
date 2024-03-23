@@ -32,12 +32,14 @@ namespace Payments.Controllers
         [HttpPost]
         public async Task ApplyState(SystemState state)
         {
-            if(state.Products == null || state.Products.Count == 0)
+            if (state.Products == null || state.Products.Count == 0)
                 throw new ApiException("No products provided, this is likely an mistake, blocking applying of state");
             await productService.ApplyProductList(state.Products);
             await productService.ApplyTopupList(state.TopUps);
-            await groupService.ApplyGroupList(state.Groups);
-            await ruleEngine.ApplyRuleList(state.Rules);
+            if (state.Groups != null)
+                await groupService.ApplyGroupList(state.Groups);
+            if (state.Rules != null)
+                await ruleEngine.ApplyRuleList(state.Rules);
         }
     }
 }
