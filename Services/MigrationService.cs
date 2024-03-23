@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -14,11 +15,13 @@ namespace Coflnet.Payments.Services
     {
         private IServiceScopeFactory services;
         private ILogger<MigrationService> logger;
+        private IConfiguration Configuration;
 
-        public MigrationService(IServiceScopeFactory services, ILogger<MigrationService> logger)
+        public MigrationService(IServiceScopeFactory services, ILogger<MigrationService> logger, IConfiguration configuration)
         {
             this.services = services;
             this.logger = logger;
+            Configuration = configuration;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -27,6 +30,11 @@ namespace Coflnet.Payments.Services
             {
                 using var serviceScope = services.CreateScope();
                 using var context = serviceScope.ServiceProvider.GetService<PaymentContext>();
+                if (Configuration["DB_CONNECTION"].StartsWith("server"))
+                {
+                    logger.LogWarning("Using deprecated MariaDB, not applying migrations");
+                    return;
+                }
                 await context.Database.MigrateAsync();
                 logger.LogInformation("Model Migration completed");
                 await AddTransferProduct(context);

@@ -40,7 +40,7 @@ namespace hypixel
 
                 return tracer;
             });
-            services.AddOpenTracing();
+            //services.AddOpenTracing();
         }
     }
 }

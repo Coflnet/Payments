@@ -49,14 +49,21 @@ namespace Coflnet.Payments
                 var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
                 c.IncludeXmlComments(xmlPath);
             });
-
-            var serverVersion = new MariaDbServerVersion(new Version(Configuration["MARIADB_VERSION"]));
-            services.AddDbContext<PaymentContext>(
-                dbContextOptions => dbContextOptions
-                    .UseMySql(Configuration["DB_CONNECTION"], serverVersion)
-                    .EnableSensitiveDataLogging() // <-- These two calls are optional but help
-                    .EnableDetailedErrors()       // <-- with debugging (remove for production).
-            );
+            if (Configuration["DB_CONNECTION"].StartsWith("server"))
+            {
+                var serverVersion = new MariaDbServerVersion(new Version(Configuration["MARIADB_VERSION"]));
+                services.AddDbContext<PaymentContext>(
+                    dbContextOptions => dbContextOptions
+                        .UseMySql(Configuration["DB_CONNECTION"], serverVersion)
+                );
+            }
+            else
+                services.AddDbContext<PaymentContext>(
+                    dbContextOptions => dbContextOptions
+                        .UseNpgsql(Configuration["DB_CONNECTION"])
+                        .EnableSensitiveDataLogging() // <-- These two calls are optional but help
+                        .EnableDetailedErrors()       // <-- with debugging (remove for production).
+                );
             services.AddScoped<TransactionService>();
             services.AddScoped<UserService>();
             services.AddSingleton<ExchangeService>();
