@@ -145,8 +145,9 @@ namespace Payments.Controllers
 
         private static void AssertUserCountry(TopUpOptions topupotions)
         {
-            if (!CallbackController.DoWeSellto(topupotions.Locale, null))
-                throw new ApiException($"We are sorry but we can not sell to your country ({topupotions.Locale}) at this time");
+            var country = topupotions.Locale?.Split('-')[0];
+            if (!CallbackController.DoWeSellto(country, null))
+                throw new ApiException($"We are sorry but we can not sell to your country ({country}) at this time");
         }
 
         private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
@@ -198,6 +199,12 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             AssertUserCountry(options);
+            if (user.Country == null)
+            {
+                user.Country = options.Locale.Split('-').Last();
+                await db.SaveChangesAsync();
+            }
+            Console.WriteLine("Creating paypal payment for user {0} from {1}", user.Id, user.Country);
             var product = await GetTopupProduct(productId, "paypal");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
