@@ -199,7 +199,7 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             AssertUserCountry(options);
-            if (user.Country == null)
+            if (user.Country == null && options.Locale != null)
             {
                 user.Country = options.Locale.Split('-').Last();
                 await db.SaveChangesAsync();
