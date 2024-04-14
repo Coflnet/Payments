@@ -204,6 +204,11 @@ namespace Payments.Controllers
                 user.Country = options.Locale.Split('-').Last();
                 await db.SaveChangesAsync();
             }
+            if(user.Ip == null)
+            {
+                user.Ip = options.UserIp;
+                await db.SaveChangesAsync();
+            }
             Console.WriteLine("Creating paypal payment for user {0} from {1}", user.Id, user.Country);
             var product = await GetTopupProduct(productId, "paypal");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
