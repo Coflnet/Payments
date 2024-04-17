@@ -267,13 +267,17 @@ namespace Payments.Controllers
                     var userId = webhookResult.Resource.PurchaseUnits[0].CustomId;
                     if (!DoWeSellto(country, postalCode))
                     {
-                        db.Users.Where(u => u.ExternalId == userId).FirstOrDefault().Country = country;
+                        var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
+                        if (user != null)
+                            user.Country = country;
+                        else
+                            _logger.LogWarning($"Didn't find user {userId} to update country {country}");
                         await db.SaveChangesAsync();
                         return Ok(); // ignore order
                     }
                     _logger.LogInformation($"received order from {userId} {country} {postalCode} {state} {json}");
                     var coinAmount = double.Parse(webhookResult.Resource.PurchaseUnits[0].CustomId.Split(';')[1]);
-                    if((state == "MD" || state == "KY") && country == "US" && coinAmount < 5000)
+                    if ((state == "MD" || state == "KY") && country == "US" && coinAmount < 5000)
                     {
                         return Ok(); // ignore order
                     }
@@ -424,7 +428,7 @@ namespace Payments.Controllers
             if (country == "AE")
                 return false; // can't register for taxes as a foreigner
             var list = new string[] { "TR", "AE", "SA", "KR", "VN", "CL", "MX" };
-            if(list.Contains(country))
+            if (list.Contains(country))
                 return false; // to much overhead to register for taxes
             return true;
         }
