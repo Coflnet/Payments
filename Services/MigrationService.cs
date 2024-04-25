@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Reflection;
+using System.Security.Policy;
 using System.Threading;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -84,14 +86,22 @@ namespace Coflnet.Payments.Services
                 return false;
             }
             var i = 0;
-            foreach (var item in oldDb.OwnerShips.Select(o => new { o.Id, UserId = o.User.Id }).OrderByDescending(o => o.Id))
+            var toUpdate = oldDb.OwnerShips.Select(o => new { o.Id, UserId = o.User.Id }).OrderByDescending(o => o.Id);
+            var ids = new HashSet<long>(toUpdate.Select(o => o.Id));
+            var idLookup = toUpdate.ToDictionary(o => o.Id);
+            var batchSize = 1000;
+            for (int j = 0; j < ids.Count; j += batchSize)
             {
-                context.OwnerShips.Where(o => o.Id == item.Id).ExecuteUpdate(o => o.SetProperty(p => p.UserId, item.UserId));
-                if (++i % 100 != 0)
-                    continue;
+                var batch = ids.Skip(j).Take(batchSize);
+                var toBeupdated = context.OwnerShips.Where(o => batch.Contains(o.Id));
+                foreach (var item in toBeupdated)
+                {
+                    item.UserId = idLookup[item.Id].UserId;
+                }
                 await context.SaveChangesAsync();
-                logger.LogInformation($"Migrated {i} OwnerShips");
+                logger.LogInformation($"Migrated {j + batchSize} OwnerShips");
             }
+            
             foreach (var item in oldDb.PaymentRequests.Select(o => new { o.Id, UserId = o.User.Id }).OrderByDescending(o => o.Id))
             {
                 context.PaymentRequests.Where(o => o.Id == item.Id).ExecuteUpdate(o => o.SetProperty(p => p.UserId, item.UserId));
