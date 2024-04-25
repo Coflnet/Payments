@@ -119,10 +119,10 @@ namespace Payments.Controllers
         public async Task<Dictionary<string, DateTime>> GetAllOwnershipsLookup(string userId, [FromBody] HashSet<string> slugs)
         {
             var user = await GetOrCreate(userId);
-            var select = db.Users.Where(u => u.ExternalId == userId)
-                    .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))))
-                    .SelectMany(p => p.Product.Groups, (o, group) => new { o.Expires, group.Slug })
-                    .AsNoTracking();
+            var select = db.OwnerShips.Where(o=>o.User.ExternalId == userId 
+                && (slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))))
+                .Select(o=>new { o.Expires, o.Product.Slug })
+                .AsNoTracking();
             var result = await select.ToListAsync();
             return result.GroupBy(r => r.Slug)
                 .Select(g => g.OrderByDescending(r => r.Expires).First())
