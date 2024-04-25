@@ -40,8 +40,14 @@ namespace Coflnet.Payments.Services
                 else
                     await context.Database.MigrateAsync();
                 logger.LogInformation("Model Migration completed");
+                var failed = false;
                 using (var oldDb = serviceScope.ServiceProvider.GetService<OldPaymentContext>())
-                    await MigrateData(oldDb, context);
+                    failed = await MigrateData(oldDb, context);
+                if (failed)
+                {
+                    logger.LogError("Data Migration failed");
+                    return;
+                }
                 await AddTransferProduct(context);
                 await AddRefundProduct(context);
                 var allGrups = await context.Groups.ToListAsync();
@@ -69,22 +75,23 @@ namespace Coflnet.Payments.Services
             }
         }
 
-        private async Task MigrateData(OldPaymentContext oldDb, PaymentContext context)
+        private async Task<bool> MigrateData(OldPaymentContext oldDb, PaymentContext context)
         {
             if (oldDb == null)
             {
                 logger.LogWarning("No old database connection configured");
-                return;
+                return false;
             }
-            await MoveInt(oldDb.Users, context);
-            await MoveLongId(oldDb.FiniteTransactions, context);
-            await MoveLongId(oldDb.PlanedTransactions, context);
+            //await MoveInt(oldDb.Users, context);
+            //await MoveLongId(oldDb.FiniteTransactions, context);
+            //await MoveLongId(oldDb.PlanedTransactions, context); done
             await MoveInt(oldDb.Products, context);
             await MoveInt(oldDb.TopUpProducts, context);
             await MoveInt(oldDb.Groups, context);
             await MoveInt(oldDb.Rules, context);
             await MoveLongId(oldDb.OwnerShips, context);
             await MoveInt(oldDb.PaymentRequests, context);
+            return false;
         }
 
         private async Task MoveInt<T>(DbSet<T> oldDb, PaymentContext context) where T : class, HasId
@@ -100,7 +107,7 @@ namespace Coflnet.Payments.Services
 
         private async Task MoveData<T>(DbSet<T> oldDb, PaymentContext context, IOrderedQueryable<T> select) where T : class
         {
-            var transactionsBatchSize = 1000;
+            var transactionsBatchSize = 200;
             var transactionCount = await oldDb.CountAsync();
             logger.LogInformation($"Migrating {transactionCount} {oldDb.EntityType.Name}");
             for (int i = 0; i < transactionCount; i += transactionsBatchSize)
