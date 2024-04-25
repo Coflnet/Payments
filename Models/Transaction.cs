@@ -25,6 +25,8 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public Product Product { get; set; }
+        public int UserId { get; set; }
+        public int ProductId { get; set; }
         /// <summary>
         /// The size of the transaction
         /// </summary>

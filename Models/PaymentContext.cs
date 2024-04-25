@@ -82,7 +82,10 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => e.CreateOnIp);
                 entity.HasIndex(e => new { e.CreatedAt, e.SessionId });
             });
-
+            modelBuilder.Entity<FiniteTransaction>(entity =>
+            {
+                entity.HasIndex(e => e.Reference);
+            });
             modelBuilder.Entity<PurchaseableProduct>(entity =>
             {
                 entity.HasIndex(e => e.Slug).IsUnique();
@@ -102,6 +105,7 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<OwnerShip>(entity =>
             {
                 entity.ToTable("OwnerShip");
+                entity.HasIndex(e => e.Expires);
             });
         }
     }

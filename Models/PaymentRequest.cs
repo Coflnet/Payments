@@ -52,6 +52,7 @@ public class PaymentRequest : HasId
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
     public DateTime? ExpiresAt { get; set; }
+    public int UserId { get; set; }
     /// <summary>
     /// States a payment request can be in
     /// </summary>
