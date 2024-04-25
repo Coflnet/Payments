@@ -83,26 +83,33 @@ namespace Coflnet.Payments.Services
                 logger.LogWarning("No old database connection configured");
                 return false;
             }
+            int deleted = context.OwnerShips.Where(o => o.User == null).ExecuteDelete();
+            logger.LogInformation($"Deleted {deleted} orphaned ownerships");
+            context.PaymentRequests.Where(o => o.User == null).ExecuteDelete();
+            await MoveLongId(oldDb.OwnerShips, context, q=>q.Include(o=>o.User).Include(o=>o.Product));
+            await MoveInt(oldDb.PaymentRequests, context, q=>q.Include(o=>o.User));
             //await MoveInt(oldDb.Users, context);
             //await MoveLongId(oldDb.FiniteTransactions, context);
             //await MoveLongId(oldDb.PlanedTransactions, context); done
-            await MoveInt(oldDb.Products, context);
-            await MoveInt(oldDb.TopUpProducts, context);
-            await MoveInt(oldDb.Groups, context);
-            await MoveInt(oldDb.Rules, context);
-            await MoveLongId(oldDb.OwnerShips, context);
-            await MoveInt(oldDb.PaymentRequests, context);
+            // await MoveInt(oldDb.Products, context);
+            // await MoveInt(oldDb.TopUpProducts, context);
+            // await MoveInt(oldDb.Groups, context);
+            // await MoveInt(oldDb.Rules, context);
             return false;
         }
 
-        private async Task MoveInt<T>(DbSet<T> oldDb, PaymentContext context) where T : class, HasId
+        private async Task MoveInt<T>(DbSet<T> oldDb, PaymentContext context, Func<IQueryable<T>, IQueryable<T>> include = null) where T : class, HasId
         {
             var select = oldDb.OrderBy(d => d.Id);
+            if (include != null)
+                select = include(select).OrderBy(d => d.Id);
             await MoveData(oldDb, context, select);
         }
-        private async Task MoveLongId<T>(DbSet<T> oldDb, PaymentContext context) where T : class, HasLongId
+        private async Task MoveLongId<T>(DbSet<T> oldDb, PaymentContext context, Func<IQueryable<T>, IQueryable<T>> include = null) where T : class, HasLongId
         {
             var select = oldDb.OrderBy(d => d.Id);
+            if (include != null)
+                select = include(select).OrderBy(d => d.Id);
             await MoveData(oldDb, context, select);
         }
 
