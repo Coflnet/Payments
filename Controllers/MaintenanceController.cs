@@ -11,10 +11,12 @@ namespace Payments.Controllers;
 public class MaintenanceController : ControllerBase
 {
     private readonly PaymentContext db;
+    private readonly MigrationService migrationService;
 
-    public MaintenanceController(PaymentContext db)
+    public MaintenanceController(PaymentContext db, MigrationService migrationService)
     {
         this.db = db;
+        this.migrationService = migrationService;
     }
 
     /// <summary>
@@ -41,5 +43,15 @@ public class MaintenanceController : ControllerBase
         await db.SaveChangesAsync();
         return ownerships.Count;
     }
+
+    [HttpGet]
+    [Route("/migrationdone")]
+    public IActionResult MigrationDone()
+    {
+        if (migrationService.Done)
+            return Ok(migrationService.Done);
+        return StatusCode(503);
+    }
+
 }
 

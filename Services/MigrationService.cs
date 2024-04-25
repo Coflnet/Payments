@@ -18,6 +18,7 @@ namespace Coflnet.Payments.Services
         private IServiceScopeFactory services;
         private ILogger<MigrationService> logger;
         private IConfiguration Configuration;
+        public bool Done { get; private set; }
 
         public MigrationService(IServiceScopeFactory services, ILogger<MigrationService> logger, IConfiguration configuration)
         {
@@ -60,6 +61,7 @@ namespace Coflnet.Payments.Services
                     await context.SaveChangesAsync();
                 }
                 logger.LogInformation("Data Migration completed");
+                Done = true;
             }
             catch (Exception e)
             {

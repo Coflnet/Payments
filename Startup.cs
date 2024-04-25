@@ -106,7 +106,8 @@ namespace Coflnet.Payments
             services.AddSingleton<PayPalCheckoutSdk.Core.PayPalHttpClient>(new PayPalCheckoutSdk.Core.PayPalHttpClient(environment));
 
             StripeConfiguration.ApiKey = Configuration["STRIPE:KEY"];
-            services.AddHostedService<MigrationService>();
+            services.AddSingleton<MigrationService>();
+            services.AddHostedService(d=>d.GetRequiredService<MigrationService>());
             services.AddJaeger(0.1, 10);
         }
 
