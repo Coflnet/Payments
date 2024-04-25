@@ -58,10 +58,10 @@ public class MaintenanceController : ControllerBase
     [Route("/ownership")]
     public async Task<List<OwnerShipMap>> GetOwnerships(int start, int count)
     {
-        var all = await db.OwnerShips.Include(o => o.Product).Include(o => o.User).OrderBy(o => o.Id).Where(o => o.Id > start).Take(count).Select(o => new { o, o.User.ExternalId }).ToListAsync();
+        var all = await db.OwnerShips.Include(o => o.Product).Include(o => o.User).OrderBy(o => o.Id).Where(o => o.Id > start).Take(count).Select(o => new { o, o.User }).ToListAsync();
         return all.Select(o => new OwnerShipMap()
         {
-            UserId = o.ExternalId,
+            User = o.User,
             ProductSlug = o.o.Product.Slug,
             Expires = o.o.Expires
         }).ToList();
@@ -69,7 +69,7 @@ public class MaintenanceController : ControllerBase
 
     public class OwnerShipMap
     {
-        public string UserId { get; set; }
+        public User User { get; set; }
         public string ProductSlug { get; set; }
         public DateTime Expires { get; set; }
     }
