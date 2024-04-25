@@ -86,10 +86,11 @@ namespace Coflnet.Payments.Services
             int deleted = context.OwnerShips.Where(o => o.User == null).ExecuteDelete();
             logger.LogInformation($"Deleted {deleted} orphaned ownerships");
             context.PaymentRequests.Where(o => o.User == null).ExecuteDelete();
-            await MoveLongId(oldDb.OwnerShips, context, q=>q.Include(o=>o.User).Include(o=>o.Product));
-            await MoveInt(oldDb.PaymentRequests, context, q=>q.Include(o=>o.User));
+            context.FiniteTransactions.Where(o => o.Product == null).ExecuteDelete();
+            await MoveLongId(oldDb.OwnerShips, context, q => q.Include(o => o.User).Include(o => o.Product));
+            await MoveInt(oldDb.PaymentRequests, context, q => q.Include(o => o.User));
+            await MoveLongId(oldDb.FiniteTransactions, context, q => q.Include(o => o.Product).Include(q => q.User));
             //await MoveInt(oldDb.Users, context);
-            //await MoveLongId(oldDb.FiniteTransactions, context);
             //await MoveLongId(oldDb.PlanedTransactions, context); done
             // await MoveInt(oldDb.Products, context);
             // await MoveInt(oldDb.TopUpProducts, context);
