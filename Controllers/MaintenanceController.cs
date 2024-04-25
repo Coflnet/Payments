@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -51,6 +52,13 @@ public class MaintenanceController : ControllerBase
         if (migrationService.Done)
             return Ok(migrationService.Done);
         return StatusCode(503);
+    }
+
+    [HttpGet]
+    [Route("/ownership")]
+    public async Task<List<OwnerShip>> GetOwnerships(int start, int offset)
+    {
+        return await db.OwnerShips.Skip(start).Take(offset).ToListAsync();
     }
 
 }
