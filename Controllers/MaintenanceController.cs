@@ -58,7 +58,7 @@ public class MaintenanceController : ControllerBase
     [Route("/ownership")]
     public async Task<List<OwnerShipMap>> GetOwnerships(int start, int count)
     {
-        var all = await db.OwnerShips.Include(o => o.Product).OrderBy(o => o.Id).Where(o => o.Id > start).Take(count).Select(o => new { o, o.User.ExternalId }).ToListAsync();
+        var all = await db.OwnerShips.Include(o => o.Product).Include(o => o.User).OrderBy(o => o.Id).Where(o => o.Id > start).Take(count).Select(o => new { o, o.User.ExternalId }).ToListAsync();
         return all.Select(o => new OwnerShipMap()
         {
             UserId = o.ExternalId,
