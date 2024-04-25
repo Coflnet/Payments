@@ -33,13 +33,6 @@ namespace Coflnet.Payments.Services
             {
                 using var serviceScope = services.CreateScope();
                 using var context = serviceScope.ServiceProvider.GetService<PaymentContext>();
-                if (Configuration["DB_CONNECTION"].StartsWith("server"))
-                {
-                    logger.LogWarning("Using deprecated MariaDB, not applying migrations");
-                }
-                else
-                    await context.Database.MigrateAsync();
-                logger.LogInformation("Model Migration completed");
                 var failed = false;
                 using (var oldDb = serviceScope.ServiceProvider.GetService<OldPaymentContext>())
                     failed = await MigrateData(oldDb, context);
@@ -48,6 +41,13 @@ namespace Coflnet.Payments.Services
                     logger.LogError("Data Migration failed");
                     return;
                 }
+                if (Configuration["DB_CONNECTION"].StartsWith("server"))
+                {
+                    logger.LogWarning("Using deprecated MariaDB, not applying migrations");
+                }
+                else
+                    await context.Database.MigrateAsync();
+                logger.LogInformation("Model Migration completed");
                 await AddTransferProduct(context);
                 await AddRefundProduct(context);
                 var allGrups = await context.Groups.ToListAsync();
