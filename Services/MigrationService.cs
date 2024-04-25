@@ -83,13 +83,32 @@ namespace Coflnet.Payments.Services
                 logger.LogWarning("No old database connection configured");
                 return false;
             }
-            int deleted = context.OwnerShips.Where(o => o.User == null).ExecuteDelete();
-            logger.LogInformation($"Deleted {deleted} orphaned ownerships");
-            context.PaymentRequests.Where(o => o.User == null).ExecuteDelete();
-            context.FiniteTransactions.Where(o => o.Product == null).ExecuteDelete();
-            await MoveLongId(oldDb.OwnerShips, context, q => q.Include(o => o.User).Include(o => o.Product));
-            await MoveInt(oldDb.PaymentRequests, context, q => q.Include(o => o.User));
-            await MoveLongId(oldDb.FiniteTransactions, context, q => q.Include(o => o.Product).Include(q => q.User));
+            var i = 0;
+            foreach (var item in oldDb.OwnerShips.Select(o => new { o.Id, UserId = o.User.Id }).OrderByDescending(o => o.Id))
+            {
+                context.OwnerShips.Where(o => o.Id == item.Id).ExecuteUpdate(o => o.SetProperty(p => p.UserId, item.UserId));
+                if (++i % 100 != 0)
+                    continue;
+                await context.SaveChangesAsync();
+                logger.LogInformation($"Migrated {i} OwnerShips");
+            }
+            foreach (var item in oldDb.PaymentRequests.Select(o => new { o.Id, UserId = o.User.Id }).OrderByDescending(o => o.Id))
+            {
+                context.PaymentRequests.Where(o => o.Id == item.Id).ExecuteUpdate(o => o.SetProperty(p => p.UserId, item.UserId));
+                if (++i % 100 != 0)
+                    continue;
+                await context.SaveChangesAsync();
+                logger.LogInformation($"Migrated {i} PaymentRequests");
+            }
+            foreach (var item in oldDb.FiniteTransactions.Select(o => new { o.Id, ProductId = o.Product.Id }).OrderByDescending(o => o.Id))
+            {
+                context.FiniteTransactions.Where(o => o.Id == item.Id).ExecuteUpdate(o => o.SetProperty(p => p.ProductId, item.ProductId));
+                if (++i % 100 != 0)
+                    continue;
+                await context.SaveChangesAsync();
+                logger.LogInformation($"Migrated {i} FiniteTransactions");
+            }
+
             //await MoveInt(oldDb.Users, context);
             //await MoveLongId(oldDb.PlanedTransactions, context); done
             // await MoveInt(oldDb.Products, context);
