@@ -118,7 +118,6 @@ namespace Payments.Controllers
         [Route("{userId}/owns/until")]
         public async Task<Dictionary<string, DateTime>> GetAllOwnershipsLookup(string userId, [FromBody] HashSet<string> slugs)
         {
-            var user = await GetOrCreate(userId);
             var select = db.OwnerShips.Where(o=>o.User.ExternalId == userId 
                 && (slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))))
                 .Select(o=>new { o.Expires, o.Product.Slug })
