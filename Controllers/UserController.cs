@@ -74,8 +74,8 @@ namespace Payments.Controllers
         [Route("{userId}/owns/{productSlug}/until")]
         public async Task<DateTime> Get(string userId, string productSlug)
         {
-            var user = await GetOrCreate(userId);
-            return (await GetAllOwnershipsLookup(userId, new HashSet<string>() { productSlug })).Values.FirstOrDefault();
+            return await db.OwnerShips.Where(o=>o.User.ExternalId == userId && o.Product.Slug == productSlug)
+                .Select(o=>o.Expires).FirstOrDefaultAsync();
         }
 
         /// <summary>
