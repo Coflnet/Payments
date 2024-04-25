@@ -86,7 +86,7 @@ namespace Coflnet.Payments.Services
                 return false;
             }
             var i = 0;
-            var toUpdate = context.OwnerShips.Where(o => o.UserId == null).Select(o => o.Id).OrderByDescending(id=>id);
+            var toUpdate = context.OwnerShips.Where(o => o.UserId == null).Select(o => o.Id).OrderByDescending(id => id);
             var ids = new HashSet<long>(toUpdate);
             var batchSize = 50;
             logger.LogInformation($"Migrating {ids.Count} OwnerShips currently null");
@@ -103,20 +103,24 @@ namespace Coflnet.Payments.Services
                 logger.LogInformation($"Migrated {j + batchSize} OwnerShips");
             }
 
-            var transactionsToupdate = context.FiniteTransactions.Where(o => o.ProductId == null).Select(o => o.Id).OrderByDescending(id => id);
-            ids = new HashSet<long>(transactionsToupdate);
-            logger.LogInformation($"Migrating {ids.Count} FiniteTransactions currently null");
-            for (int j = 0; j < ids.Count; j += batchSize)
+            for (int ib = 0; ib < 20; ib++)
             {
-                var batch = ids.Skip(j).Take(batchSize);
-                var toBeupdated = context.FiniteTransactions.Where(o => batch.Contains(o.Id));
-                var idLookup = await oldDb.FiniteTransactions.Where(o => batch.Contains(o.Id)).ToDictionaryAsync(o => o.Id);
-                foreach (var item in toBeupdated)
+
+                var transactionsToupdate = context.FiniteTransactions.Where(o => o.ProductId == null && o.Id < ib * 10000).Select(o => o.Id).OrderByDescending(id => id);
+                ids = new HashSet<long>(transactionsToupdate);
+                logger.LogInformation($"Migrating {ids.Count} FiniteTransactions currently null");
+                for (int j = 0; j < ids.Count; j += batchSize)
                 {
-                    item.ProductId = idLookup[item.Id].ProductId;
+                    var batch = ids.Skip(j).Take(batchSize);
+                    var toBeupdated = context.FiniteTransactions.Where(o => batch.Contains(o.Id));
+                    var idLookup = await oldDb.FiniteTransactions.Where(o => batch.Contains(o.Id)).ToDictionaryAsync(o => o.Id);
+                    foreach (var item in toBeupdated)
+                    {
+                        item.ProductId = idLookup[item.Id].ProductId;
+                    }
+                    await context.SaveChangesAsync();
+                    logger.LogInformation($"Migrated {j + batchSize} FiniteTransactions");
                 }
-                await context.SaveChangesAsync();
-                logger.LogInformation($"Migrated {j + batchSize} FiniteTransactions");
             }
 
             var paymentRequestsToupdate = context.PaymentRequests.Where(o => o.UserId == null).Select(o => o.Id).OrderByDescending(id => id);
