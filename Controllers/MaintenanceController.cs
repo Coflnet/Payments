@@ -56,9 +56,22 @@ public class MaintenanceController : ControllerBase
 
     [HttpGet]
     [Route("/ownership")]
-    public async Task<List<OwnerShip>> GetOwnerships(int start, int offset)
+    public async Task<List<OwnerShipMap>> GetOwnerships(int start, int count)
     {
-        return await db.OwnerShips.Skip(start).Take(offset).ToListAsync();
+        var all = await db.OwnerShips.Include(o => o.Product).OrderBy(o => o.Id).Where(o => o.Id > start).Take(count).Select(o => new { o, o.User.ExternalId }).ToListAsync();
+        return all.Select(o => new OwnerShipMap()
+        {
+            UserId = o.ExternalId,
+            ProductSlug = o.o.Product.Slug,
+            Expires = o.o.Expires
+        }).ToList();
+    }
+
+    public class OwnerShipMap
+    {
+        public string UserId { get; set; }
+        public string ProductSlug { get; set; }
+        public DateTime Expires { get; set; }
     }
 
 }
