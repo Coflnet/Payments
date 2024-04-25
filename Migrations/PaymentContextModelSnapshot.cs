@@ -375,11 +375,13 @@ namespace Payments.Migrations
                     b.HasOne("Coflnet.Payments.Models.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Product");
@@ -396,6 +398,7 @@ namespace Payments.Migrations
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany("Owns")
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Product");
@@ -412,6 +415,7 @@ namespace Payments.Migrations
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("ProductId");
@@ -424,11 +428,13 @@ namespace Payments.Migrations
                     b.HasOne("Coflnet.Payments.Models.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Product");

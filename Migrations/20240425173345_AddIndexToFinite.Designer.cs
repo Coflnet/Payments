@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Payments.Migrations
 {
     [DbContext(typeof(PaymentContext))]
-    [Migration("20240425170041_AddIndexToFinite")]
+    [Migration("20240425173345_AddIndexToFinite")]
     partial class AddIndexToFinite
     {
         /// <inheritdoc />
@@ -378,11 +378,13 @@ namespace Payments.Migrations
                     b.HasOne("Coflnet.Payments.Models.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Product");
@@ -399,6 +401,7 @@ namespace Payments.Migrations
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany("Owns")
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Product");
@@ -415,6 +418,7 @@ namespace Payments.Migrations
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("ProductId");
@@ -427,11 +431,13 @@ namespace Payments.Migrations
                     b.HasOne("Coflnet.Payments.Models.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Product");
