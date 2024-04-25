@@ -66,7 +66,8 @@ namespace Coflnet.Payments.Services
                     product.Groups.Add(group);
                     await context.SaveChangesAsync();
                 }
-                logger.LogInformation("Data Migration completed");
+                var userCount = await context.Users.CountAsync();
+                logger.LogInformation("Data Migration completed, {userCount} users active", userCount);
                 Done = true;
             }
             catch (Exception e)
