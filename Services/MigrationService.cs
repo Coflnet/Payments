@@ -86,14 +86,15 @@ namespace Coflnet.Payments.Services
                 return false;
             }
             var i = 0;
-            var toUpdate = oldDb.OwnerShips.Select(o => new { o.Id, UserId = o.User.Id }).OrderByDescending(o => o.Id);
-            var ids = new HashSet<long>(toUpdate.Select(o => o.Id));
-            var idLookup = toUpdate.ToDictionary(o => o.Id);
+            var toUpdate = context.OwnerShips.Where(o => o.UserId == null).Select(o => o.Id).OrderByDescending(id=>id);
+            var ids = new HashSet<long>(toUpdate);
             var batchSize = 1000;
+            logger.LogInformation($"Migrating {ids.Count} OwnerShips currently null");
             for (int j = 0; j < ids.Count; j += batchSize)
             {
                 var batch = ids.Skip(j).Take(batchSize);
                 var toBeupdated = context.OwnerShips.Where(o => batch.Contains(o.Id));
+                var idLookup = await oldDb.OwnerShips.Where(o => batch.Contains(o.Id)).ToDictionaryAsync(o => o.Id);
                 foreach (var item in toBeupdated)
                 {
                     item.UserId = idLookup[item.Id].UserId;
@@ -101,7 +102,7 @@ namespace Coflnet.Payments.Services
                 await context.SaveChangesAsync();
                 logger.LogInformation($"Migrated {j + batchSize} OwnerShips");
             }
-            
+
             foreach (var item in oldDb.PaymentRequests.Select(o => new { o.Id, UserId = o.User.Id }).OrderByDescending(o => o.Id))
             {
                 context.PaymentRequests.Where(o => o.Id == item.Id).ExecuteUpdate(o => o.SetProperty(p => p.UserId, item.UserId));
