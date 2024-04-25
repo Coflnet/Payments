@@ -8,7 +8,7 @@ namespace Coflnet.Payments.Models
     /// <summary>
     /// Base class for Products 
     /// </summary>
-    public class Product
+    public class Product : HasId
     {
         /// <summary>
         /// Primary Key

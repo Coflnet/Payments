@@ -1,5 +1,7 @@
 using System;
+using System.ComponentModel.DataAnnotations;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -33,10 +35,12 @@ namespace Coflnet.Payments.Services
                 if (Configuration["DB_CONNECTION"].StartsWith("server"))
                 {
                     logger.LogWarning("Using deprecated MariaDB, not applying migrations");
-                    return;
                 }
-                await context.Database.MigrateAsync();
+                else
+                    await context.Database.MigrateAsync();
                 logger.LogInformation("Model Migration completed");
+                using (var oldDb = serviceScope.ServiceProvider.GetService<OldPaymentContext>())
+                    await MigrateData(oldDb, context);
                 await AddTransferProduct(context);
                 await AddRefundProduct(context);
                 var allGrups = await context.Groups.ToListAsync();
@@ -61,6 +65,58 @@ namespace Coflnet.Payments.Services
             {
                 logger.LogError(e, $"Migrating failed");
             }
+        }
+
+        private async Task MigrateData(OldPaymentContext oldDb, PaymentContext context)
+        {
+            if (oldDb == null)
+            {
+                logger.LogWarning("No old database connection configured");
+                return;
+            }
+            await MoveInt(oldDb.Users, context);
+            await MoveLongId(oldDb.FiniteTransactions, context);
+            await MoveLongId(oldDb.PlanedTransactions, context);
+            await MoveInt(oldDb.Products, context);
+            await MoveInt(oldDb.TopUpProducts, context);
+            await MoveInt(oldDb.Groups, context);
+            await MoveInt(oldDb.Rules, context);
+            await MoveLongId(oldDb.OwnerShips, context);
+            await MoveInt(oldDb.PaymentRequests, context);
+        }
+
+        private async Task MoveInt<T>(DbSet<T> oldDb, PaymentContext context) where T : class, HasId
+        {
+            var select = oldDb.OrderBy(d => d.Id);
+            await MoveData(oldDb, context, select);
+        }
+        private async Task MoveLongId<T>(DbSet<T> oldDb, PaymentContext context) where T : class, HasLongId
+        {
+            var select = oldDb.OrderBy(d => d.Id);
+            await MoveData(oldDb, context, select);
+        }
+
+        private async Task MoveData<T>(DbSet<T> oldDb, PaymentContext context, IOrderedQueryable<T> select) where T : class
+        {
+            var transactionsBatchSize = 1000;
+            var transactionCount = await oldDb.CountAsync();
+            logger.LogInformation($"Migrating {transactionCount} {oldDb.EntityType.Name}");
+            for (int i = 0; i < transactionCount; i += transactionsBatchSize)
+            {
+                var transactions = await select.Skip(i).Take(transactionsBatchSize).ToListAsync();
+                context.AddRange(transactions);
+                await context.SaveChangesAsync();
+                logger.LogInformation($"Migrated {i + transactions.Count} of {transactionCount} {oldDb.EntityType.Name}");
+            }
+        }
+
+        public static string GetKeyField(Type type)
+        {
+            var allProperties = type.GetProperties();
+
+            var keyProperty = allProperties.SingleOrDefault(p => p.IsDefined(typeof(KeyAttribute)));
+
+            return keyProperty != null ? keyProperty.Name : null;
         }
 
         private static async Task AddTransferProduct(PaymentContext context)

@@ -7,7 +7,7 @@ namespace Coflnet.Payments.Models;
 /// <summary>
 /// An user capable of making transactions  
 /// </summary>
-public class User
+public class User : HasId
 {
     /// <summary>
     /// primary key

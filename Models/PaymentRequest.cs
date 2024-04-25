@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace Coflnet.Payments.Models;
 
-public class PaymentRequest
+public class PaymentRequest : HasId
 {
     public int Id { get; set; }
     /// <summary>

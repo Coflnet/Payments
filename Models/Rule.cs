@@ -6,7 +6,7 @@ namespace Coflnet.Payments.Models;
 /// <summary>
 /// Rules can change attributes of products based on the ownership of another
 /// </summary>
-public class Rule
+public class Rule : HasId
 {
     /// <summary>
     /// Primary key of this rule

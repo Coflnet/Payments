@@ -6,7 +6,7 @@ namespace Coflnet.Payments.Models
     /// <summary>
     /// A group is a collection of one or more <see cref="Product"/>
     /// </summary>
-    public class Group
+    public class Group : HasId
     {
         /// <summary>
         /// Primary Key

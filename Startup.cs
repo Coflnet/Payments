@@ -64,6 +64,17 @@ namespace Coflnet.Payments
                         .EnableSensitiveDataLogging() // <-- These two calls are optional but help
                         .EnableDetailedErrors()       // <-- with debugging (remove for production).
                 );
+            if(Configuration["OLD_DB_CONNECTION"] != null)
+            {
+                var serverVersion = new MariaDbServerVersion(new Version(Configuration["MARIADB_VERSION"]));
+                Console.WriteLine("Registering old database\n--------------");
+                services.AddDbContext<OldPaymentContext>(
+                    dbContextOptions => dbContextOptions
+                        .UseMySql(Configuration["OLD_DB_CONNECTION"], serverVersion)
+                        .EnableSensitiveDataLogging() // <-- These two calls are optional but help
+                        .EnableDetailedErrors()       // <-- with debugging (remove for production).
+                );
+            }
             services.AddScoped<TransactionService>();
             services.AddScoped<UserService>();
             services.AddSingleton<ExchangeService>();

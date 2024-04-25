@@ -7,7 +7,7 @@ namespace Coflnet.Payments.Models
     /// <summary>
     /// Base class for transactions
     /// </summary>
-    public class Transaction
+    public class Transaction : HasLongId
     {
         /// <summary>
         /// Primary Id

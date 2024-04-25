@@ -8,7 +8,7 @@ namespace Coflnet.Payments.Models
     /// Represents an ownership of some product by some user.
     /// Has the time of when the ownership expires.
     /// </summary>
-    public class OwnerShip
+    public class OwnerShip : HasLongId
     {
         /// <summary>
         /// Primary Id
