@@ -75,6 +75,7 @@ namespace Coflnet.Payments.Services
             catch (Exception e)
             {
                 logger.LogError(e, $"Migrating failed");
+                Done = true;
             }
         }
 
