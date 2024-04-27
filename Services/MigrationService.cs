@@ -103,7 +103,7 @@ namespace Coflnet.Payments.Services
                 logger.LogInformation($"Migrated {j + batchSize} OwnerShips");
             }
 
-            for (int ib = 0; ib < 20; ib++)
+            for (int ib = 0; ib < 25; ib++)
             {
 
                 var transactionsToupdate = context.FiniteTransactions.Where(o => o.ProductId == null && o.Id < ib * 10000).Select(o => o.Id).OrderByDescending(id => id);
