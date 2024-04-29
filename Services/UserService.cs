@@ -28,11 +28,11 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task<User> GetOrCreate(string userId)
         {
-            var userTask = ()=>GetAndInclude(userId, u => u.Include(u => u.Owns).ThenInclude(o => o.Product));
+            var userTask = () => GetAndInclude(userId, u => u.Include(u => u.Owns).ThenInclude(o => o.Product));
             var user = await userTask();
             if (user == null)
             {
-                user = new Coflnet.Payments.Models.User() { ExternalId = userId, Balance = 0, Owns = new () };
+                user = new Coflnet.Payments.Models.User() { ExternalId = userId, Balance = 0, Owns = new() };
                 db.Users.Add(user);
                 try
                 {
@@ -42,6 +42,8 @@ namespace Coflnet.Payments.Services
                 }
                 catch (Exception e)
                 {
+                    if (e.ToString().Contains("plicate key value violates unique constra"))
+                        await GetOrCreate(userId);
                     if (!e.ToString().Contains("Duplicate entry"))
                         throw;
                     return await userTask();
@@ -73,14 +75,14 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task<IEnumerable<User>> GetUsersOwning(string slug, DateTime when)
         {
-            var productList = await db.Groups.Where(g => g.Slug == slug).SelectMany(g => g.Products).Select(p=>p.Id).ToListAsync();
-            return await db.Users.Where(u => u.Owns.Where(o => productList.Contains(o.Product.Id)  && o.Expires > when).Any()).ToListAsync();
+            var productList = await db.Groups.Where(g => g.Slug == slug).SelectMany(g => g.Products).Select(p => p.Id).ToListAsync();
+            return await db.Users.Where(u => u.Owns.Where(o => productList.Contains(o.Product.Id) && o.Expires > when).Any()).ToListAsync();
         }
 
         internal async Task<DateTime> GetLongest(string userId, HashSet<string> slugs)
         {
             return await db.Users.Where(u => u.ExternalId == userId)
-                    .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g=>slugs.Contains(g.Slug)))
+                    .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug)))
                     .Select(p => p.Expires)).OrderByDescending(p => p).FirstOrDefaultAsync();
         }
     }
