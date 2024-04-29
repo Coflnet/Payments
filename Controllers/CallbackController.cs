@@ -394,7 +394,7 @@ namespace Payments.Controllers
                     PaymentMethod = "paypal",
                     PaymentProvider = "paypal",
                     PaymentProviderTransactionId = transactionId,
-                    Timestamp = string.IsNullOrEmpty(order.CreateTime) ? DateTime.Now : DateTime.Parse(order.CreateTime)
+                    Timestamp = string.IsNullOrEmpty(order.CreateTime) ? DateTime.UtcNow : DateTime.Parse(order.CreateTime)
                 });
 
             }
@@ -418,7 +418,7 @@ namespace Payments.Controllers
         {
             return await db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First()
                                         && t.Product.Type.HasFlag(Coflnet.Payments.Models.Product.ProductType.TOP_UP)
-                                            && t.Timestamp > DateTime.Now.AddDays(-1)).CountAsync() >= 2;
+                                            && t.Timestamp > DateTime.UtcNow.AddDays(-1)).CountAsync() >= 2;
         }
 
         public static bool DoWeSellto(string country, string postalCode)
