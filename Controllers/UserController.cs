@@ -74,8 +74,8 @@ namespace Payments.Controllers
         [Route("{userId}/owns/{productSlug}/until")]
         public async Task<DateTime> Get(string userId, string productSlug)
         {
-            return await db.OwnerShips.Where(o=>o.User.ExternalId == userId && o.Product.Slug == productSlug)
-                .Select(o=>o.Expires).FirstOrDefaultAsync();
+            return await db.OwnerShips.Where(o => o.User.ExternalId == userId && o.Product.Slug == productSlug)
+                .Select(o => o.Expires).FirstOrDefaultAsync();
         }
 
         /// <summary>
@@ -118,9 +118,9 @@ namespace Payments.Controllers
         [Route("{userId}/owns/until")]
         public async Task<Dictionary<string, DateTime>> GetAllOwnershipsLookup(string userId, [FromBody] HashSet<string> slugs)
         {
-            var select = db.OwnerShips.Where(o=>o.User.ExternalId == userId 
+            var select = db.OwnerShips.Where(o => o.User.ExternalId == userId
                 && (slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))))
-                .Select(o=>new { o.Expires, o.Product.Slug })
+                    .SelectMany(p => p.Product.Groups, (o, group) => new { o.Expires, group.Slug })
                 .AsNoTracking();
             var result = await select.ToListAsync();
             return result.GroupBy(r => r.Slug)
