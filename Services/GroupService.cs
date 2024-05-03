@@ -84,7 +84,7 @@ namespace Coflnet.Payments.Services
             var group = await db.Groups.Include(g=>g.Products).Where(g => g.Slug == groupId).FirstOrDefaultAsync();
             if (group == null)
             {
-                group = new Group() { Slug = groupId };
+                group = new Group() { Slug = groupId, Id = 0 };
                 db.Groups.Add(group);
                 await db.SaveChangesAsync();
                 // add matching products by slug
