@@ -113,8 +113,18 @@ namespace Payments.Controllers
 
         [HttpGet]
         [Route("search/{reference}")]
-        public async Task<List<ExternalTransaction>> Search(string reference)
+        public async Task<List<ExternalTransactionWithUser>> Search(string reference)
         {
+            System.Linq.Expressions.Expression<Func<Transaction, ExternalTransactionWithUser>> selector = 
+                t => new ExternalTransactionWithUser()
+                {
+                    Id = t.Id.ToString(),
+                    Amount = t.Amount,
+                    ProductId = t.Product.Slug,
+                    Reference = t.Reference,
+                    TimeStamp = t.Timestamp,
+                    UserId = t.User.ExternalId
+                };
             return await db.FiniteTransactions.Where(f => f.Reference == reference).Select(selector).ToListAsync();
         }
 
@@ -132,6 +142,11 @@ namespace Payments.Controllers
             public string Reference { get; set; }
             public decimal Amount { get; set; }
             public DateTime TimeStamp { get; set; }
+        }
+
+        public class ExternalTransactionWithUser : ExternalTransaction
+        {
+            public string UserId { get; set; }
         }
     }
 }
