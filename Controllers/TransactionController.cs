@@ -111,6 +111,13 @@ namespace Payments.Controllers
             return trans;
         }
 
+        [HttpGet]
+        [Route("search/{reference}")]
+        public async Task<List<ExternalTransaction>> Search(string reference)
+        {
+            return await db.FiniteTransactions.Where(f => f.Reference == reference).Select(selector).ToListAsync();
+        }
+
         [HttpPost]
         [Route("send")]
         public async Task SendEvent(TransactionEvent transactionEvent)
