@@ -52,6 +52,10 @@ namespace Coflnet.Payments.Models
         /// Payment requests
         /// </summary>
         public DbSet<PaymentRequest> PaymentRequests { get; set; }
+        /// <summary>
+        /// Licenses owned by one user
+        /// </summary>
+        public DbSet<License> Licenses { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -106,6 +110,13 @@ namespace Coflnet.Payments.Models
             {
                 entity.ToTable("OwnerShip");
                 entity.HasIndex(e => e.Expires);
+            });
+            modelBuilder.Entity<License>(entity =>
+            {
+                entity.ToTable("Licenses");
+                entity.HasIndex(e => new { e.UserId, e.TargetId, e.Expires });
+                entity.HasIndex(e => new { e.TargetId, e.Expires });
+                entity.HasIndex(e => new { e.UserId, e.TargetId }).IsUnique();
             });
         }
     }

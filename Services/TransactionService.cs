@@ -18,9 +18,7 @@ namespace Coflnet.Payments.Services
         private PaymentContext db;
         private UserService userService;
         private ITransactionEventProducer transactionEventProducer;
-        private decimal transactionDeflationRate { get; set; }
         private TransferSettings transferSettings { get; set; }
-        private GroupService groupService;
         private IRuleEngine ruleEngine;
 
         public TransactionService(
@@ -29,7 +27,6 @@ namespace Coflnet.Payments.Services
             UserService userService,
             ITransactionEventProducer transactionEventProducer,
             IConfiguration config,
-            GroupService groupService,
             IRuleEngine ruleEngine)
         {
             this.logger = logger;
@@ -37,7 +34,6 @@ namespace Coflnet.Payments.Services
             this.userService = userService;
             this.transactionEventProducer = transactionEventProducer;
             transferSettings = config?.GetSection("TRANSFER").Get<TransferSettings>();
-            this.groupService = groupService;
             this.ruleEngine = ruleEngine;
         }
 
@@ -111,7 +107,7 @@ namespace Coflnet.Payments.Services
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
-        private async Task<TransactionEvent> CreateTransaction(Product product, User user, decimal changeamount, string reference = "", long adjustedOwnerShipTime = 0)
+        public async Task<TransactionEvent> CreateTransaction(Product product, User user, decimal changeamount, string reference = "", long adjustedOwnerShipTime = 0)
         {
             var transaction = new FiniteTransaction()
             {
@@ -174,7 +170,7 @@ namespace Coflnet.Payments.Services
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
-        private async Task<PurchaseableProduct> GetProduct(string productSlug)
+        public async Task<PurchaseableProduct> GetProduct(string productSlug)
         {
             var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
             if (product == null)
@@ -255,7 +251,7 @@ namespace Coflnet.Payments.Services
             return await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
         }
 
-        private static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
+        public static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
         {
             if (currentTime < DateTime.UtcNow)
                 return DateTime.UtcNow + time;

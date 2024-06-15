@@ -4,6 +4,7 @@ using System.Net;
 using Coflnet.Payments.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Payments.Migrations
 {
     [DbContext(typeof(PaymentContext))]
-    partial class PaymentContextModelSnapshot : ModelSnapshot
+    [Migration("20240615094154_BeforeLicenses")]
+    partial class BeforeLicenses
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -76,45 +79,6 @@ namespace Payments.Migrations
                         .IsUnique();
 
                     b.ToTable("Groups");
-                });
-
-            modelBuilder.Entity("Coflnet.Payments.Models.License", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
-
-                    b.Property<DateTime>("Expires")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int?>("ProductId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("TargetId")
-                        .HasColumnType("text");
-
-                    b.Property<int?>("UserId")
-                        .HasColumnType("integer");
-
-                    b.Property<int?>("groupId")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ProductId");
-
-                    b.HasIndex("groupId");
-
-                    b.HasIndex("TargetId", "Expires");
-
-                    b.HasIndex("UserId", "TargetId")
-                        .IsUnique();
-
-                    b.HasIndex("UserId", "TargetId", "Expires");
-
-                    b.ToTable("Licenses", (string)null);
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.OwnerShip", b =>
@@ -424,27 +388,6 @@ namespace Payments.Migrations
                     b.Navigation("Product");
 
                     b.Navigation("User");
-                });
-
-            modelBuilder.Entity("Coflnet.Payments.Models.License", b =>
-                {
-                    b.HasOne("Coflnet.Payments.Models.PurchaseableProduct", "Product")
-                        .WithMany()
-                        .HasForeignKey("ProductId");
-
-                    b.HasOne("Coflnet.Payments.Models.User", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId");
-
-                    b.HasOne("Coflnet.Payments.Models.Group", "group")
-                        .WithMany()
-                        .HasForeignKey("groupId");
-
-                    b.Navigation("Product");
-
-                    b.Navigation("User");
-
-                    b.Navigation("group");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.OwnerShip", b =>

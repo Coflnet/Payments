@@ -80,6 +80,7 @@ namespace Coflnet.Payments
             services.AddSingleton<ExchangeService>();
             services.AddScoped<IRuleEngine, RuleEngine>();
             services.AddScoped<Services.ProductService>();
+            services.AddScoped<LicenseService>();
             services.AddScoped<GroupService>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))

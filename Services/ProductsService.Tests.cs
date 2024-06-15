@@ -111,7 +111,7 @@ public class ProductsServiceTests
         var product = extendsLowTier;
 
         var userService = new UserService(NullLogger<UserService>.Instance, context);
-        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, null, null);
+        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, null);
         var userController = new UserController(NullLogger<UserController>.Instance, context, transactionService, userService);
 
         await service.UpdateOrAddProduct(product);
@@ -148,7 +148,7 @@ public class ProductsServiceTests
         var userService = new UserService(NullLogger<UserService>.Instance, context);
         var groupService = new GroupService(NullLogger<GroupService>.Instance, context);
         var ruleEngine = new RuleEngine(NullLogger<RuleEngine>.Instance, context);
-        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, groupService, ruleEngine);
+        var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, ruleEngine);
 
         extendsLowTier.Type = Product.ProductType.SERVICE;
         var lowTierProduct = CreateProduct("lowTier", Product.ProductType.SERVICE);

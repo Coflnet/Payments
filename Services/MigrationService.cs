@@ -81,7 +81,7 @@ namespace Coflnet.Payments.Services
 
         private async Task<bool> MigrateData(OldPaymentContext oldDb, PaymentContext context)
         {
-            if (oldDb == null)
+            /*if (oldDb == null)
             {
                 logger.LogWarning("No old database connection configured");
                 return false;
@@ -144,7 +144,7 @@ namespace Coflnet.Payments.Services
             // await MoveInt(oldDb.Products, context);
             // await MoveInt(oldDb.TopUpProducts, context);
             // await MoveInt(oldDb.Groups, context);
-            // await MoveInt(oldDb.Rules, context);
+            // await MoveInt(oldDb.Rules, context);*/
             return false;
         }
 
