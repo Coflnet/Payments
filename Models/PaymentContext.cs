@@ -116,7 +116,7 @@ namespace Coflnet.Payments.Models
                 entity.ToTable("Licenses");
                 entity.HasIndex(e => new { e.UserId, e.TargetId, e.Expires });
                 entity.HasIndex(e => new { e.TargetId, e.Expires });
-                entity.HasIndex(e => new { e.UserId, e.TargetId }).IsUnique();
+                entity.HasIndex(e => new { e.UserId, e.TargetId, e.ProductId }).IsUnique();
             });
         }
     }

@@ -36,6 +36,7 @@ public class License
     /// </summary>
     public Group group { get; set; }
     public int? UserId { get; set; }
+    public int? ProductId { get; set; }
 }
 
 public class PublicLicense
