@@ -103,6 +103,7 @@ namespace Payments.Controllers
         {
             var user = await GetOrCreate(userId);
             var select = db.Users.Where(u => u.ExternalId == userId)
+                    .AsSplitQuery()
                     .Include(p => p.Owns).ThenInclude(o => o.Product)
                     .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))));
             return await select.ToListAsync();
