@@ -139,10 +139,9 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("{userId}/purchase/{productSlug}")]
-        public async Task<ActionResult<User>> Purchase(string userId, string productSlug, int price = 0)
+        public async Task Purchase(string userId, string productSlug, int price = 0)
         {
             await transactionService.PurchaseProduct(productSlug, userId, price);
-            return Ok();
         }
 
         /// <summary>
@@ -155,10 +154,9 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("{userId}/service/purchase/{productSlug}")]
-        public async Task<ActionResult<User>> PurchaseService(string userId, string productSlug, string reference, int count = 1)
+        public async Task PurchaseService(string userId, string productSlug, string reference, int count = 1)
         {
             await transactionService.PurchaseServie(productSlug, userId, count, reference);
-            return Ok();
         }
 
         /// <summary>
