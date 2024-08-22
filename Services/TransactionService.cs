@@ -288,6 +288,7 @@ namespace Coflnet.Payments.Services
             await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
             await transactionEventProducer.ProduceEvent(receiveTransaction);
+            logger.LogInformation("After transaction user {sending} now has {newBalance} and user {receiving} has {newBalanceReceiving}", initiatingUser.ExternalId, initiatingUser.Balance, targetUser.ExternalId, targetUser.Balance);
             return transactionEvent;
         }
 
