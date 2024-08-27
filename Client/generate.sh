@@ -1,4 +1,4 @@
-VERSION=0.13.0
+VERSION=0.14.0
 
 docker run --rm -v "${PWD}:/local" --network host -u $(id -u ${USER}):$(id -g ${USER})  openapitools/openapi-generator-cli generate \
 -i http://localhost:5020/swagger/v1/swagger.json \
@@ -11,7 +11,7 @@ sed -i 's/GIT_USER_ID/Coflnet/g' $path
 sed -i 's/GIT_REPO_ID/Payments/g' $path
 sed -i 's/>OpenAPI/>Coflnet/g' $path
 sed -i 's@annotations</Nullable>@annotations</Nullable>\n    <PackageReadmeFile>README.md</PackageReadmeFile>@g' $path
-sed -i 's@Remove="System.Web" />@Remove="System.Web" />\n    <None Include="../../../../README.md" Pack="true" PackagePath="\"/>@g' $path
+sed -i '34i    <None Include="../../../../README.md" Pack="true" PackagePath="\"/>' $path
 
 
 FlagFile="src/Coflnet.Payments.Client/Model/RuleFlags.cs"

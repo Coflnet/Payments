@@ -192,6 +192,15 @@ namespace Coflnet.Payments.Services
             await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, transaction, user, adjustedProduct);
         }
 
+        public async Task<RuleResult> GetAdjustedProduct(string productSlug, string userId)
+        {
+            var product = await GetProduct(productSlug);
+            var user = await userService.GetOrCreate(userId, false);
+            if(user == null)
+                return new();
+            return await ruleEngine.GetAdjusted(product, user);
+        }
+
         private async Task<TransactionEvent> ExecuteServicePurchase(string productSlug, string userId, int count, string reference, Product dbProduct, IDbContextTransaction transaction, User user, Product adjustedProduct)
         {
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();

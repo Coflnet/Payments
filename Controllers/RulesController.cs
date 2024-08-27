@@ -39,7 +39,8 @@ namespace Payments.Controllers
         [Route("")]
         public async Task<IEnumerable<Rule>> GetAll(int offset = 0, int amount = 20)
         {
-            return await db.Rules.OrderBy(r=>r.Id).Skip(offset).Take(amount).ToListAsync();
+            return await db.Rules.OrderBy(r => r.Id).Include(r => r.Requires).Include(r => r.Targets)
+                .Skip(offset).Take(amount).ToListAsync();
         }
 
         /// <summary>

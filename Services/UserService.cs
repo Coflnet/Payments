@@ -25,11 +25,16 @@ namespace Coflnet.Payments.Services
         /// Gets or creates a user for a given id
         /// </summary>
         /// <param name="userId"></param>
+        /// <param name="create"></param>
         /// <returns></returns>
-        public async Task<User> GetOrCreate(string userId)
+        public async Task<User> GetOrCreate(string userId, bool create = true)
         {
             var userTask = () => GetAndInclude(userId, u => u.Include(u => u.Owns).ThenInclude(o => o.Product));
             var user = await userTask();
+            if(user == null && !create)
+            {
+                return null;
+            }
             if (user == null)
             {
                 user = new Coflnet.Payments.Models.User() { ExternalId = userId, Balance = 0, Owns = new() };

@@ -101,7 +101,6 @@ namespace Payments.Controllers
         [Obsolete("lookup with {userId}/owns/until")]
         public async Task<IEnumerable<OwnerShip>> GetAllOwnerships(string userId, [FromBody] HashSet<string> slugs)
         {
-            var user = await GetOrCreate(userId);
             var select = db.Users.Where(u => u.ExternalId == userId)
                     .AsSplitQuery()
                     .Include(p => p.Owns).ThenInclude(o => o.Product)
@@ -157,6 +156,19 @@ namespace Payments.Controllers
         public async Task PurchaseService(string userId, string productSlug, string reference, int count = 1)
         {
             await transactionService.PurchaseServie(productSlug, userId, count, reference);
+        }
+
+        /// <summary>
+        /// Returns the price for a product after applying any matching rules
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="productSlug"></param>
+        /// <returns></returns>
+        [HttpGet]
+        [Route("{userId}/priceFor/{productSlug}")]
+        public async Task<RuleResult> GetPriceFor(string userId, string productSlug)
+        {
+            return await transactionService.GetAdjustedProduct(productSlug, userId);
         }
 
         /// <summary>
