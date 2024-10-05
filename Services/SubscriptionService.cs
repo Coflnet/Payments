@@ -46,4 +46,18 @@ public class SubscriptionService
         await transactionService.PurchaseService(product.Slug, customData.UserId, 1, data.Data.Id, product);
         logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId} extended by {product.OwnershipSeconds}");
     }
+
+    internal async Task RefundPayment(Webhook webhook)
+    {
+        var userId = webhook.Meta.CustomData.UserId;
+        var reference = webhook.Data.Id;
+        await RevertPurchase(userId, reference);
+        await RevertPurchase(userId, reference + "-topup");
+    }
+
+    private async Task RevertPurchase(string userId, string reference)
+    {
+        var transactionId = context.FiniteTransactions.Where(t => t.Reference == reference).Select(t => t.Id).FirstOrDefault();
+        await transactionService.RevertPurchase(userId, transactionId);
+    }
 }

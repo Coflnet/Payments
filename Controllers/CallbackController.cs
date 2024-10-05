@@ -211,7 +211,7 @@ namespace Payments.Controllers
             if (hashString != signature)
             {
                 _logger.LogWarning($"lemonsqueezy signature mismatch {hashString} != {signature}");
-             //   return StatusCode(400);
+                return StatusCode(400);
             }
             _logger.LogInformation("received callback from lemonsqueezy --\n{data}", json);
             var webhook = System.Text.Json.JsonSerializer.Deserialize<Coflnet.Payments.Models.LemonSqueezy.Webhook>(json, new System.Text.Json.JsonSerializerOptions
@@ -234,6 +234,10 @@ namespace Payments.Controllers
             else if(meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
             {
                 await subscriptionService.PaymentReceived(webhook);
+            }
+            else if (meta.EventName == "subscription_payment_refunded")
+            {
+                await subscriptionService.RefundPayment(webhook);
             }
             else
             {
