@@ -25,7 +25,7 @@ namespace Coflnet.Payments.Models
         /// The produt being owned
         /// </summary>
         /// <value></value>
-        public PurchaseableProduct Product { get; set; }
+        public Product Product { get; set; }
         /// <summary>
         /// How long 
         /// </summary>

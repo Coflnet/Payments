@@ -32,6 +32,7 @@ namespace Payments.Controllers
         private readonly IConfiguration config;
         private readonly UserService userService;
         private readonly PayPalHttpClient paypalClient;
+        private readonly LemonSqueezyService lemonSqueezyService;
 
         /// <summary>
         /// Creates a new instance of the <see cref="TopUpController"/> class
@@ -42,7 +43,8 @@ namespace Payments.Controllers
             Coflnet.Payments.Services.TransactionService transactionService,
             IConfiguration config,
             UserService userService,
-            PayPalHttpClient paypalClient)
+            PayPalHttpClient paypalClient,
+            LemonSqueezyService lemonSqueezyService)
         {
             _logger = logger;
             db = context;
@@ -51,6 +53,7 @@ namespace Payments.Controllers
             this.userService = userService;
             this.paypalClient = paypalClient;
             this.transactionService = transactionService;
+            this.lemonSqueezyService = lemonSqueezyService;
         }
 
 
@@ -286,75 +289,23 @@ namespace Payments.Controllers
             TopUpProduct product = await GetTopupProduct(productId, "lemonsqueezy");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
+            var variantId = config["LEMONSQUEEZY:VARIANT_ID"];
+            return await lemonSqueezyService.NewMethod(options, user, product, eurPrice, coinAmount, variantId);
+        }
+        [HttpPost]
+        [Route("lemonsqueezy/subscribe")]
+        public async Task<TopUpIdResponse> LemonSqueezySubscribe(string userId, string productId, [FromBody] TopUpOptions options = null)
+        {
+            var user = await userService.GetOrCreate(userId);
+            var product = await productService.GetTopupProduct(productId);
 
-            var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");
-            var request = new RestRequest("", Method.Post);
-            request.AddHeader("Accept", "application/vnd.api+json");
-            request.AddHeader("Content-Type", "application/vnd.api+json");
-            request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
-            var createData = new
-            {
-
-                data = new
-                {
-                    type = "checkouts",
-                    attributes = new
-                    {
-                        custom_price = (int)(eurPrice * 100),
-                        product_options = new
-                        {
-                            name = product.Title,
-                            redirect_url = options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"],
-                            receipt_button_text = "Go to your account",
-                            description = product.Description ?? "Will be credited to your account",
-                        },
-                        checkout_data = new
-                        {
-                            email = options?.UserEmail,
-                            custom = new
-                            {
-                                user_id = user.ExternalId.ToString(),
-                                product_id = product.Id.ToString(),
-                                coin_amount = ((int)coinAmount).ToString()
-                            },
-                        },
-                        expires_at = DateTime.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")
-                    },
-                    relationships = new
-                    {
-                        store = new
-                        {
-                            data = new
-                            {
-                                type = "stores",
-                                id = config["LEMONSQUEEZY:STORE_ID"]
-                            }
-                        },
-                        variant = new
-                        {
-                            data = new
-                            {
-                                type = "variants",
-                                id = config["LEMONSQUEEZY:VARIANT_ID"]
-                            }
-                        }
-                    }
-                }
-            };
-            var json = JsonConvert.SerializeObject(createData, new JsonSerializerSettings() { NullValueHandling = NullValueHandling.Ignore });
-            request.AddJsonBody(json);
-            _logger.LogInformation($"Creating lemonsqueezy checkout with: \n{json}");
-            var response = await restclient.ExecuteAsync(request);
-            _logger.LogInformation(response.Content);
-            var result = JsonConvert.DeserializeObject(response.Content);
-            var data = JObject.Parse(result.ToString());
-            var checkoutId = (string)data["data"]["id"];
-            var link = (string)data["data"]["attributes"]["url"];
-            return new TopUpIdResponse()
-            {
-                DirctLink = link,
-                Id = checkoutId
-            };
+            Console.WriteLine(JsonConvert.SerializeObject(product));
+            if(!product.Type.HasFlag(Product.ProductType.SERVICE))
+                throw new ApiException("Product is not a service, can't be subscribed to");
+            GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
+            var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
+            var variantId = config["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"];
+            return await lemonSqueezyService.NewMethod(options, user, product, eurPrice, coinAmount, variantId);
         }
 
         private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)

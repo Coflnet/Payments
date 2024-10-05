@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using System.Collections.Generic;
 using System;
+using Newtonsoft.Json;
 
 namespace Coflnet.Payments.Services;
 
@@ -111,6 +112,10 @@ public class ProductService
         var toDeactivate = await table.Where(p => !slugs.Contains(p.Slug) && !p.Type.HasFlag(Product.ProductType.DISABLED)).ToListAsync();
         foreach (var product in products)
         {
+            if(product.Slug == "l_prem_plus")
+            {
+                Console.WriteLine(JsonConvert.SerializeObject(product));
+            }
             var existing = existingProducts.FirstOrDefault(p => p.Slug == product.Slug);
             if (product.Cost == existing?.Cost
                 && product.Title == existing?.Title
@@ -129,6 +134,7 @@ public class ProductService
         {
             if (specialProduct.Contains(product.Slug))
                 continue;
+            Console.WriteLine($"Disabling product {product.Slug} from {product.GetType().Name}");
             product.Type |= Product.ProductType.DISABLED;
         }
         await db.SaveChangesAsync();

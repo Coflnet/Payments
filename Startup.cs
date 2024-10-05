@@ -30,8 +30,8 @@ namespace Coflnet.Payments
         }
 
         public IConfiguration Configuration { get; }
-        Prometheus.Counter errorCount = Prometheus.Metrics.CreateCounter("payments_error", "Counts the amount of error responses handed out");
-        Prometheus.Counter badRequestCount = Prometheus.Metrics.CreateCounter("payments_bad_request", "Counts the responses for invalid requests");
+        Counter errorCount = Metrics.CreateCounter("payments_error", "Counts the amount of error responses handed out");
+        Counter badRequestCount = Metrics.CreateCounter("payments_bad_request", "Counts the responses for invalid requests");
 
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
@@ -77,6 +77,8 @@ namespace Coflnet.Payments
             }
             services.AddScoped<TransactionService>();
             services.AddScoped<UserService>();
+            services.AddScoped<Services.SubscriptionService>();
+            services.AddScoped<LemonSqueezyService>();
             services.AddSingleton<ExchangeService>();
             services.AddScoped<IRuleEngine, RuleEngine>();
             services.AddScoped<Services.ProductService>();
@@ -104,7 +106,7 @@ namespace Coflnet.Payments
             }
             else
                 environment = new PayPalCheckoutSdk.Core.LiveEnvironment(Configuration["PAYPAL:ID"], Configuration["PAYPAL:SECRET"]);
-            services.AddSingleton<PayPalCheckoutSdk.Core.PayPalHttpClient>(new PayPalCheckoutSdk.Core.PayPalHttpClient(environment));
+            services.AddSingleton(new PayPalCheckoutSdk.Core.PayPalHttpClient(environment));
 
             StripeConfiguration.ApiKey = Configuration["STRIPE:KEY"];
             services.AddSingleton<MigrationService>();
@@ -148,7 +150,7 @@ namespace Coflnet.Payments
                         using var span = OpenTracing.Util.GlobalTracer.Instance.BuildSpan("error").WithTag("error", "true").StartActive();
                         span.Span.Log(exceptionHandlerPathFeature?.Error?.Message);
                         span.Span.Log(exceptionHandlerPathFeature?.Error?.StackTrace);
-                        var traceId = System.Net.Dns.GetHostName().Replace("payment", "").Trim('-') + "." + span.Span.Context.TraceId;
+                        var traceId = Dns.GetHostName().Replace("payment", "").Trim('-') + "." + span.Span.Context.TraceId;
                         await context.Response.WriteAsync(
                             JsonConvert.SerializeObject(new
                             {

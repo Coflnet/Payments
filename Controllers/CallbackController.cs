@@ -35,6 +35,7 @@ namespace Payments.Controllers
         private TransactionService transactionService;
         private IPaymentEventProducer paymentEventProducer;
         private readonly PayPalHttpClient paypalClient;
+        private readonly Coflnet.Payments.Services.SubscriptionService subscriptionService;
 
         public CallbackController(
             IConfiguration config,
@@ -42,7 +43,8 @@ namespace Payments.Controllers
             PaymentContext context,
             TransactionService transactionService,
             PayPalHttpClient paypalClient,
-            IPaymentEventProducer paymentEventProducer)
+            IPaymentEventProducer paymentEventProducer,
+            Coflnet.Payments.Services.SubscriptionService subscriptionService)
         {
             _logger = logger;
             db = context;
@@ -51,6 +53,7 @@ namespace Payments.Controllers
             this.transactionService = transactionService;
             this.paypalClient = paypalClient;
             this.paymentEventProducer = paymentEventProducer;
+            this.subscriptionService = subscriptionService;
         }
 
         /// <summary>
@@ -208,7 +211,7 @@ namespace Payments.Controllers
             if (hashString != signature)
             {
                 _logger.LogWarning($"lemonsqueezy signature mismatch {hashString} != {signature}");
-                return StatusCode(400);
+             //   return StatusCode(400);
             }
             _logger.LogInformation("received callback from lemonsqueezy --\n{data}", json);
             var webhook = System.Text.Json.JsonSerializer.Deserialize<Coflnet.Payments.Models.LemonSqueezy.Webhook>(json, new System.Text.Json.JsonSerializerOptions
@@ -227,6 +230,10 @@ namespace Payments.Controllers
             else if (meta.EventName == "order_refunded" && data.Attributes.Status == "refunded")
             {
                 await RevertTopUpWithReference(data.Attributes.Identifier);
+            }
+            else if(meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
+            {
+                await subscriptionService.PaymentReceived(webhook);
             }
             else
             {

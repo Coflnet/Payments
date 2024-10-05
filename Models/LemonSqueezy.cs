@@ -37,7 +37,8 @@ public class Attributes
         Urls urls,
         DateTime createdAt,
         DateTime updatedAt,
-        bool testMode
+        bool testMode,
+        long subscriptionId
     )
     {
         this.StoreId = storeId;
@@ -71,6 +72,7 @@ public class Attributes
         this.CreatedAt = createdAt;
         this.UpdatedAt = updatedAt;
         this.TestMode = testMode;
+        this.SubscriptionId = subscriptionId;
     }
 
     [JsonPropertyName("store_id")]
@@ -165,6 +167,8 @@ public class Attributes
 
     [JsonPropertyName("test_mode")]
     public bool TestMode { get; }
+    [JsonPropertyName("subscription_id")]
+    public long SubscriptionId { get; }
 }
 
 

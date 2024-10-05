@@ -449,7 +449,7 @@ namespace Payments.Migrations
 
             modelBuilder.Entity("Coflnet.Payments.Models.OwnerShip", b =>
                 {
-                    b.HasOne("Coflnet.Payments.Models.PurchaseableProduct", "Product")
+                    b.HasOne("Coflnet.Payments.Models.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId");
 

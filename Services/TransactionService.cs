@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
+using Newtonsoft.Json;
 
 namespace Coflnet.Payments.Services
 {
@@ -182,11 +183,15 @@ namespace Coflnet.Payments.Services
 
         public async Task PurchaseServie(string productSlug, string userId, int count, string reference)
         {
-            var dbProduct = await GetProduct(productSlug);
+            Product dbProduct = await GetProduct(productSlug);
+            await PurchaseService(productSlug, userId, count, reference, dbProduct);
+        }
+
+        public async Task PurchaseService(string productSlug, string userId, int count, string reference, Product dbProduct)
+        {
             if (!dbProduct.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
-
-            using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
             var user = await userService.GetOrCreate(userId);
             var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
             await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, transaction, user, adjustedProduct);
@@ -216,8 +221,9 @@ namespace Coflnet.Payments.Services
                 logger.LogError($"User {user.ExternalId} doesn't have the required {price} amount to purchase {productSlug} (only {user.AvailableBalance} available)");
                 throw new ApiException("insuficcient balance");
             }
-
-            var allProductsToExtend = await db.Products.Where(p => p.Slug == productSlug).SelectMany(p => p.Groups, (p, g) => g.Products.Where(p => p.Slug == g.Slug).First()).ToListAsync();
+            var productA = db.Products;
+            List<Product> allProductsToExtend = await GetProducts(productSlug, db.Products);
+            allProductsToExtend.AddRange(await GetProducts(productSlug, db.TopUpProducts));
 
             var transactionEvent = await CreateTransaction(dbProduct, user, price * -1, reference, adjustedProduct.OwnershipSeconds);
             var time = TimeSpan.FromSeconds(adjustedProduct.OwnershipSeconds * count);
@@ -227,14 +233,14 @@ namespace Coflnet.Payments.Services
                 Console.WriteLine(item.Slug + " exires at " + existingExpiry);
                 var newExpiry = GetNewExpiry(existingExpiry, time);
                 logger.LogInformation($"User {user.ExternalId} has {existingExpiry} for {item.Slug} and will be extended to {newExpiry} by {time}");
-                existingOwnerShip = user.Owns?.Where(p => p.Product.Id == item.Id);
+                existingOwnerShip = user.Owns?.Where(p => p.Product?.Id == item.Id);
                 if (existingOwnerShip.Any())
                 {
                     existingOwnerShip.First().Expires = newExpiry;
                 }
                 else
                 {
-                    user.Owns.Add(new OwnerShip() { Expires = newExpiry, Product = item as PurchaseableProduct, User = user });
+                    user.Owns.Add(new OwnerShip() { Expires = newExpiry, Product = item, User = user });
                 }
             }
 
@@ -243,6 +249,11 @@ namespace Coflnet.Payments.Services
             await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
             return transactionEvent;
+        }
+
+        private static async Task<List<Product>> GetProducts(string productSlug, IQueryable<Product> productA)
+        {
+            return await productA.Where(p => p.Slug == productSlug).SelectMany(p => p.Groups, (p, g) => g.Products.Where(p => p.Slug == g.Slug).First()).ToListAsync();
         }
 
         internal async Task<TransactionEvent> RevertPurchase(string userId, long transactionId)

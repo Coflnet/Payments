@@ -55,9 +55,16 @@ namespace Coflnet.Payments.Services
         {
             var group = await GetGroup(groupId);
             var currentIds = group.Products.Select(p => p.Id).ToList();
-            var products = await db.Products.Where(p => productSlugs.Contains(p.Slug) || p.Slug == groupId || p.Type.HasFlag(Product.ProductType.DISABLED) && currentIds.Contains(p.Id)).ToListAsync();
+            var select = db.Products;
+            List<Product> products = await GetProducts(groupId, productSlugs, currentIds, db.Products);
+            products.AddRange(await GetProducts(groupId, productSlugs, currentIds, db.TopUpProducts));
             group.Products = products.Select(p => (Product)p).ToList();
             await db.SaveChangesAsync();
+
+            static async Task<List<Product>> GetProducts(string groupId, string[] productSlugs, List<int> currentIds, IQueryable<Product> select)
+            {
+                return await select.Where(p => productSlugs.Contains(p.Slug) || p.Slug == groupId || p.Type.HasFlag(Product.ProductType.DISABLED) && currentIds.Contains(p.Id)).ToListAsync();
+            }
         }
 
         /// <summary>
@@ -81,7 +88,7 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task<Group> GetOrAddGroup(string groupId)
         {
-            var group = await db.Groups.Include(g=>g.Products).Where(g => g.Slug == groupId).FirstOrDefaultAsync();
+            var group = await db.Groups.Include(g => g.Products).Where(g => g.Slug == groupId).FirstOrDefaultAsync();
             if (group == null)
             {
                 group = new Group() { Slug = groupId, Id = 0 };
@@ -96,10 +103,10 @@ namespace Coflnet.Payments.Services
 
         internal async Task<IEnumerable<PurchaseableProduct>> GetProductGroupsForProduct(PurchaseableProduct id)
         {
-            return (await db.Products.Where(p => p == id).SelectMany(p => p.Groups.Where(g=>g.Slug != id.Slug).SelectMany(g => g.Products)).ToListAsync())
+            return (await db.Products.Where(p => p == id).SelectMany(p => p.Groups.Where(g => g.Slug != id.Slug).SelectMany(g => g.Products)).ToListAsync())
                 .Select(p => p as PurchaseableProduct)
                 .Where(p => p != null && p.Slug != id.Slug)
-               // .Where(pi => pi.Slug == id.Slug || pi.Type.HasFlag(Product.ProductType.DISABLED))
+                // .Where(pi => pi.Slug == id.Slug || pi.Type.HasFlag(Product.ProductType.DISABLED))
                 ;
         }
     }
