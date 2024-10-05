@@ -1,4 +1,4 @@
-VERSION=0.14.0
+VERSION=0.15.0
 
 docker run --rm -v "${PWD}:/local" --network host -u $(id -u ${USER}):$(id -g ${USER})  openapitools/openapi-generator-cli generate \
 -i http://localhost:5020/swagger/v1/swagger.json \
@@ -14,14 +14,26 @@ sed -i 's@annotations</Nullable>@annotations</Nullable>\n    <PackageReadmeFile>
 sed -i '34i    <None Include="../../../../README.md" Pack="true" PackagePath="\"/>' $path
 
 
+function replace_flags() {
+    local path=$1
+
+    sed -i 's/= 1/= 0/g' $path
+    sed -i 's/= 2/= 1/g' $path
+    sed -i 's/= 3/= 2/g' $path
+    sed -i 's/= 4/= 4/g' $path
+    sed -i 's/= 5/= 8/g' $path
+    sed -i 's/= 6/= 16/g' $path
+    sed -i 's/= 7/= 32/g' $path
+
+    sed -i 's/JsonConverter(typeof(StringEnumConverter))/JsonConverter(typeof(StringEnumConverter)), Flags/' $path
+}
+
 FlagFile="src/Coflnet.Payments.Client/Model/RuleFlags.cs"
-sed -i 's/= 1/= 0/g' $FlagFile
-sed -i 's/= 2/= 1/g' $FlagFile
-sed -i 's/= 3/= 2/g' $FlagFile
-sed -i 's/= 4/= 4/g' $FlagFile
-sed -i 's/= 5/= 8/g' $FlagFile
-sed -i 's/= 6/= 16/g' $FlagFile
-sed -i 's/= 7/= 32/g' $FlagFile
+replace_flags $FlagFile
+
+TypeFile="src/Coflnet.Payments.Client/Model/ProductType.cs"
+replace_flags $TypeFile
+
 
 dotnet pack
 cp src/Coflnet.Payments.Client/bin/Release/Coflnet.Payments.Client.*.nupkg ..
