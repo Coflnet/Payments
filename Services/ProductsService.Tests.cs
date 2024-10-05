@@ -112,7 +112,7 @@ public class ProductsServiceTests
 
         var userService = new UserService(NullLogger<UserService>.Instance, context);
         var transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, null);
-        var userController = new UserController(NullLogger<UserController>.Instance, context, transactionService, userService);
+        var userController = new UserController(NullLogger<UserController>.Instance, context, transactionService, userService, null);
 
         await service.UpdateOrAddProduct(product);
 

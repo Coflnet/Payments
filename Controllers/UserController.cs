@@ -21,6 +21,7 @@ namespace Payments.Controllers
         private readonly PaymentContext db;
         private readonly TransactionService transactionService;
         private readonly UserService userService;
+        private readonly LicenseService licenseService;
 
         /// <summary>
         /// Creates a new instance of <see cref="UserController"/>
@@ -32,12 +33,14 @@ namespace Payments.Controllers
         public UserController(ILogger<UserController> logger,
             PaymentContext context,
             TransactionService transactionService,
-            UserService userService)
+            UserService userService,
+            LicenseService licenseService)
         {
             _logger = logger;
             db = context;
             this.transactionService = transactionService;
             this.userService = userService;
+            this.licenseService = licenseService;
         }
 
         /// <summary>
@@ -181,6 +184,7 @@ namespace Payments.Controllers
         [Route("{userId}/{transactionId}")]
         public async Task<TransactionEvent> RevertServicePUrchase(string userId, int transactionId)
         {
+            await licenseService.Revert(userId, transactionId);
             return await transactionService.RevertPurchase(userId, transactionId);
         }
 
