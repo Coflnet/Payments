@@ -58,7 +58,7 @@ namespace Payments.Migrations
                 oldClrType: typeof(int),
                 oldType: "integer");
 
-            migrationBuilder.AddForeignKey(
+    /*        migrationBuilder.AddForeignKey(
                 name: "FK_FiniteTransactions_Users_UserId",
                 table: "FiniteTransactions",
                 column: "UserId",
@@ -84,7 +84,7 @@ namespace Payments.Migrations
                 table: "PlanedTransactions",
                 column: "UserId",
                 principalTable: "Users",
-                principalColumn: "Id");
+                principalColumn: "Id");*/
         }
 
         /// <inheritdoc />

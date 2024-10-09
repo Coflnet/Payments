@@ -231,10 +231,10 @@ namespace Payments.Controllers
             {
                 await RevertTopUpWithReference(data.Attributes.Identifier);
             }
-            else if(meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
-            {
+            else if (meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
                 await subscriptionService.PaymentReceived(webhook);
-            }
+            else if (meta.EventName == "subscription_updated")
+                await subscriptionService.UpdateSubscription(webhook);
             else if (meta.EventName == "subscription_payment_refunded")
             {
                 await subscriptionService.RefundPayment(webhook);

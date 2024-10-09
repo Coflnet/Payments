@@ -39,7 +39,9 @@ public class Attributes
         DateTime updatedAt,
         bool testMode,
         long subscriptionId
-    )
+,
+        DateTime? renewsAt,
+        DateTime? endsAt)
     {
         this.StoreId = storeId;
         this.CustomerId = customerId;
@@ -73,6 +75,8 @@ public class Attributes
         this.UpdatedAt = updatedAt;
         this.TestMode = testMode;
         this.SubscriptionId = subscriptionId;
+        RenewsAt = renewsAt;
+        EndsAt = endsAt;
     }
 
     [JsonPropertyName("store_id")]
@@ -169,6 +173,10 @@ public class Attributes
     public bool TestMode { get; }
     [JsonPropertyName("subscription_id")]
     public long SubscriptionId { get; }
+    [JsonPropertyName("renews_at")]
+    public DateTime? RenewsAt { get; set; }
+    [JsonPropertyName("ends_at")]
+    public DateTime? EndsAt { get; set; }
 }
 
 

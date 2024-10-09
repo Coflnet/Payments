@@ -18,13 +18,19 @@ public class LemonSqueezyService
         this.config = config;
         this.logger = logger;
     }
+
+    public async Task CancelSubscription(string subscriptionId)
+    {
+        var restclient = new RestClient($"https://api.lemonsqueezy.com/v1/subscriptions/{subscriptionId}");
+        var request = CreateRequest(Method.Delete);
+        var response = await restclient.ExecuteAsync(request);
+        logger.LogInformation(response.Content);
+    }
+
     public async Task<TopUpIdResponse> NewMethod(TopUpOptions options, User user, Product product, decimal eurPrice, decimal coinAmount, string variantId)
     {
         var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");
-        var request = new RestRequest("", Method.Post);
-        request.AddHeader("Accept", "application/vnd.api+json");
-        request.AddHeader("Content-Type", "application/vnd.api+json");
-        request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+        RestRequest request = CreateRequest(Method.Post);
         var createData = new
         {
             data = new
@@ -40,7 +46,8 @@ public class LemonSqueezyService
                         receipt_button_text = "Go to your account",
                         description = product.Description ?? "Will be credited to your account",
                     },
-                    checkout_options = new {
+                    checkout_options = new
+                    {
                         subscription_preview = true
                     },
                     checkout_data = new
@@ -90,5 +97,14 @@ public class LemonSqueezyService
             DirctLink = link,
             Id = checkoutId
         };
+    }
+
+    private RestRequest CreateRequest(Method method)
+    {
+        var request = new RestRequest("", method);
+        request.AddHeader("Accept", "application/vnd.api+json");
+        request.AddHeader("Content-Type", "application/vnd.api+json");
+        request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+        return request;
     }
 }

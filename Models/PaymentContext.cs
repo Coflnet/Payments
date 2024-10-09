@@ -56,6 +56,7 @@ namespace Coflnet.Payments.Models
         /// Licenses owned by one user
         /// </summary>
         public DbSet<License> Licenses { get; set; }
+        public DbSet<UserSubscription> Subscriptions { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -117,6 +118,11 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => new { e.UserId, e.TargetId, e.Expires });
                 entity.HasIndex(e => new { e.TargetId, e.Expires });
                 entity.HasIndex(e => new { e.UserId, e.TargetId, e.ProductId }).IsUnique();
+            });
+
+            modelBuilder.Entity<UserSubscription>(entity =>
+            {
+                entity.HasIndex(e => e.ExternalId);
             });
         }
     }
