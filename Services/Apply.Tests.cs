@@ -87,20 +87,20 @@ namespace Coflnet.Payments.Services
                 }
             });
 
-            Assert.IsTrue(context.TopUpProducts.Any());
+            Assert.That(context.TopUpProducts.Any(), Is.True);
 
             // assert that B is now disabled
             var product = await context.Products.FirstOrDefaultAsync(p => p.Slug == "B");
-            Assert.IsTrue(product.Type.HasFlag(Product.ProductType.DISABLED));
+            Assert.That(product.Type.HasFlag(Product.ProductType.DISABLED), Is.True);
 
             // assert group XY contains A
-            var group = await context.Groups.Include(g=>g.Products).FirstOrDefaultAsync(g => g.Slug == "XY");
-            Assert.IsTrue(group.Products.Any(p => p.Slug == "A"));
+            var group = await context.Groups.Include(g => g.Products).FirstOrDefaultAsync(g => g.Slug == "XY");
+            Assert.That(group.Products.Any(p => p.Slug == "A"), Is.True);
 
             var rules = await context.Rules.ToListAsync();
-            Assert.IsFalse(rules.Where(r=>r.Slug == "cheaperB").Any());
-            Assert.IsTrue(rules.Where(r => r.Slug == "betterRule").Any());
-            Assert.AreEqual(1, rules.Count);
+            Assert.That(rules.Where(r => r.Slug == "cheaperB").Any(), Is.False);
+            Assert.That(rules.Where(r => r.Slug == "betterRule").Any(), Is.True);
+            Assert.That(rules.Count, Is.EqualTo(1));
 
         }
 

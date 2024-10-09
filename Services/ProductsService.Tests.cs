@@ -64,12 +64,12 @@ public class ProductsServiceTests
         await service.UpdateOrAddProduct(product);
 
         var loadedProduct = await service.GetProduct("test");
-        Assert.AreEqual(product.Title, loadedProduct.Title);
-        Assert.AreEqual(product.Slug, loadedProduct.Slug);
-        Assert.AreEqual(product.Description, loadedProduct.Description);
-        Assert.AreEqual(product.Cost, loadedProduct.Cost);
-        Assert.AreEqual(product.OwnershipSeconds, loadedProduct.OwnershipSeconds);
-        Assert.AreEqual(product.Type, loadedProduct.Type);
+        Assert.That(product.Title, Is.EqualTo(loadedProduct.Title));
+        Assert.That(product.Slug, Is.EqualTo(loadedProduct.Slug));
+        Assert.That(product.Description, Is.EqualTo(loadedProduct.Description));
+        Assert.That(product.Cost, Is.EqualTo(loadedProduct.Cost));
+        Assert.That(product.OwnershipSeconds, Is.EqualTo(loadedProduct.OwnershipSeconds));
+        Assert.That(product.Type, Is.EqualTo(loadedProduct.Type));
     }
 
     public async Task AddTopupProduct()
@@ -86,12 +86,12 @@ public class ProductsServiceTests
         await service.UpdateTopUpProduct(product);
 
         var loadedProduct = await service.GetTopupProduct("test");
-        Assert.AreEqual(product.Title, loadedProduct.Title);
-        Assert.AreEqual(product.Slug, loadedProduct.Slug);
-        Assert.AreEqual(product.Description, loadedProduct.Description);
-        Assert.AreEqual(product.Cost, loadedProduct.Cost);
-        Assert.AreEqual(product.OwnershipSeconds, loadedProduct.OwnershipSeconds);
-        Assert.AreEqual(product.Type, loadedProduct.Type);
+        Assert.That(product.Title, Is.EqualTo(loadedProduct.Title));
+        Assert.That(product.Slug, Is.EqualTo(loadedProduct.Slug));
+        Assert.That(product.Description, Is.EqualTo(loadedProduct.Description));
+        Assert.That(product.Cost, Is.EqualTo(loadedProduct.Cost));
+        Assert.That(product.OwnershipSeconds, Is.EqualTo(loadedProduct.OwnershipSeconds));
+        Assert.That(product.Type, Is.EqualTo(loadedProduct.Type));
     }
 
     [Test]
@@ -102,8 +102,8 @@ public class ProductsServiceTests
 
         await groupService.AddProductToGroup(product, "mygroup");
         var loadedGroup = await groupService.GetGroup("mygroup");
-        Assert.AreEqual(1, loadedGroup.Products.Count);
-        Assert.AreEqual(product.Slug, loadedGroup.Products.First().Slug);
+        Assert.That(loadedGroup.Products.Count, Is.EqualTo(1));
+        Assert.That(loadedGroup.Products.First().Slug, Is.EqualTo(product.Slug));
     }
     [Test]
     public async Task UserOwnsProductInGroup()
@@ -131,14 +131,14 @@ public class ProductsServiceTests
 
         await groupService.AddProductToGroup(product, "mygroup");
         var loadedGroup = await groupService.GetGroup("mygroup");
-        Assert.AreEqual(2, loadedGroup.Products.Count);
+        Assert.That(loadedGroup.Products.Count, Is.EqualTo(2));
 
         var user = await userService.GetOrCreate("u1");
         user.Balance = 10000;
         await context.SaveChangesAsync();
         await userController.Purchase("u1", "different");
         var expires = await userController.GetLongest("u1", new() { "mygroup" });
-        Assert.Greater(expires, DateTime.UtcNow.AddSeconds(10));
+        Assert.That(expires, Is.GreaterThan(DateTime.UtcNow.AddSeconds(10)));
     }
 
     [Test]
@@ -171,7 +171,7 @@ public class ProductsServiceTests
         var allOwnerShips = await context.Users.SelectMany(u => u.Owns).ToListAsync();
         //Assert.AreEqual(2, allOwnerShips.Count());
         var expiry = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        Console.WriteLine("expiry: " +expiry);
+        Console.WriteLine("expiry: " + expiry);
         // both services expire in 10 seconds
         Assert.That(await userService.GetLongest(user.ExternalId, new() { extendsLowTier.Slug }), Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
         Assert.That(await userService.GetLongest(user.ExternalId, new() { lowTierProduct.Slug }), Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
@@ -180,7 +180,7 @@ public class ProductsServiceTests
 
         await transactionService.PurchaseServie(lowTierProduct.Slug, user.ExternalId, 1, highTier);
         allOwnerShips = await context.Users.SelectMany(u => u.Owns).ToListAsync();
-        Assert.AreEqual(2, allOwnerShips.Count(), Newtonsoft.Json.JsonConvert.SerializeObject(allOwnerShips,Newtonsoft.Json.Formatting.Indented));
+        Assert.That(allOwnerShips.Count(), Is.EqualTo(2), Newtonsoft.Json.JsonConvert.SerializeObject(allOwnerShips, Newtonsoft.Json.Formatting.Indented));
         // only one product has been extended
         Assert.That(await userService.GetLongest(user.ExternalId, new() { lowTierProduct.Slug }), Is.EqualTo(DateTime.UtcNow + TimeSpan.FromSeconds(20)).Within(TimeSpan.FromSeconds(1)));
         Assert.That(await userService.GetLongest(user.ExternalId, new() { extendsLowTier.Slug }), Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));

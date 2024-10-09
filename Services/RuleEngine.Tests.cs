@@ -69,7 +69,7 @@ namespace Coflnet.Payments.Services
             await AddRuleWithFlag(rulesEngine, flags);
 
             var result = await rulesEngine.GetAdjusted(productB, user);
-            Assert.AreEqual(500, result.ModifiedProduct.Cost);
+            Assert.That(result.ModifiedProduct.Cost, Is.EqualTo(500));
         }
 
         private async Task AddRuleWithFlag(RuleEngine rulesEngine, Rule.RuleFlags flags)
@@ -88,7 +88,7 @@ namespace Coflnet.Payments.Services
             await AddRuleWithFlag(rulesEngine, flags);
 
             var result = await rulesEngine.GetAdjusted(productB, user);
-            Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
+            Assert.That(result.ModifiedProduct.OwnershipSeconds, Is.EqualTo(220));
         }
         [Test]
         public async Task ExtendPercentage()
@@ -97,7 +97,7 @@ namespace Coflnet.Payments.Services
             await AddRuleWithFlag(rulesEngine, Rule.RuleFlags.LONGER | Rule.RuleFlags.PERCENT);
 
             var result = await rulesEngine.GetAdjusted(productB, user);
-            Assert.AreEqual(240, result.ModifiedProduct.OwnershipSeconds);
+            Assert.That(result.ModifiedProduct.OwnershipSeconds, Is.EqualTo(240));
         }
         [Test]
         public async Task EarlyBreak()
@@ -111,7 +111,7 @@ namespace Coflnet.Payments.Services
             await context.SaveChangesAsync();
 
             var result = await rulesEngine.GetAdjusted(productB, user);
-            Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
+            Assert.That(result.ModifiedProduct.OwnershipSeconds, Is.EqualTo(220));
         }
         [Test]
         public async Task RequiresNone()
@@ -123,7 +123,7 @@ namespace Coflnet.Payments.Services
             await context.SaveChangesAsync();
 
             var result = await rulesEngine.GetAdjusted(productB, user);
-            Assert.AreEqual(220, result.ModifiedProduct.OwnershipSeconds);
+            Assert.That(result.ModifiedProduct.OwnershipSeconds, Is.EqualTo(220));
         }
 
         PaymentContext CreateContext() => new PaymentContext(_contextOptions);
