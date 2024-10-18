@@ -44,7 +44,7 @@ public class SubscriptionService
 
     internal async Task<IEnumerable<UserSubscription>> GetUserSubscriptions(string userId)
     {
-        return await context.Subscriptions.Where(s => s.User == context.Users.Where(u => u.ExternalId == userId)).ToListAsync();
+        return await context.Subscriptions.Where(s => s.User == context.Users.Where(u => u.ExternalId == userId).FirstOrDefault()).ToListAsync();
     }
 
     public async Task UpdateSubscription(Webhook webhook)
