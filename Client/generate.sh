@@ -1,12 +1,13 @@
-VERSION=0.16.0
+VERSION=0.16.1
+PACKAGE_NAME=Coflnet.Payments.Client
 
 docker run --rm -v "${PWD}:/local" --network host -u $(id -u ${USER}):$(id -g ${USER})  openapitools/openapi-generator-cli generate \
 -i http://localhost:5020/swagger/v1/swagger.json \
 -g csharp \
--o /local/out --additional-properties=packageName=Coflnet.Payments.Client,packageVersion=$VERSION,licenseId=MIT,targetFramework=net6.0
+-o /local/out --additional-properties=packageName=$PACKAGE_NAME,packageVersion=$VERSION,licenseId=MIT,targetFramework=net6.0
 
 cd out
-path=src/Coflnet.Payments.Client/Coflnet.Payments.Client.csproj
+path=src/$PACKAGE_NAME/$PACKAGE_NAME.csproj
 sed -i 's/GIT_USER_ID/Coflnet/g' $path
 sed -i 's/GIT_REPO_ID/Payments/g' $path
 sed -i 's/>OpenAPI/>Coflnet/g' $path
@@ -28,12 +29,13 @@ function replace_flags() {
     sed -i 's/JsonConverter(typeof(StringEnumConverter))/JsonConverter(typeof(StringEnumConverter)), Flags/' $path
 }
 
-FlagFile="src/Coflnet.Payments.Client/Model/RuleFlags.cs"
+FlagFile="src/$PACKAGE_NAME/Model/RuleFlags.cs"
 replace_flags $FlagFile
 
-TypeFile="src/Coflnet.Payments.Client/Model/ProductType.cs"
+TypeFile="src/$PACKAGE_NAME/Model/ProductType.cs"
 replace_flags $TypeFile
 
 
 dotnet pack
-cp src/Coflnet.Payments.Client/bin/Release/Coflnet.Payments.Client.*.nupkg ..
+cp src/$PACKAGE_NAME/bin/Release/$PACKAGE_NAME.*.nupkg ..
+dotnet nuget push ../$PACKAGE_NAME.$VERSION.nupkg --api-key $NUGET_API_KEY --source "nuget.org" --skip-duplicate
