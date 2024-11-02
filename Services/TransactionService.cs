@@ -256,7 +256,7 @@ namespace Coflnet.Payments.Services
             return await productA.Where(p => p.Slug == productSlug).SelectMany(p => p.Groups, (p, g) => g.Products.Where(p => p.Slug == g.Slug).First()).ToListAsync();
         }
 
-        internal async Task<TransactionEvent> RevertPurchase(string userId, long transactionId)
+        internal async Task<TransactionEvent> RevertPurchase(string userId, long transactionId, bool adjustTime = true)
         {
             var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t => t.Product).FirstOrDefault();
             var dbProduct = await GetProduct("revert");
@@ -267,6 +267,8 @@ namespace Coflnet.Payments.Services
             var count = (int)Math.Round(transaction.Amount / transaction.Product.Cost);
             adjustedProduct.Cost = -transaction.Amount / count;
             adjustedProduct.OwnershipSeconds = -transaction.Product.OwnershipSeconds;
+            if (!adjustTime)
+                adjustedProduct.OwnershipSeconds = 0;
             adjustedProduct.Slug = "revert";
             return await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
         }

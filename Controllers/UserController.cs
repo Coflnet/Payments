@@ -184,8 +184,9 @@ namespace Payments.Controllers
         [Route("{userId}/{transactionId}")]
         public async Task<TransactionEvent> RevertServicePUrchase(string userId, int transactionId)
         {
-            await licenseService.Revert(userId, transactionId);
-            return await transactionService.RevertPurchase(userId, transactionId);
+            var matched = await licenseService.Revert(userId, transactionId);
+            // if a license matched, don't adjust the main account time
+            return await transactionService.RevertPurchase(userId, transactionId, !matched);
         }
 
         /// <summary>

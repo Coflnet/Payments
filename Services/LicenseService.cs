@@ -72,7 +72,7 @@ namespace Coflnet.Payments.Services
             return await db.Licenses.Where(l => l.TargetId == targetId && l.UserId == db.Users.Where(u => u.ExternalId == userId).First().Id).Include(l => l.group).ToArrayAsync();
         }
 
-        internal async Task Revert(string userId, int transactionId)
+        internal async Task<bool> Revert(string userId, int transactionId)
         {
             var transaction = await db.FiniteTransactions.Where(t => t.Id == transactionId).Include(t => t.Product).FirstOrDefaultAsync();
             var target = transaction.Reference.Split('.')[0];
@@ -80,12 +80,13 @@ namespace Coflnet.Payments.Services
             if (license == null)
             {
                 logger.LogWarning($"No license found for user {userId} and product {transaction.Product.Slug} and target {target}");
-                return;
+                return false;
             }
             license.Expires = TransactionService.GetNewExpiry(license.Expires, TimeSpan.FromSeconds(-transaction.Product.OwnershipSeconds));
             db.Licenses.Update(license);
             await db.SaveChangesAsync();
             logger.LogInformation($"Reverted license for user {userId} and product {transaction.Product.Slug} and target {target} now expires at {license.Expires}");
+            return true;
         }
     }
 }
