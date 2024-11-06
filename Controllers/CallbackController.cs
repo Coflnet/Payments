@@ -223,6 +223,11 @@ namespace Payments.Controllers
             var meta = webhook.Meta;
             if (meta.EventName == "order_created" && data.Attributes.Status == "paid")
             {
+                if(data.Relationships.Subscriptions is not null)
+                {
+                    _logger.LogInformation("lemonsqueezy subscription payment, skipping");
+                    return Ok();
+                }
                 await transactionService.AddTopUp(meta.CustomData.ProductId, meta.CustomData.UserId, data.Attributes.Identifier, meta.CustomData.CoinAmount);
                 await db.SaveChangesAsync();
                 _logger.LogInformation($"lemonsqueezy topup {meta.CustomData.ProductId} {meta.CustomData.UserId} {data.Attributes.Identifier} {meta.CustomData.CoinAmount}");
