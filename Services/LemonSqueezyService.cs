@@ -27,7 +27,7 @@ public class LemonSqueezyService
         logger.LogInformation(response.Content);
     }
 
-    public async Task<TopUpIdResponse> NewMethod(TopUpOptions options, User user, Product product, decimal eurPrice, decimal coinAmount, string variantId)
+    public async Task<TopUpIdResponse> NewMethod(TopUpOptions options, User user, Product product, decimal eurPrice, decimal coinAmount, string variantId, bool isSubscription)
     {
         var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");
         RestRequest request = CreateRequest(Method.Post);
@@ -57,7 +57,8 @@ public class LemonSqueezyService
                         {
                             user_id = user.ExternalId.ToString(),
                             product_id = product.Id.ToString(),
-                            coin_amount = ((int)coinAmount).ToString()
+                            coin_amount = ((int)coinAmount).ToString(),
+                            is_subscription = isSubscription
                         },
                     },
                     expires_at = DateTime.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")

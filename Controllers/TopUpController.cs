@@ -290,7 +290,7 @@ namespace Payments.Controllers
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var variantId = config["LEMONSQUEEZY:VARIANT_ID"];
-            return await lemonSqueezyService.NewMethod(options, user, product, eurPrice, coinAmount, variantId);
+            return await lemonSqueezyService.NewMethod(options, user, product, eurPrice, coinAmount, variantId, false);
         }
         [HttpPost]
         [Route("lemonsqueezy/subscribe")]
@@ -305,7 +305,7 @@ namespace Payments.Controllers
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var variantId = config["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"];
-            return await lemonSqueezyService.NewMethod(options, user, product, eurPrice, coinAmount, variantId);
+            return await lemonSqueezyService.NewMethod(options, user, product, eurPrice, coinAmount, variantId, true);
         }
 
         private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)

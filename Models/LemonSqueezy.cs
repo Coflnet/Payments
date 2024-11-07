@@ -201,6 +201,8 @@ public class CustomData
     public int ProductId { get; }
     [JsonPropertyName("coin_amount")]
     public long CoinAmount { get; }
+    [JsonPropertyName("is_subscription")]
+    public bool IsSubscription { get; }
 }
 
 public class Customer

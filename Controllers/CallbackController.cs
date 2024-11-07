@@ -223,7 +223,7 @@ namespace Payments.Controllers
             var meta = webhook.Meta;
             if (meta.EventName == "order_created" && data.Attributes.Status == "paid")
             {
-                if(data.Relationships.Subscriptions is not null)
+                if(webhook.Meta.CustomData.IsSubscription)
                 {
                     _logger.LogInformation("lemonsqueezy subscription payment, skipping");
                     return Ok();
