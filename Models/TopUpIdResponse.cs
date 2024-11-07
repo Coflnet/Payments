@@ -14,5 +14,20 @@ public class TopUpIdResponse
     /// Directlink to redirect the user to
     /// </summary>
     /// <value></value>
-    public string DirctLink { get; set; }
+    [Obsolete("Use DirectLink instead")]
+    public string DirctLink
+    {
+        get
+        {
+            return DirectLink;
+        }
+        set
+        {
+            DirectLink = value;
+        }
+    }
+    /// <summary>
+    /// Directlink to redirect the user to
+    /// </summary>
+    public string DirectLink { get; set; }
 }
