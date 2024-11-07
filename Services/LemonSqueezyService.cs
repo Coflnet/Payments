@@ -58,7 +58,7 @@ public class LemonSqueezyService
                             user_id = user.ExternalId.ToString(),
                             product_id = product.Id.ToString(),
                             coin_amount = ((int)coinAmount).ToString(),
-                            is_subscription = isSubscription
+                            is_subscription = isSubscription.ToString()
                         },
                     },
                     expires_at = DateTime.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")
