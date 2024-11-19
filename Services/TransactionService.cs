@@ -53,7 +53,7 @@ namespace Coflnet.Payments.Services
             var changeamount = product.Cost;
             if (customAmount != 0)
                 if (customAmount < product.Cost)
-                    throw new ApiException("custom amount is to smal for product");
+                    throw new ApiException("custom amount is to small for product");
                 else
                     changeamount = customAmount;
             await CreateTransactionInTransaction(product, userId, changeamount, reference);
