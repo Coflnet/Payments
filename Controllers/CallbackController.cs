@@ -238,7 +238,7 @@ namespace Payments.Controllers
             }
             else if (meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
                 await subscriptionService.PaymentReceived(webhook);
-            else if (meta.EventName == "subscription_updated")
+            else if (meta.EventName == "subscription_updated" || meta.EventName == "subscription_created")
                 await subscriptionService.UpdateSubscription(webhook);
             else if (meta.EventName == "subscription_payment_refunded")
             {
@@ -246,7 +246,7 @@ namespace Payments.Controllers
             }
             else
             {
-                _logger.LogWarning($"lemonsqueezy unknown type {data.Type}");
+                _logger.LogWarning($"lemonsqueezy unknown type {meta.EventName}");
                 return StatusCode(500);
             }
             return Ok();
