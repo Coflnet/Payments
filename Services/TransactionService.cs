@@ -201,7 +201,7 @@ namespace Coflnet.Payments.Services
         {
             var product = await GetProduct(productSlug);
             var user = await userService.GetOrCreate(userId, false);
-            if(user == null)
+            if (user == null)
                 return new();
             return await ruleEngine.GetAdjusted(product, user);
         }
@@ -290,10 +290,10 @@ namespace Coflnet.Payments.Services
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
             var initiatingUser = await userService.GetAndInclude(userId, u => u);
             var minTime = DateTime.UtcNow - TimeSpan.FromDays(transferSettings.PeriodDays);
-            var transactions = await db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime).ToListAsync();
-            if (transactions.Count() >= transferSettings.Limit)
+            var transactionsSent = await db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime && t.Amount < 0).ToListAsync();
+            if (transactionsSent.Count() >= transferSettings.Limit)
             {
-                var nextAvailableIn = (int)(transactions.OrderBy(t => t.Timestamp).First().Timestamp + TimeSpan.FromDays(transferSettings.PeriodDays) - DateTime.UtcNow).TotalHours + 1;
+                var nextAvailableIn = (int)(transactionsSent.OrderBy(t => t.Timestamp).First().Timestamp + TimeSpan.FromDays(transferSettings.PeriodDays) - DateTime.UtcNow).TotalHours + 1;
                 throw new ApiException($"You reached the maximium of {transferSettings.Limit} transactions per {transferSettings.PeriodDays} days. Next available in {nextAvailableIn} hours");
             }
             var targetUser = await userService.GetOrCreate(targetUserId);
