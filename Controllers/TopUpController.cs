@@ -207,7 +207,7 @@ namespace Payments.Controllers
                 user.Country = options.Locale.Split('-').Last();
                 await db.SaveChangesAsync();
             }
-            if(user.Ip == null)
+            if (user.Ip == null)
             {
                 user.Ip = options.UserIp;
                 await db.SaveChangesAsync();
@@ -288,9 +288,8 @@ namespace Payments.Controllers
             var user = await userService.GetOrCreate(userId);
             TopUpProduct product = await GetTopupProduct(productId, "lemonsqueezy");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
-            var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var variantId = config["LEMONSQUEEZY:VARIANT_ID"];
-            return await lemonSqueezyService.NewMethod(options, user, product, eurPrice, coinAmount, variantId, false);
+            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, false);
         }
         [HttpPost]
         [Route("lemonsqueezy/subscribe")]
@@ -300,12 +299,13 @@ namespace Payments.Controllers
             var product = await productService.GetTopupProduct(productId);
 
             Console.WriteLine(JsonConvert.SerializeObject(product));
-            if(!product.Type.HasFlag(Product.ProductType.SERVICE))
+            if (!product.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("Product is not a service, can't be subscribed to");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
-            var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var variantId = config["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"];
-            return await lemonSqueezyService.NewMethod(options, user, product, eurPrice, coinAmount, variantId, true);
+            if (product.OwnershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
+                variantId = config["LEMONSQUEEZY:YEAR_SUBSCRIPTION_VARIANT_ID"];
+            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true);
         }
 
         private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)
