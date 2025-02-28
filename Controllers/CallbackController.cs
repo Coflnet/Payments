@@ -443,7 +443,7 @@ namespace Payments.Controllers
                 return false; // registration too complicated for northern ireland
             if (country == "AE")
                 return false; // can't register for taxes as a foreigner
-            var list = new string[] { "TR", "AE", "SA", "KR", "VN", "CL", "MX" };
+            var list = new string[] { "TR", "AE", "SA", "KR", "VN", "CL", "MX", "PE", "MD" };
             if (list.Contains(country))
                 return false; // to much overhead to register for taxes
             return true;
