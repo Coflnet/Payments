@@ -244,6 +244,10 @@ namespace Payments.Controllers
             {
                 await subscriptionService.RefundPayment(webhook);
             }
+            else if(meta.EventName == "subscription_payment_failed")
+            {
+                _logger.LogInformation("Subscription payment failed for {userId} {productId}", meta.CustomData.UserId, meta.CustomData.ProductId);
+            }
             else
             {
                 _logger.LogWarning($"lemonsqueezy unknown type {meta.EventName}");

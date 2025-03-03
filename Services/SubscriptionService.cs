@@ -76,6 +76,8 @@ public class SubscriptionService
         subscription.ExternalCustomerId = attributes.CustomerId.ToString();
         subscription.ExternalId = webhook.Data.Id;
         await context.SaveChangesAsync();
+        if(subscription.Status != "active")
+            return;
         await TryExtendSubscription(webhook);
     }
 
