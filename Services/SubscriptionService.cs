@@ -46,7 +46,7 @@ public class SubscriptionService
     {
         return await context.Subscriptions
             .Where(s => s.User == context.Users.Where(u => u.ExternalId == userId).FirstOrDefault())
-            .Include(s=>s.Product).ToListAsync();
+            .Include(s => s.Product).ToListAsync();
     }
 
     public async Task UpdateSubscription(Webhook webhook)
@@ -76,17 +76,12 @@ public class SubscriptionService
         subscription.ExternalCustomerId = attributes.CustomerId.ToString();
         subscription.ExternalId = webhook.Data.Id;
         await context.SaveChangesAsync();
+        await TryExtendSubscription(webhook);
     }
 
     internal async Task PaymentReceived(Webhook data)
     {
-        var customData = data.Meta.CustomData;
-        var product = context.TopUpProducts.Find(customData.ProductId);
-        logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId}, crediting");
-        await transactionService.AddTopUp(customData.ProductId, customData.UserId, data.Data.Id + "-topup");
-        logger.LogInformation("starting purchase");
-        await transactionService.PurchaseService(product.Slug, customData.UserId, 1, data.Data.Id, product);
-        logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId} extended by {product.OwnershipSeconds}");
+        await TryExtendSubscription(data);
         try
         {
             var subscriptionId = data.Data.Attributes.SubscriptionId.ToString();
@@ -101,6 +96,47 @@ public class SubscriptionService
         {
             logger.LogError(e, "Error updating subscription with amount");
         }
+    }
+
+    /// <summary>
+    /// Usually a `subscription_payment_success` webhook is received, sometimes it isn't.
+    /// To make sure the customer still receives his product this also gets called with subscription_updated and subscription_created
+    /// </summary>
+    /// <param name="data"></param>
+    /// <returns></returns>
+    private async Task TryExtendSubscription(Webhook data)
+    {
+        var customData = data.Meta.CustomData;
+        var product = context.TopUpProducts.Find(customData.ProductId);
+        var referenceId = data.Data.Id + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
+        if (data.Data.Type == "subscription-invoices")
+        {
+            referenceId = data.Data.Attributes.SubscriptionId + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
+            logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId}, crediting");
+        }
+        else
+        {
+            // is subscription update, check current expiry and abbort if its more than 1 day in the future
+            var subscription = await context.OwnerShips.Where(s => s.User.ExternalId == customData.UserId && s.Product.Id == customData.ProductId).FirstOrDefaultAsync();
+            if (subscription != null && subscription.Expires > data.Data.Attributes.RenewsAt.Value.AddDays(-2))
+            {
+                logger.LogInformation("Subscription already extended, skipping");
+                return;
+            }
+            logger.LogInformation($"Subscription extended for user {customData.UserId} for product {customData.ProductId}, crediting");
+        }
+        try
+        {
+            await transactionService.AddTopUp(customData.ProductId, customData.UserId, referenceId + "-topup");
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "Error adding topup transaction");
+            return;
+        }
+        logger.LogInformation("starting purchase");
+        await transactionService.PurchaseService(product.Slug, customData.UserId, 1, referenceId, product);
+        logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId} extended by {product.OwnershipSeconds}");
     }
 
     public async Task CancelSubscription(string userId, string subscriptionId)
