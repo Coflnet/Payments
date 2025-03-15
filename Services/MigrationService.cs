@@ -1,9 +1,5 @@
-using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 using System.Linq;
-using System.Reflection;
-using System.Security.Policy;
 using System.Threading;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -13,107 +9,91 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Coflnet.Payments.Services
+namespace Coflnet.Payments.Services;
+public class MigrationService : BackgroundService
 {
-    public class MigrationService : BackgroundService
+    private IServiceScopeFactory services;
+    private ILogger<MigrationService> logger;
+    private IConfiguration Configuration;
+    public bool Done { get; private set; }
+
+    public MigrationService(IServiceScopeFactory services, ILogger<MigrationService> logger, IConfiguration configuration)
     {
-        private IServiceScopeFactory services;
-        private ILogger<MigrationService> logger;
-        private IConfiguration Configuration;
-        public bool Done { get; private set; }
+        this.services = services;
+        this.logger = logger;
+        Configuration = configuration;
+    }
 
-        public MigrationService(IServiceScopeFactory services, ILogger<MigrationService> logger, IConfiguration configuration)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try
         {
-            this.services = services;
-            this.logger = logger;
-            Configuration = configuration;
+            using var serviceScope = services.CreateScope();
+            using var context = serviceScope.ServiceProvider.GetService<PaymentContext>();
+            await context.Database.MigrateAsync();
+
+            await AddTransferProduct(context);
+            await AddRefundProduct(context);
+            await AddGroupForEveryProduct(context);
+            Done = true;
         }
-
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        catch (Exception e)
         {
-            try
+            logger.LogError(e, $"Migrating failed");
+            Done = true;
+        }
+    }
+
+    private static async Task AddGroupForEveryProduct(PaymentContext context)
+    {
+        var allGrups = await context.Groups.ToListAsync();
+        foreach (var product in await context.Products.Where(p => !p.Type.HasFlag(Product.ProductType.DISABLED)).Include(p => p.Groups).ToListAsync())
+        {
+            if (product.Groups.Where(g => g.Slug == product.Slug).Any())
+                continue;
+            var group = allGrups.Where(g => g.Slug == product.Slug).FirstOrDefault(new Group()
             {
-                Done = true;
-            }
-            catch (Exception e)
-            {
-                logger.LogError(e, $"Migrating failed");
-                Done = true;
-            }
+                Slug = product.Slug,
+                Products = new() { product }
+            });
+            product.Groups.Add(group);
+            await context.SaveChangesAsync();
         }
+    }
 
 
-        private async Task MoveInt<T>(DbSet<T> oldDb, PaymentContext context, Func<IQueryable<T>, IQueryable<T>> include = null) where T : class, HasId
+    private static async Task AddTransferProduct(PaymentContext context)
+    {
+        var tranProduct = new PurchaseableProduct()
         {
-            var select = oldDb.OrderBy(d => d.Id);
-            if (include != null)
-                select = include(select).OrderBy(d => d.Id);
-            await MoveData(oldDb, context, select);
-        }
-        private async Task MoveLongId<T>(DbSet<T> oldDb, PaymentContext context, Func<IQueryable<T>, IQueryable<T>> include = null) where T : class, HasLongId
+            Cost = 1,
+            Description = "Transfer of coins to another user",
+            Slug = "transfer",
+            Type = Product.ProductType.VARIABLE_PRICE | Product.ProductType.TOP_UP,
+            Title = "Coin transfer"
+        };
+        await AddProductIfNotExists(context, tranProduct);
+    }
+
+    private static async Task AddRefundProduct(PaymentContext context)
+    {
+        var tranProduct = new PurchaseableProduct()
         {
-            var select = oldDb.OrderBy(d => d.Id);
-            if (include != null)
-                select = include(select).OrderBy(d => d.Id);
-            await MoveData(oldDb, context, select);
-        }
+            Cost = 1,
+            Description = "Revert/refund for another transaction",
+            Slug = "revert",
+            Type = Product.ProductType.VARIABLE_PRICE,
+            Title = "Revert transaction"
+        };
+        await AddProductIfNotExists(context, tranProduct);
+    }
 
-        private async Task MoveData<T>(DbSet<T> oldDb, PaymentContext context, IOrderedQueryable<T> select) where T : class
+    private static async Task AddProductIfNotExists(PaymentContext context, PurchaseableProduct tranProduct)
+    {
+        if (!await context.Products.Where(p => p.Slug == tranProduct.Slug).AnyAsync())
         {
-            var transactionsBatchSize = 200;
-            var transactionCount = await oldDb.CountAsync();
-            logger.LogInformation($"Migrating {transactionCount} {oldDb.EntityType.Name}");
-            for (int i = 0; i < transactionCount; i += transactionsBatchSize)
-            {
-                var transactions = await select.Skip(i).Take(transactionsBatchSize).ToListAsync();
-                context.AddRange(transactions);
-                await context.SaveChangesAsync();
-                logger.LogInformation($"Migrated {i + transactions.Count} of {transactionCount} {oldDb.EntityType.Name}");
-            }
-        }
-
-        public static string GetKeyField(Type type)
-        {
-            var allProperties = type.GetProperties();
-
-            var keyProperty = allProperties.SingleOrDefault(p => p.IsDefined(typeof(KeyAttribute)));
-
-            return keyProperty != null ? keyProperty.Name : null;
-        }
-
-        private static async Task AddTransferProduct(PaymentContext context)
-        {
-            var tranProduct = new PurchaseableProduct()
-            {
-                Cost = 1,
-                Description = "Transfer of coins to another user",
-                Slug = "transfer",
-                Type = PurchaseableProduct.ProductType.VARIABLE_PRICE | PurchaseableProduct.ProductType.TOP_UP,
-                Title = "Coin transfer"
-            };
-            await AddProductIfNotExists(context, tranProduct);
-        }
-
-        private static async Task AddRefundProduct(PaymentContext context)
-        {
-            var tranProduct = new PurchaseableProduct()
-            {
-                Cost = 1,
-                Description = "Revert/refund for another transaction",
-                Slug = "revert",
-                Type = PurchaseableProduct.ProductType.VARIABLE_PRICE,
-                Title = "Revert transaction"
-            };
-            await AddProductIfNotExists(context, tranProduct);
-        }
-
-        private static async Task AddProductIfNotExists(PaymentContext context, PurchaseableProduct tranProduct)
-        {
-            if (!await context.Products.Where(p => p.Slug == tranProduct.Slug).AnyAsync())
-            {
-                context.Products.Add(tranProduct);
-                await context.SaveChangesAsync();
-            }
+            context.Products.Add(tranProduct);
+            await context.SaveChangesAsync();
         }
     }
 }
