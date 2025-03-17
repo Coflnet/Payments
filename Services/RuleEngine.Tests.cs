@@ -47,7 +47,7 @@ namespace Coflnet.Payments.Services
             groupA = await groupService.GetOrAddGroup(productA.Slug);
             groupB = await groupService.GetOrAddGroup(productB.Slug);
             user = new User() { ExternalId = "1", Balance = 0, Owns = new() };
-            user.Owns.Add(new OwnerShip() { Product = productA, User = user });
+            user.Owns.Add(new OwnerShip() { Product = productA, User = user, Expires = DateTime.UtcNow.AddSeconds(100) });
 
 
 

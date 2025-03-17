@@ -41,7 +41,11 @@ namespace Coflnet.Payments.Services
         public async Task<RuleResult> GetAdjusted(Product product, User user)
         {
             var allrules = await db.Rules.ToListAsync();
-            var owns = await db.Users.Where(u => u.Id == user.Id).Include(u => u.Owns).ThenInclude(o => o.Product).ThenInclude(p => p.Groups).SelectMany(u => u.Owns.SelectMany(o => o.Product.Groups)).ToListAsync();
+            var expiresAfter = DateTime.UtcNow;
+            var owns = await db.Users.Where(u => u.Id == user.Id)
+                .Include(u => u.Owns).ThenInclude(o => o.Product).ThenInclude(p => p.Groups)
+                .SelectMany(u => u.Owns.Where(o => o.Expires > expiresAfter)
+                .SelectMany(o => o.Product.Groups)).ToListAsync();
             var groups = await db.Groups.Where(g => g.Products.Contains(product)).ToListAsync();
             var rules = await db.Rules.Where(r => (owns.Contains(r.Requires) || r.Requires == null) && groups.Contains(r.Targets)).ToListAsync();
             var fakeProduct = new Product(product);
