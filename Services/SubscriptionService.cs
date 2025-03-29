@@ -76,7 +76,7 @@ public class SubscriptionService
         subscription.ExternalCustomerId = attributes.CustomerId.ToString();
         subscription.ExternalId = webhook.Data.Id;
         await context.SaveChangesAsync();
-        if(subscription.Status != "active")
+        if (subscription.Status != "active")
             return;
         await TryExtendSubscription(webhook);
     }
@@ -118,11 +118,16 @@ public class SubscriptionService
         }
         else
         {
-            // is subscription update, check current expiry and abbort if its more than 1 day in the future
+            // is subscription update, check current expiry and abbort if its more than 1 day in the future already
             var subscription = await context.OwnerShips.Where(s => s.User.ExternalId == customData.UserId && s.Product.Id == customData.ProductId).FirstOrDefaultAsync();
             if (subscription != null && subscription.Expires > data.Data.Attributes.RenewsAt.Value.AddDays(-2))
             {
                 logger.LogInformation("Subscription already extended, skipping");
+                return;
+            }
+            if (data.Data.Attributes.RenewsAt < DateTime.UtcNow)
+            {// there sometime is an extra webhook if the initial payment attempt didn't go through, we ignore that
+                logger.LogInformation("Subscription renew in the past, skipping ({renewTime})", data.Data.Attributes.RenewsAt);
                 return;
             }
             logger.LogInformation($"Subscription extended for user {customData.UserId} for product {customData.ProductId}, crediting");
