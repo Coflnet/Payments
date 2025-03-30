@@ -290,11 +290,17 @@ namespace Coflnet.Payments.Services
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
             var initiatingUser = await userService.GetAndInclude(userId, u => u);
             var minTime = DateTime.UtcNow - TimeSpan.FromDays(transferSettings.PeriodDays);
+            var totalTransactions = await db.FiniteTransactions.Where(t => t.User == initiatingUser).CountAsync();
             var transactionsSent = await db.FiniteTransactions.Where(t => t.User == initiatingUser && t.Product == product && t.Timestamp > minTime && t.Amount < 0).ToListAsync();
-            if (transactionsSent.Count() >= transferSettings.Limit)
+            var limit = transferSettings.Limit;
+            if (totalTransactions >= transferSettings.Limit * 5)
+            {
+                limit = transferSettings.Limit * 2;
+            }
+            if (transactionsSent.Count() >= limit)
             {
                 var nextAvailableIn = (int)(transactionsSent.OrderBy(t => t.Timestamp).First().Timestamp + TimeSpan.FromDays(transferSettings.PeriodDays) - DateTime.UtcNow).TotalHours + 1;
-                throw new ApiException($"You reached the maximium of {transferSettings.Limit} transactions per {transferSettings.PeriodDays} days. Next available in {nextAvailableIn} hours");
+                throw new ApiException($"You reached the maximium of {limit} transactions per {transferSettings.PeriodDays} days. Next available in {nextAvailableIn} hours");
             }
             var targetUser = await userService.GetOrCreate(targetUserId);
             await AssertNotToManyTransfersReceived(product, minTime, targetUser);
