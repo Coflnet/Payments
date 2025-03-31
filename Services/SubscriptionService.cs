@@ -82,10 +82,8 @@ public class SubscriptionService
             logger.LogInformation("Subscription expired, reverting purchase {referenceId}", referenceId);
             await RevertPurchase(userId, referenceId + "-topup");
             await RevertPurchase(userId, referenceId);
-        }
-        if (subscription.Status != "active")
             return;
-        await TryExtendSubscription(webhook);
+        }
     }
 
     internal async Task PaymentReceived(Webhook data)
