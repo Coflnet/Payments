@@ -76,6 +76,13 @@ public class SubscriptionService
         subscription.ExternalCustomerId = attributes.CustomerId.ToString();
         subscription.ExternalId = webhook.Data.Id;
         await context.SaveChangesAsync();
+        if(subscription.Status == "expired")
+        {
+            var referenceId = webhook.Data.Id + webhook.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
+            logger.LogInformation("Subscription expired, reverting purchase {referenceId}", referenceId);
+            await RevertPurchase(userId, referenceId + "-topup");
+            await RevertPurchase(userId, referenceId);
+        }
         if (subscription.Status != "active")
             return;
         await TryExtendSubscription(webhook);
