@@ -156,7 +156,7 @@ public class SubscriptionService
         var subscription = await context.Subscriptions.Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId).FirstOrDefaultAsync();
         if (subscription == null)
         {
-            return;
+            throw new ApiException("Subscription not found");
         }
         await lemonSqueezyService.CancelSubscription(subscription.ExternalId);
     }
