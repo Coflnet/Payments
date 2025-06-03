@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -47,7 +48,7 @@ namespace Payments.Controllers
         [Route("")]
         public async Task<IEnumerable<PurchaseableProduct>> GetAll(int offset = 0, int amount = 20)
         {
-            return await db.Products.Where(p=>!p.Type.HasFlag(Product.ProductType.DISABLED)).OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
+            return await db.Products.Where(p => !p.Type.HasFlag(Product.ProductType.DISABLED)).OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
         /// <summary>
@@ -105,8 +106,11 @@ namespace Payments.Controllers
         [ResponseCache(Duration = 20, Location = ResponseCacheLocation.Any)]
         public async Task<int> GetOwnerCount(string serviceSlug)
         {
-            return await UsersOwning(serviceSlug).CountAsync();
-        }
+            var query = db.OwnerShips
+                .Where(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Expires > DateTime.UtcNow)
+                .GroupBy(o => o.UserId).AsSplitQuery();
+            return await query.CountAsync();
+        } 
 
         /// <summary>
         /// List of periods some user owned a service
