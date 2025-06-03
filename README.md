@@ -23,5 +23,5 @@ Create a webhook callback to `/Callback/paypal` to allow for payments to be veri
 
 ## Events 
 This microservice can produce transaction events into a Kafka Topic.
-To configure it set the configuration variables `KAFKA_HOST` and `KAFKA_TRANSACTION_TOPIC`.
+To configure it set the configuration variables `KAFKA_HOST` and `KAFKA__TRANSACTION_TOPIC__NAME`.
 The format and fields of the events can be seen in the [TransactionEvent class](Models/TransactionEvent.cs) 
