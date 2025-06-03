@@ -105,7 +105,7 @@ namespace Payments.Controllers
         [ResponseCache(Duration = 20, Location = ResponseCacheLocation.Any)]
         public async Task<int> GetOwnerCount(string serviceSlug)
         {
-            return (await GetUsers(serviceSlug)).Count();
+            return await UsersOwning(serviceSlug).CountAsync();
         }
 
         /// <summary>
@@ -138,7 +138,12 @@ namespace Payments.Controllers
         [ResponseCache(Duration = 10, Location = ResponseCacheLocation.Any)]
         public async Task<IEnumerable<string>> GetUsers(string serviceSlug)
         {
-            return await db.Users.Where(u => u.Owns.Any(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Expires > DateTime.UtcNow)).Select(u => u.ExternalId).ToListAsync();
+            return await UsersOwning(serviceSlug).Select(u => u.ExternalId).ToListAsync();
+        }
+
+        private IQueryable<User> UsersOwning(string serviceSlug)
+        {
+            return db.Users.Where(u => u.Owns.Any(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Expires > DateTime.UtcNow));
         }
 
         /// <summary>
