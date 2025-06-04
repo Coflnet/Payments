@@ -212,6 +212,8 @@ namespace Payments.Controllers
                 user.Ip = options.UserIp;
                 await db.SaveChangesAsync();
             }
+            if (user.Country != null && !CallbackController.DoWeSellto(user.Country, null)) // maybe not available the first time but updated from the paypal webhook
+                throw new ApiException($"We are sorry but we can not sell to your country ({user.Country}) at this time, please make sure to select the correct country in the selection and try again with the avilable payment provider");
             Console.WriteLine("Creating paypal payment for user {0} from {1}", user.Id, user.Country);
             var product = await GetTopupProduct(productId, "paypal");
             GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);

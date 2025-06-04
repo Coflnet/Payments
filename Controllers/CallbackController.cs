@@ -211,7 +211,7 @@ namespace Payments.Controllers
             if (hashString != signature)
             {
                 _logger.LogWarning($"lemonsqueezy signature mismatch {hashString} != {signature}");
-            //    return StatusCode(400);
+                //    return StatusCode(400);
             }
             _logger.LogInformation("received callback from lemonsqueezy --\n{data}", json);
             var webhook = System.Text.Json.JsonSerializer.Deserialize<Coflnet.Payments.Models.LemonSqueezy.Webhook>(json, new System.Text.Json.JsonSerializerOptions
@@ -223,7 +223,7 @@ namespace Payments.Controllers
             var meta = webhook.Meta;
             if (meta.EventName == "order_created" && data.Attributes.Status == "paid")
             {
-                if(webhook.Meta.CustomData.IsSubscription.Equals("true", StringComparison.OrdinalIgnoreCase)) // custom data can only be strings
+                if (webhook.Meta.CustomData.IsSubscription.Equals("true", StringComparison.OrdinalIgnoreCase)) // custom data can only be strings
                 {
                     _logger.LogInformation("lemonsqueezy subscription payment, skipping");
                     return Ok();
@@ -244,7 +244,7 @@ namespace Payments.Controllers
             {
                 await subscriptionService.RefundPayment(webhook);
             }
-            else if(meta.EventName == "subscription_payment_failed")
+            else if (meta.EventName == "subscription_payment_failed")
             {
                 _logger.LogInformation("Subscription payment failed for {userId} {productId}", meta.CustomData.UserId, meta.CustomData.ProductId);
             }
@@ -284,7 +284,7 @@ namespace Payments.Controllers
                     var country = address.CountryCode;
                     var postalCode = address.PostalCode;
                     var state = address.AdminArea2;
-                    var userId = webhookResult.Resource.PurchaseUnits[0].CustomId;
+                    var userId = webhookResult.Resource.PurchaseUnits[0].CustomId.Split(';')[2];
                     if (!DoWeSellto(country, postalCode))
                     {
                         var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
