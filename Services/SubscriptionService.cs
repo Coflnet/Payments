@@ -44,9 +44,17 @@ public class SubscriptionService
 
     internal async Task<IEnumerable<UserSubscription>> GetUserSubscriptions(string userId)
     {
-        return await context.Subscriptions
+        var all = await context.Subscriptions
             .Where(s => s.User == context.Users.Where(u => u.ExternalId == userId).FirstOrDefault())
             .Include(s => s.Product).ToListAsync();
+        var dupplicate = all.GroupBy(s => s.ExternalId).Where(s => s.Count() > 1).FirstOrDefault()?.OrderByDescending(f => f.UpdatedAt).Skip(1).FirstOrDefault();
+        if( dupplicate != null)
+        {
+            logger.LogWarning("Found duplicate subscription {subscriptionId} for user {userId}, removing", dupplicate.ExternalId, userId);
+            context.Subscriptions.Remove(dupplicate);
+            await context.SaveChangesAsync();
+        }
+        return all.OrderByDescending(s => s.UpdatedAt);
     }
 
     public async Task UpdateSubscription(Webhook webhook)
