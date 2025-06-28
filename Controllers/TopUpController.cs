@@ -88,14 +88,19 @@ namespace Payments.Controllers
             GetPriceAndCoins(topupotions, product, out decimal eurPrice, out decimal coinAmount);
 
             var instance = await AttemptBlockFraud(topupotions, user, product, eurPrice);
+            if(instance.SessionId != null)
+            {
+                _logger.LogInformation("Stripe session already exists for user {userId} with id {sessionId}", user.Id, instance.SessionId);
+                return new TopUpIdResponse { Id = instance.SessionId, DirctLink = "https://checkout.stripe.com/c/pay/" + instance.SessionId };
+            }
 
             if (user.Locale == null && topupotions?.UserIp != null)
-            {
-                user.Locale = topupotions?.Locale;
-                user.Ip = System.Net.IPAddress.Parse(topupotions.UserIp).ToString();
-                user.Country = topupotions?.Locale.Split('-').Last();
-                await db.SaveChangesAsync();
-            }
+                {
+                    user.Locale = topupotions?.Locale;
+                    user.Ip = System.Net.IPAddress.Parse(topupotions.UserIp).ToString();
+                    user.Country = topupotions?.Locale.Split('-').Last();
+                    await db.SaveChangesAsync();
+                }
 
             var metadata = new Dictionary<string, string>() {
                 { "productId", product.Id.ToString() },
@@ -163,11 +168,16 @@ namespace Payments.Controllers
             var existingRequests = await db.PaymentRequests
                 .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp) && r.CreatedAt > minTime)
                 .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
+                .Include(r => r.User).Include(r => r.ProductId)
                 .ToListAsync();
             if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(-10)) > 1)
                 throw new ApiException("Too many payment requests from you, please try again later");
             if (existingRequests.Count > 5 || existingRequests.Count > 3 && existingRequests.Select(e => e.CreateOnIp).Distinct().Count() < 3)
                 throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
+
+            var match = existingRequests.FirstOrDefault(r => r.User.Id == user.Id && r.ProductId.Id == product.Id && r.State < PaymentRequest.Status.PAID && r.CreatedAt > DateTime.UtcNow.AddMinutes(-10) && r.SessionId != null);
+            if (match != null)
+                return match; // already existing request, return it
 
             var request = new PaymentRequest()
             {
