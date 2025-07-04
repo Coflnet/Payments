@@ -302,7 +302,7 @@ namespace Payments.Controllers
                         return Ok(); // ignore order
                     }
                     // check that there are not too many orders
-                    if (await HasToManyTopups(userId))
+                    if (await HasToManyTopups(userId, (decimal)coinAmount))
                     {
                         _logger.LogInformation($"too many orders for user {userId} aborting");
                         return Ok();
@@ -434,10 +434,11 @@ namespace Payments.Controllers
             return transaction;
         }
 
-        internal async Task<bool> HasToManyTopups(string userId)
+        internal async Task<bool> HasToManyTopups(string userId, decimal coinAmount)
         {
             return await db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First()
                                         && t.Product.Type.HasFlag(Coflnet.Payments.Models.Product.ProductType.TOP_UP)
+                                        && t.Amount == coinAmount
                                             && t.Timestamp > DateTime.UtcNow.AddDays(-1)).CountAsync() >= 2;
         }
 
