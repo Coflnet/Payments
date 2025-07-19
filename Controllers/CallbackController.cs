@@ -18,6 +18,7 @@ using PayPalCheckoutSdk.Core;
 using Stripe.Checkout;
 using System.Security.Cryptography;
 using System.Text;
+using Coflnet.Payments.Models.LemonSqueezy;
 
 namespace Payments.Controllers
 {
@@ -234,6 +235,11 @@ namespace Payments.Controllers
             }
             else if (meta.EventName == "order_refunded" && data.Attributes.Status == "refunded")
             {
+                if(meta.CustomData.IsSubscription != null && meta.CustomData.IsSubscription.Equals("true", StringComparison.OrdinalIgnoreCase))
+                {
+                    await RevertSubscriptionPayment(webhook);
+                    return Ok();
+                }
                 await RevertTopUpWithReference(data.Attributes.Identifier);
             }
             else if (meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
@@ -254,6 +260,31 @@ namespace Payments.Controllers
                 return StatusCode(500);
             }
             return Ok();
+        }
+
+        private async Task RevertSubscriptionPayment(Webhook webhook)
+        {
+            var matchingSubscriptionPayment = await db.FiniteTransactions
+                .Where(t => (t.Amount == webhook.Meta.CustomData.CoinAmount || t.Amount == -webhook.Meta.CustomData.CoinAmount)
+                    && t.User.ExternalId == webhook.Meta.CustomData.UserId)
+                .Include(t => t.Product)
+                .OrderByDescending(t => t.Timestamp)
+                .Take(10)
+                .ToListAsync();
+            var reverts = matchingSubscriptionPayment
+            .Where(t => t.Product.Slug == "revert")
+            .Select(t => long.Parse(t.Reference.Split(' ').Last())).ToList();
+
+            var nonReverted = matchingSubscriptionPayment
+                .Where(t => !reverts.Contains(t.Id) && t.Product.Slug != "revert")
+                .OrderByDescending(t => t.Timestamp)
+                .ToList();
+
+            var purchase = nonReverted.Where(t => t.Amount == -webhook.Meta.CustomData.CoinAmount).FirstOrDefault();
+            var topupSlug = purchase?.Reference + "-topup";
+            await RevertTopUpWithReference(topupSlug);
+            await RevertTopUpWithReference(purchase.Reference);
+            _logger.LogInformation($"Reverted subscription payment for {webhook.Meta.CustomData.UserId} {webhook.Meta.CustomData.ProductId} {purchase?.Reference}");
         }
 
         /// <summary>
