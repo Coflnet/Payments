@@ -282,8 +282,9 @@ namespace Payments.Controllers
 
             var purchase = nonReverted.Where(t => t.Amount == -webhook.Meta.CustomData.CoinAmount).FirstOrDefault();
             var topupSlug = purchase?.Reference + "-topup";
+            // because the topup 
             await RevertTopUpWithReference(topupSlug);
-            await RevertTopUpWithReference(purchase.Reference);
+            await RevertTopUpWithReference(purchase.Reference, true);
             _logger.LogInformation($"Reverted subscription payment for {webhook.Meta.CustomData.UserId} {webhook.Meta.CustomData.ProductId} {purchase?.Reference}");
         }
 
@@ -458,10 +459,10 @@ namespace Payments.Controllers
             return Ok();
         }
 
-        private async Task<FiniteTransaction> RevertTopUpWithReference(string id)
+        private async Task<FiniteTransaction> RevertTopUpWithReference(string id, bool revertTime = false)
         {
             var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).Include(t => t.User).FirstOrDefaultAsync();
-            await transactionService.RevertPurchase(transaction.User.ExternalId, transaction.Id);
+            await transactionService.RevertPurchase(transaction.User.ExternalId, transaction.Id, revertTime);
             return transaction;
         }
 
