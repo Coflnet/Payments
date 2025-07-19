@@ -279,8 +279,14 @@ namespace Payments.Controllers
                 .Where(t => !reverts.Contains(t.Id) && t.Product.Slug != "revert")
                 .OrderByDescending(t => t.Timestamp)
                 .ToList();
-
-            var purchase = nonReverted.Where(t => t.Amount == -webhook.Meta.CustomData.CoinAmount).FirstOrDefault();
+            var createdDate = webhook.Data.Attributes.CreatedAt.ToString("yyyy-MM-dd");
+            var purchase = nonReverted.Where(t => t.Amount == -webhook.Meta.CustomData.CoinAmount
+                && t.Reference.Contains(createdDate)).FirstOrDefault();
+            if(purchase == null)
+            {
+                _logger.LogWarning($"No matching purchase found for subscription payment {webhook.Meta.CustomData.UserId} {webhook.Meta.CustomData.ProductId} {createdDate}");
+                return;
+            }
             var topupSlug = purchase?.Reference + "-topup";
             // because the topup 
             await RevertTopUpWithReference(topupSlug);
