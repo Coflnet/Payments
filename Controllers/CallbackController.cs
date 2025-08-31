@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
+using Coflnet.Payments.Models.GooglePay;
 using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
@@ -19,6 +20,7 @@ using Stripe.Checkout;
 using System.Security.Cryptography;
 using System.Text;
 using Coflnet.Payments.Models.LemonSqueezy;
+using Newtonsoft.Json;
 
 namespace Payments.Controllers
 {
@@ -37,6 +39,8 @@ namespace Payments.Controllers
         private IPaymentEventProducer paymentEventProducer;
         private readonly PayPalHttpClient paypalClient;
         private readonly Coflnet.Payments.Services.SubscriptionService subscriptionService;
+        private readonly GooglePlayService googlePlayService;
+        private readonly GooglePlayConfigService googlePlayConfigService;
 
         public CallbackController(
             IConfiguration config,
@@ -45,7 +49,9 @@ namespace Payments.Controllers
             TransactionService transactionService,
             PayPalHttpClient paypalClient,
             IPaymentEventProducer paymentEventProducer,
-            Coflnet.Payments.Services.SubscriptionService subscriptionService)
+            Coflnet.Payments.Services.SubscriptionService subscriptionService,
+            GooglePlayService googlePlayService,
+            GooglePlayConfigService googlePlayConfigService)
         {
             _logger = logger;
             db = context;
@@ -55,6 +61,8 @@ namespace Payments.Controllers
             this.paypalClient = paypalClient;
             this.paymentEventProducer = paymentEventProducer;
             this.subscriptionService = subscriptionService;
+            this.googlePlayService = googlePlayService;
+            this.googlePlayConfigService = googlePlayConfigService;
         }
 
         /// <summary>
@@ -314,7 +322,7 @@ namespace Payments.Controllers
             {
                 _logger.LogInformation("reading json");
                 json = await new StreamReader(Request.Body).ReadToEndAsync();
-                var webhookResult = Newtonsoft.Json.JsonConvert.DeserializeObject<PayPalWebhook>(json);
+                var webhookResult = Newtonsoft.Json.JsonConvert.DeserializeObject<PayPalWebhookData>(json);
                 _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(webhookResult));
                 if (webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
                 {
@@ -513,15 +521,362 @@ namespace Payments.Controllers
             }
         }
 
-        [DataContract]
-        public class PayPalWebhook
+        /// <summary>
+        /// Verifies and processes a Google Play product purchase
+        /// </summary>
+        /// <param name="request">The Google Play purchase verification request</param>
+        /// <returns>Purchase verification response</returns>
+        [HttpPost]
+        [Route("googlepay/verify")]
+        public async Task<IActionResult> VerifyGooglePlayPurchase([FromBody] GooglePlayPurchaseRequest request)
         {
+            try
+            {
+                _logger.LogInformation("Received Google Play purchase verification request for product {ProductId}", request.ProductId);
+
+                if (!ModelState.IsValid)
+                {
+                    return BadRequest(new GooglePlayPurchaseResponse 
+                    { 
+                        IsValid = false, 
+                        ErrorMessage = "Invalid request data" 
+                    });
+                }
+
+                // Verify the purchase with Google Play
+                var purchase = await googlePlayService.VerifyProductPurchaseAsync(
+                    request.PackageName, 
+                    request.ProductId, 
+                    request.PurchaseToken);
+
+                // Check if purchase is valid and not consumed
+                if (purchase.PurchaseState != 0) // 0 = Purchased
+                {
+                    _logger.LogWarning("Invalid purchase state for product {ProductId}: {PurchaseState}", 
+                        request.ProductId, purchase.PurchaseState);
+                    
+                    return BadRequest(new GooglePlayPurchaseResponse 
+                    { 
+                        IsValid = false, 
+                        ErrorMessage = "Purchase is not in valid state",
+                        PurchaseState = purchase.PurchaseState
+                    });
+                }
+
+                // Check if purchase is already acknowledged/consumed
+                if (purchase.AcknowledgementState == 1) // 1 = Acknowledged
+                {
+                    _logger.LogWarning("Purchase already acknowledged for product {ProductId}", request.ProductId);
+                    
+                    return BadRequest(new GooglePlayPurchaseResponse 
+                    { 
+                        IsValid = false, 
+                        ErrorMessage = "Purchase already processed" 
+                    });
+                }
+
+                // Map Google Play product to internal product
+                var internalProductId = request.InternalProductId ?? googlePlayConfigService.GetInternalProductId(request.ProductId);
+                if (internalProductId == 0)
+                {
+                    _logger.LogError("No internal product mapping found for Google Play product {ProductId}", request.ProductId);
+                    
+                    return BadRequest(new GooglePlayPurchaseResponse 
+                    { 
+                        IsValid = false, 
+                        ErrorMessage = "Product not supported" 
+                    });
+                }
+
+                // Process the transaction
+                var customAmount = request.CustomAmount ?? 0;
+                await transactionService.AddTopUp(internalProductId, request.UserId, purchase.OrderId, customAmount);
+
+                // Acknowledge the purchase with Google Play
+                await googlePlayService.AcknowledgeProductPurchaseAsync(
+                    request.PackageName, 
+                    request.ProductId, 
+                    request.PurchaseToken);
+
+                // Send payment event
+                await paymentEventProducer.ProduceEvent(new PaymentEvent
+                {
+                    PayedAmount = 0, // Google Play doesn't provide price in verification response
+                    ProductId = internalProductId.ToString(),
+                    UserId = request.UserId,
+                    Currency = "USD", // Default currency - should be determined from product mapping
+                    PaymentMethod = "googlepay",
+                    PaymentProvider = "Google Play",
+                    PaymentProviderTransactionId = purchase.OrderId,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                _logger.LogInformation("Successfully processed Google Play purchase for product {ProductId}, user {UserId}", 
+                    request.ProductId, request.UserId);
+
+                return Ok(new GooglePlayPurchaseResponse 
+                { 
+                    IsValid = true,
+                    PurchaseState = purchase.PurchaseState
+                });
+            }
+            catch (TransactionService.DupplicateTransactionException)
+            {
+                _logger.LogWarning("Duplicate transaction for Google Play product {ProductId}, user {UserId}", 
+                    request.ProductId, request.UserId);
+                
+                // Still acknowledge the purchase if it was a duplicate
+                try
+                {
+                    await googlePlayService.AcknowledgeProductPurchaseAsync(
+                        request.PackageName, 
+                        request.ProductId, 
+                        request.PurchaseToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to acknowledge duplicate purchase");
+                }
+
+                return Ok(new GooglePlayPurchaseResponse 
+                { 
+                    IsValid = true, 
+                    ErrorMessage = "Transaction already processed" 
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to verify Google Play purchase for product {ProductId}", request.ProductId);
+                
+                return StatusCode(500, new GooglePlayPurchaseResponse 
+                { 
+                    IsValid = false, 
+                    ErrorMessage = "Internal server error" 
+                });
+            }
+        }
+
+        /// <summary>
+        /// Webhook callback for Google Play Real-time Developer Notifications (RTDN)
+        /// </summary>
+        /// <returns>Status result</returns>
+        [HttpPost]
+        [Route("googlepay")]
+        public async Task<IActionResult> GooglePlayWebhook()
+        {
+            try
+            {
+                _logger.LogInformation("Received Google Play RTDN webhook");
+
+                string json;
+                using (var reader = new StreamReader(Request.Body))
+                {
+                    json = await reader.ReadToEndAsync();
+                }
+
+                if (string.IsNullOrEmpty(json))
+                {
+                    _logger.LogWarning("Google Play webhook received empty body");
+                    return BadRequest("Empty request body");
+                }
+
+                // Parse the notification
+                var notification = JsonConvert.DeserializeObject<GooglePlayNotification>(json);
+                
+                if (notification == null)
+                {
+                    _logger.LogWarning("Failed to parse Google Play notification");
+                    return BadRequest("Invalid notification format");
+                }
+
+                _logger.LogInformation("Processing Google Play notification for package {PackageName}", notification.PackageName);
+
+                // Handle one-time product notifications
+                if (notification.OneTimeProductNotification != null)
+                {
+                    await HandleOneTimeProductNotification(notification.OneTimeProductNotification, notification.PackageName);
+                }
+                
+                // Handle subscription notifications
+                if (notification.SubscriptionNotification != null)
+                {
+                    await HandleSubscriptionNotification(notification.SubscriptionNotification, notification.PackageName);
+                }
+
+                // Handle test notifications
+                if (notification.TestNotification != null)
+                {
+                    _logger.LogInformation("Received Google Play test notification");
+                }
+
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing Google Play webhook");
+                return StatusCode(500, "Internal server error");
+            }
+        }
+
+        /// <summary>
+        /// Handles one-time product notifications from Google Play
+        /// </summary>
+        /// <param name="notification">The one-time product notification</param>
+        /// <param name="packageName">The package name</param>
+        private async Task HandleOneTimeProductNotification(OneTimeProductNotification notification, string packageName)
+        {
+            try
+            {
+                _logger.LogInformation("Handling one-time product notification for SKU {Sku}, type {NotificationType}", 
+                    notification.Sku, notification.NotificationType);
+
+                switch (notification.NotificationType)
+                {
+                    case 1: // ONE_TIME_PRODUCT_PURCHASED
+                        // Verify and process the purchase
+                        var purchase = await googlePlayService.VerifyProductPurchaseAsync(
+                            packageName, 
+                            notification.Sku, 
+                            notification.PurchaseToken);
+
+                        // Here you could process the purchase if needed
+                        // This is typically handled by the verify endpoint, but webhooks provide additional reliability
+                        
+                        _logger.LogInformation("One-time product purchased: {Sku}", notification.Sku);
+                        break;
+
+                    case 2: // ONE_TIME_PRODUCT_CANCELED
+                        _logger.LogInformation("One-time product canceled: {Sku}", notification.Sku);
+                        // Handle cancellation if needed
+                        break;
+
+                    default:
+                        _logger.LogWarning("Unknown one-time product notification type: {NotificationType}", notification.NotificationType);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling one-time product notification for SKU {Sku}", notification.Sku);
+            }
+        }
+
+        /// <summary>
+        /// Handles subscription notifications from Google Play
+        /// </summary>
+        /// <param name="notification">The subscription notification</param>
+        /// <param name="packageName">The package name</param>
+        private async Task HandleSubscriptionNotification(SubscriptionNotification notification, string packageName)
+        {
+            try
+            {
+                _logger.LogInformation("Handling subscription notification for subscription {SubscriptionId}, type {NotificationType}", 
+                    notification.SubscriptionId, notification.NotificationType);
+
+                switch (notification.NotificationType)
+                {
+                    case 1: // SUBSCRIPTION_RECOVERED
+                    case 2: // SUBSCRIPTION_RENEWED
+                    case 4: // SUBSCRIPTION_PURCHASED
+                        // Verify and process the subscription
+                        var subscription = await googlePlayService.VerifySubscriptionPurchaseAsync(
+                            packageName, 
+                            notification.SubscriptionId, 
+                            notification.PurchaseToken);
+
+                        // Process subscription renewal/purchase
+                        _logger.LogInformation("Subscription event processed: {SubscriptionId}, type: {NotificationType}", 
+                            notification.SubscriptionId, notification.NotificationType);
+                        break;
+
+                    case 3: // SUBSCRIPTION_CANCELED
+                        _logger.LogInformation("Subscription canceled: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription cancellation
+                        break;
+
+                    case 5: // SUBSCRIPTION_ON_HOLD
+                        _logger.LogInformation("Subscription on hold: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription on hold
+                        break;
+
+                    case 6: // SUBSCRIPTION_IN_GRACE_PERIOD
+                        _logger.LogInformation("Subscription in grace period: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription in grace period
+                        break;
+
+                    case 7: // SUBSCRIPTION_RESTARTED
+                        _logger.LogInformation("Subscription restarted: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription restart
+                        break;
+
+                    case 8: // SUBSCRIPTION_PRICE_CHANGE_CONFIRMED
+                        _logger.LogInformation("Subscription price change confirmed: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription price change
+                        break;
+
+                    case 9: // SUBSCRIPTION_DEFERRED
+                        _logger.LogInformation("Subscription deferred: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription deferral
+                        break;
+
+                    case 10: // SUBSCRIPTION_PAUSED
+                        _logger.LogInformation("Subscription paused: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription pause
+                        break;
+
+                    case 11: // SUBSCRIPTION_PAUSE_SCHEDULE_CHANGED
+                        _logger.LogInformation("Subscription pause schedule changed: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription pause schedule change
+                        break;
+
+                    case 12: // SUBSCRIPTION_REVOKED
+                        _logger.LogInformation("Subscription revoked: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription revocation
+                        break;
+
+                    case 13: // SUBSCRIPTION_EXPIRED
+                        _logger.LogInformation("Subscription expired: {SubscriptionId}", notification.SubscriptionId);
+                        // Handle subscription expiration
+                        break;
+
+                    default:
+                        _logger.LogWarning("Unknown subscription notification type: {NotificationType}", notification.NotificationType);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling subscription notification for subscription {SubscriptionId}", notification.SubscriptionId);
+            }
+        }
+
+        /// <summary>
+        /// PayPal webhook data structure
+        /// </summary>
+        [DataContract]
+        public class PayPalWebhookData
+        {
+            /// <summary>
+            /// Webhook ID
+            /// </summary>
             [DataMember(Name = "id")]
             public string Id { get; set; }
+            
+            /// <summary>
+            /// Webhook creation time
+            /// </summary>
             [DataMember(Name = "create_time")]
             public DateTime CreateTime;
+            
+            /// <summary>
+            /// Event type
+            /// </summary>
             [DataMember(Name = "event_type")]
             public string EventType;
+            
+            /// <summary>
+            /// Resource data
+            /// </summary>
             [DataMember(Name = "resource")]
             public PayPalCheckoutSdk.Orders.Order Resource;
         }
