@@ -145,6 +145,8 @@ public class SubscriptionService
             }
             logger.LogInformation($"Subscription extended for user {customData.UserId} for product {customData.ProductId}, crediting");
         }
+
+        using var transaction = await transactionService.StartDbTransaction();
         try
         {
             await transactionService.AddTopUp(customData.ProductId, customData.UserId, referenceId + "-topup");
@@ -152,6 +154,7 @@ public class SubscriptionService
         catch (Exception e)
         {
             logger.LogError(e, "Error adding topup transaction");
+            await transaction.RollbackAsync();
             return;
         }
         logger.LogInformation("starting purchase");

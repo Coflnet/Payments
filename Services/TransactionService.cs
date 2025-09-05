@@ -59,6 +59,11 @@ namespace Coflnet.Payments.Services
             await CreateTransactionInTransaction(product, userId, changeamount, reference);
         }
 
+        public async Task<IDbContextTransaction> StartDbTransaction()
+        {
+            return await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        }
+
 
         /// <summary>
         /// Execute a custom topup that changes an users balance in some way
