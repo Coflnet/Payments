@@ -88,28 +88,61 @@ namespace Coflnet.Payments.Services
 
         public async Task CreateTransactionInTransaction(TopUpProduct product, string userId, decimal changeamount, string reference)
         {
-            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-
-            var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
-            if (user == null)
+            var ownsTransaction = false;
+            if (db.Database.CurrentTransaction == null)
             {
-                await db.Database.RollbackTransactionAsync();
-                throw new ApiException("user doesn't exist");
+                await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                ownsTransaction = true;
             }
-            await CreateAndProduceTransaction(product, user, changeamount, reference);
+
+            try
+            {
+                var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
+                if (user == null)
+                {
+                    if (ownsTransaction)
+                        await db.Database.RollbackTransactionAsync();
+                    throw new ApiException("user doesn't exist");
+                }
+                await CreateAndProduceTransaction(product, user, changeamount, reference, ownsTransaction);
+            }
+            catch
+            {
+                if (ownsTransaction)
+                    await db.Database.RollbackTransactionAsync();
+                throw;
+            }
         }
         public async Task CreateTransactionInTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
         {
-            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-            user = await db.Users.Where(u => u.Id == user.Id).FirstOrDefaultAsync(); // reload user for transaction lock
-            await CreateAndProduceTransaction(product, user, changeamount, reference);
+            var ownsTransaction = false;
+            if (db.Database.CurrentTransaction == null)
+            {
+                await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                ownsTransaction = true;
+            }
+
+            try
+            {
+                user = await db.Users.Where(u => u.Id == user.Id).FirstOrDefaultAsync(); // reload user for transaction lock
+                await CreateAndProduceTransaction(product, user, changeamount, reference, ownsTransaction);
+            }
+            catch
+            {
+                if (ownsTransaction)
+                    await db.Database.RollbackTransactionAsync();
+                throw;
+            }
         }
 
-        private async Task CreateAndProduceTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
+        private async Task CreateAndProduceTransaction(TopUpProduct product, User user, decimal changeamount, string reference, bool commitTransaction)
         {
             var transactionEvent = await CreateTransaction(product, user, changeamount, reference);
 
-            await db.Database.CommitTransactionAsync();
+            if (commitTransaction)
+            {
+                await db.Database.CommitTransactionAsync();
+            }
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
