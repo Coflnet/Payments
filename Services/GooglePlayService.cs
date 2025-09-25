@@ -23,10 +23,17 @@ namespace Coflnet.Payments.Services
         public GooglePlayService(ILogger<GooglePlayService> logger, IConfiguration configuration)
         {
             _logger = logger;
-            _settings = configuration.GetSection("GOOGLEPAY").Get<GooglePlaySettings>() 
+            _settings = configuration.GetSection("GOOGLEPAY").Get<GooglePlaySettings>()
                        ?? throw new ArgumentException("Google Pay settings not configured");
 
-            _androidPublisherService = CreateAndroidPublisherService();
+            try
+            {
+                _androidPublisherService = CreateAndroidPublisherService();
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Failed to initialize Google Play Service");
+            }
         }
 
         /// <summary>
@@ -38,7 +45,7 @@ namespace Coflnet.Payments.Services
             try
             {
                 GoogleCredential credential;
-                
+
                 if (File.Exists(_settings.ServiceAccountKeyFile))
                 {
                     // Load from service account key file
@@ -91,7 +98,7 @@ namespace Coflnet.Payments.Services
                 var request = _androidPublisherService.Purchases.Products.Get(packageName, productId, purchaseToken);
                 var purchase = await request.ExecuteAsync();
 
-                _logger.LogInformation("Purchase verification completed for product {ProductId}, state: {PurchaseState}", 
+                _logger.LogInformation("Purchase verification completed for product {ProductId}, state: {PurchaseState}",
                     productId, purchase.PurchaseState);
 
                 return purchase;
@@ -120,7 +127,7 @@ namespace Coflnet.Payments.Services
                 var request = _androidPublisherService.Purchases.Subscriptions.Get(packageName, subscriptionId, purchaseToken);
                 var subscription = await request.ExecuteAsync();
 
-                _logger.LogInformation("Subscription verification completed for subscription {SubscriptionId}, state: {PaymentState}", 
+                _logger.LogInformation("Subscription verification completed for subscription {SubscriptionId}, state: {PaymentState}",
                     subscriptionId, subscription.PaymentState);
 
                 return subscription;
