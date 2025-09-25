@@ -160,7 +160,10 @@ namespace Payments.Controllers
 
         private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
         {
-            using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+            var (transaction, owns) = await transactionService.AcquireTransactionIfNoneAsync();
+            PaymentRequest request = null;
+            try
+            {
             if (!System.Net.IPAddress.TryParse(topupotions.UserIp, out var userIp))
                 throw new ApiException("Invalid user IP");
             // check existing requests 
@@ -179,7 +182,7 @@ namespace Payments.Controllers
             if (match != null)
                 return match; // already existing request, return it
 
-            var request = new PaymentRequest()
+            request = new PaymentRequest()
             {
                 User = user,
                 ProductId = db.TopUpProducts.Find(product.Id),
@@ -193,9 +196,22 @@ namespace Payments.Controllers
             };
             db.Add(request);
             await db.SaveChangesAsync();
-            await transaction.CommitAsync();
-            _logger.LogInformation("Created payment request {requestId} for user {userId}, existing {existingCount}", request.Id, user.Id, existingRequests.Count);
-            return request;
+                if (owns)
+                    await transaction.CommitAsync();
+                _logger.LogInformation("Created payment request {requestId} for user {userId}, existing {existingCount}", request.Id, user.Id, existingRequests.Count);
+                return request;
+            }
+            catch
+            {
+                if (owns)
+                    await transaction.RollbackAsync();
+                throw;
+            }
+            finally
+            {
+                if (owns && transaction != null)
+                    await transaction.DisposeAsync();
+            }
         }
 
 

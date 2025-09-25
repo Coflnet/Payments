@@ -146,20 +146,21 @@ public class SubscriptionService
             logger.LogInformation($"Subscription extended for user {customData.UserId} for product {customData.ProductId}, crediting");
         }
 
-        using var transaction = await transactionService.StartDbTransaction();
+        await using var transaction = await transactionService.StartDbTransaction();
         try
         {
             await transactionService.AddTopUp(customData.ProductId, customData.UserId, referenceId + "-topup");
+            logger.LogInformation("starting purchase");
+            await transactionService.PurchaseService(product.Slug, customData.UserId, 1, referenceId, product);
+            await transaction.CommitAsync();
+            logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId} extended by {product.OwnershipSeconds}");
         }
         catch (Exception e)
         {
-            logger.LogError(e, "Error adding topup transaction");
+            logger.LogError(e, "Error processing topup/purchase");
             await transaction.RollbackAsync();
             throw;
         }
-        logger.LogInformation("starting purchase");
-        await transactionService.PurchaseService(product.Slug, customData.UserId, 1, referenceId, product);
-        logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId} extended by {product.OwnershipSeconds}");
     }
 
     public async Task CancelSubscription(string userId, string subscriptionId)

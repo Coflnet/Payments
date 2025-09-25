@@ -29,9 +29,11 @@ namespace Coflnet.Payments.Services
             var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
             var group = await db.Groups.Where(g => g.Slug == productSlug).FirstOrDefaultAsync();
 
-            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-            var user = await userService.GetOrCreate(userId);
-            var license = await db.Licenses.Where(l => l.Product == product && l.TargetId == targetId && l.UserId == user.Id).FirstOrDefaultAsync();
+            var (dbTransaction, owns) = await transactionService.AcquireTransactionIfNoneAsync();
+            try
+            {
+                var user = await userService.GetOrCreate(userId);
+                var license = await db.Licenses.Where(l => l.Product == product && l.TargetId == targetId && l.UserId == user.Id).FirstOrDefaultAsync();
             if (license == null)
             {
                 db.Licenses.Add(new License
@@ -54,7 +56,20 @@ namespace Coflnet.Payments.Services
 
             await transactionEventProducer.ProduceEvent(transactionEvent);
             await db.SaveChangesAsync();
-            await db.Database.CommitTransactionAsync();
+            if (owns)
+                await db.Database.CommitTransactionAsync();
+            }
+            catch
+            {
+                if (owns)
+                    await db.Database.RollbackTransactionAsync();
+                throw;
+            }
+            finally
+            {
+                if (owns && dbTransaction != null)
+                    await dbTransaction.DisposeAsync();
+            }
         }
 
         public async Task<DateTime> HasLicenseUntil(string userId, string productSlug, string targetId)

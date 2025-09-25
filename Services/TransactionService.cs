@@ -64,6 +64,19 @@ namespace Coflnet.Payments.Services
             return await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         }
 
+        /// <summary>
+        /// Acquire the current transaction if present or begin a new one.
+        /// Returns the transaction and a bool indicating whether the caller owns it (and should commit/rollback).
+        /// </summary>
+        internal async Task<(IDbContextTransaction transaction, bool owns)> AcquireTransactionIfNoneAsync()
+        {
+            var current = db.Database.CurrentTransaction;
+            if (current != null)
+                return (current, false);
+            var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            return (tx, true);
+        }
+
 
         /// <summary>
         /// Execute a custom topup that changes an users balance in some way
@@ -88,13 +101,7 @@ namespace Coflnet.Payments.Services
 
         public async Task CreateTransactionInTransaction(TopUpProduct product, string userId, decimal changeamount, string reference)
         {
-            var ownsTransaction = false;
-            if (db.Database.CurrentTransaction == null)
-            {
-                await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-                ownsTransaction = true;
-            }
-
+            var (tx, ownsTransaction) = await AcquireTransactionIfNoneAsync();
             try
             {
                 var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
@@ -112,16 +119,15 @@ namespace Coflnet.Payments.Services
                     await db.Database.RollbackTransactionAsync();
                 throw;
             }
+            finally
+            {
+                if (ownsTransaction && tx != null)
+                    await tx.DisposeAsync();
+            }
         }
         public async Task CreateTransactionInTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
         {
-            var ownsTransaction = false;
-            if (db.Database.CurrentTransaction == null)
-            {
-                await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-                ownsTransaction = true;
-            }
-
+            var (tx, ownsTransaction) = await AcquireTransactionIfNoneAsync();
             try
             {
                 user = await db.Users.Where(u => u.Id == user.Id).FirstOrDefaultAsync(); // reload user for transaction lock
@@ -132,6 +138,11 @@ namespace Coflnet.Payments.Services
                 if (ownsTransaction)
                     await db.Database.RollbackTransactionAsync();
                 throw;
+            }
+            finally
+            {
+                if (ownsTransaction && tx != null)
+                    await tx.DisposeAsync();
             }
         }
 
@@ -194,19 +205,34 @@ namespace Coflnet.Payments.Services
             PurchaseableProduct product = await GetProduct(productSlug);
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
-            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-            var user = await userService.GetOrCreate(userId);
-            if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
-                throw new ApiException("already owned");
-            if (user.AvailableBalance < price || price < 0)
-                throw new ApiException("insuficcient balance");
+            var (dbTransaction, owns) = await AcquireTransactionIfNoneAsync();
+            try
+            {
+                var user = await userService.GetOrCreate(userId);
+                if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
+                    throw new ApiException("already owned");
+                if (user.AvailableBalance < price || price < 0)
+                    throw new ApiException("insuficcient balance");
 
-            var transactionEvent = await CreateTransaction(product, user, price * -1);
-            user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
-            db.Update(user);
-            await db.SaveChangesAsync();
-            await db.Database.CommitTransactionAsync();
-            await transactionEventProducer.ProduceEvent(transactionEvent);
+                var transactionEvent = await CreateTransaction(product, user, price * -1);
+                user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
+                db.Update(user);
+                await db.SaveChangesAsync();
+                if (owns)
+                    await db.Database.CommitTransactionAsync();
+                await transactionEventProducer.ProduceEvent(transactionEvent);
+            }
+            catch
+            {
+                if (owns)
+                    await db.Database.RollbackTransactionAsync();
+                throw;
+            }
+            finally
+            {
+                if (owns && dbTransaction != null)
+                    await dbTransaction.DisposeAsync();
+            }
         }
 
         public async Task<PurchaseableProduct> GetProduct(string productSlug)
@@ -229,10 +255,25 @@ namespace Coflnet.Payments.Services
         {
             if (!dbProduct.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
-            var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-            var user = await userService.GetOrCreate(userId);
-            var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
-            await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, transaction, user, adjustedProduct);
+
+            var (transaction, ownsTransaction) = await AcquireTransactionIfNoneAsync();
+            try
+            {
+                var user = await userService.GetOrCreate(userId);
+                var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
+                await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, transaction, user, adjustedProduct, ownsTransaction);
+            }
+            catch
+            {
+                if (ownsTransaction)
+                    await db.Database.RollbackTransactionAsync();
+                throw;
+            }
+            finally
+            {
+                if (ownsTransaction && transaction != null)
+                    await transaction.DisposeAsync();
+            }
         }
 
         public async Task<RuleResult> GetAdjustedProduct(string productSlug, string userId)
@@ -244,18 +285,20 @@ namespace Coflnet.Payments.Services
             return await ruleEngine.GetAdjusted(product, user);
         }
 
-        private async Task<TransactionEvent> ExecuteServicePurchase(string productSlug, string userId, int count, string reference, Product dbProduct, IDbContextTransaction transaction, User user, Product adjustedProduct)
+        private async Task<TransactionEvent> ExecuteServicePurchase(string productSlug, string userId, int count, string reference, Product dbProduct, IDbContextTransaction transaction, User user, Product adjustedProduct, bool commitTransaction)
         {
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
             {
-                await transaction.RollbackAsync();
+                if (commitTransaction)
+                    await transaction.RollbackAsync();
                 throw new ApiException("already owned for too long");
             }
             var price = adjustedProduct.Cost * count;
             if (user.AvailableBalance < price && adjustedProduct.Slug != "revert")
             {
-                await transaction.RollbackAsync();
+                if (commitTransaction)
+                    await transaction.RollbackAsync();
                 logger.LogError($"User {user.ExternalId} doesn't have the required {price} amount to purchase {productSlug} (only {user.AvailableBalance} available)");
                 throw new ApiException("insuficcient balance");
             }
@@ -284,7 +327,8 @@ namespace Coflnet.Payments.Services
 
             db.Update(user);
             await db.SaveChangesAsync();
-            await db.Database.CommitTransactionAsync();
+            if (commitTransaction)
+                await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
             return transactionEvent;
         }
@@ -299,16 +343,30 @@ namespace Coflnet.Payments.Services
             var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t => t.Product).FirstOrDefault();
             var dbProduct = await GetProduct("revert");
 
-            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-            var user = await userService.GetOrCreate(userId);
-            var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
-            var count = (int)Math.Round(transaction.Amount / transaction.Product.Cost);
-            adjustedProduct.Cost = -transaction.Amount / count;
-            adjustedProduct.OwnershipSeconds = -transaction.Product.OwnershipSeconds;
-            if (!adjustTime)
-                adjustedProduct.OwnershipSeconds = 0;
-            adjustedProduct.Slug = "revert";
-            return await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct);
+            var (dbTransaction, owns) = await AcquireTransactionIfNoneAsync();
+            try
+            {
+                var user = await userService.GetOrCreate(userId);
+                var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
+                var count = (int)Math.Round(transaction.Amount / transaction.Product.Cost);
+                adjustedProduct.Cost = -transaction.Amount / count;
+                adjustedProduct.OwnershipSeconds = -transaction.Product.OwnershipSeconds;
+                if (!adjustTime)
+                    adjustedProduct.OwnershipSeconds = 0;
+                adjustedProduct.Slug = "revert";
+                return await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct, true);
+            }
+            catch
+            {
+                if (owns)
+                    await db.Database.RollbackTransactionAsync();
+                throw;
+            }
+            finally
+            {
+                if (owns && dbTransaction != null)
+                    await dbTransaction.DisposeAsync();
+            }
         }
 
         public static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
@@ -324,7 +382,9 @@ namespace Coflnet.Payments.Services
             if (changeamount < 1)
                 throw new ApiException("The minimum transaction amount is 1");
 
-            using var dbTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            var (dbTransaction, owns) = await AcquireTransactionIfNoneAsync();
+            try
+            {
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
             var initiatingUser = await userService.GetAndInclude(userId, u => u);
             var minTime = DateTime.UtcNow - TimeSpan.FromDays(transferSettings.PeriodDays);
@@ -351,11 +411,24 @@ namespace Coflnet.Payments.Services
             var transactionEvent = await CreateTransaction(product, initiatingUser, senderDeduct, reference);
             var receiveTransaction = await CreateTransaction(product, targetUser, changeamount, reference);
 
-            await db.Database.CommitTransactionAsync();
+            if (owns)
+                await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
             await transactionEventProducer.ProduceEvent(receiveTransaction);
             logger.LogInformation("After transaction user {sending} now has {newBalance} and user {receiving} has {newBalanceReceiving}", initiatingUser.ExternalId, initiatingUser.Balance, targetUser.ExternalId, targetUser.Balance);
             return transactionEvent;
+            }
+            catch
+            {
+                if (owns)
+                    await db.Database.RollbackTransactionAsync();
+                throw;
+            }
+            finally
+            {
+                if (owns && dbTransaction != null)
+                    await dbTransaction.DisposeAsync();
+            }
         }
 
         private async Task AssertNotToManyTransfersReceived(PurchaseableProduct product, DateTime minTime, User targetUser)
