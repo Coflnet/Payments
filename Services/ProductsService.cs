@@ -62,6 +62,22 @@ public class ProductService
         return product;
     }
 
+    /// <summary>
+    /// Get a topup product by external product slug and provider
+    /// </summary>
+    /// <param name="slug">The product slug (external product ID)</param>
+    /// <param name="providerSlug">The payment provider slug</param>
+    /// <param name="require">Whether to throw if not found</param>
+    /// <returns></returns>
+    public async Task<TopUpProduct> GetTopupProductByProvider(string slug, string providerSlug, bool require = true)
+    {
+        var product = await db.TopUpProducts
+            .Where(p => p.Slug == slug && p.ProviderSlug == providerSlug)
+            .FirstOrDefaultAsync();
+        if (product == null && require)
+            throw new ApiException($"product with slug '{slug}' and provider '{providerSlug}' not found");
+        return product;
+    }
 
     /// <summary>
     /// GetTopupOptions

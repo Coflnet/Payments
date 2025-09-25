@@ -80,7 +80,6 @@ namespace Coflnet.Payments
             services.AddScoped<Services.SubscriptionService>();
             services.AddScoped<LemonSqueezyService>();
             services.AddScoped<GooglePlayService>();
-            services.AddSingleton<GooglePlayConfigService>();
             services.AddSingleton<ExchangeService>();
             services.AddScoped<IRuleEngine, RuleEngine>();
             services.AddScoped<Services.ProductService>();

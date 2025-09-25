@@ -55,6 +55,10 @@ namespace Coflnet.Payments.Models
                    ProviderSlug == product.ProviderSlug;
         }
 
+        /// <summary>
+        /// Generates a hash code for this TopUpProduct
+        /// </summary>
+        /// <returns></returns>
         public override int GetHashCode()
         {
             HashCode hash = new HashCode();
