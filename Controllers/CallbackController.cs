@@ -41,6 +41,7 @@ namespace Payments.Controllers
         private readonly Coflnet.Payments.Services.SubscriptionService subscriptionService;
         private readonly GooglePlayService googlePlayService;
         private readonly Coflnet.Payments.Services.ProductService productService;
+        private readonly GooglePayController _googlePayController;
 
         public CallbackController(
             IConfiguration config,
@@ -50,6 +51,7 @@ namespace Payments.Controllers
             PayPalHttpClient paypalClient,
             IPaymentEventProducer paymentEventProducer,
             Coflnet.Payments.Services.SubscriptionService subscriptionService,
+            ILogger<GooglePayController> googlePayLogger,
             GooglePlayService googlePlayService,
             Coflnet.Payments.Services.ProductService productService)
         {
@@ -63,6 +65,8 @@ namespace Payments.Controllers
             this.subscriptionService = subscriptionService;
             this.googlePlayService = googlePlayService;
             this.productService = productService;
+            // instantiate GooglePayController to reuse its verification logic and keep a single implementation
+            _googlePayController = new GooglePayController(googlePayLogger, googlePlayService, transactionService, paymentEventProducer, productService);
         }
 
         /// <summary>
@@ -243,7 +247,7 @@ namespace Payments.Controllers
             }
             else if (meta.EventName == "order_refunded" && data.Attributes.Status == "refunded")
             {
-                if(meta.CustomData.IsSubscription != null && meta.CustomData.IsSubscription.Equals("true", StringComparison.OrdinalIgnoreCase))
+                if (meta.CustomData.IsSubscription != null && meta.CustomData.IsSubscription.Equals("true", StringComparison.OrdinalIgnoreCase))
                 {
                     await RevertSubscriptionPayment(webhook);
                     return Ok();
@@ -290,7 +294,7 @@ namespace Payments.Controllers
             var createdDate = webhook.Data.Attributes.CreatedAt.ToString("yyyy-MM-dd");
             var purchase = nonReverted.Where(t => t.Amount == -webhook.Meta.CustomData.CoinAmount
                 && t.Reference.Contains(createdDate)).FirstOrDefault();
-            if(purchase == null)
+            if (purchase == null)
             {
                 _logger.LogWarning($"No matching purchase found for subscription payment {webhook.Meta.CustomData.UserId} {webhook.Meta.CustomData.ProductId} {createdDate}");
                 return;
@@ -528,136 +532,10 @@ namespace Payments.Controllers
         /// <returns>Purchase verification response</returns>
         [HttpPost]
         [Route("googlepay/verify")]
-        public async Task<IActionResult> VerifyGooglePlayPurchase([FromBody] GooglePlayPurchaseRequest request)
+        public async Task<ActionResult<GooglePlayPurchaseResponse>> VerifyGooglePlayPurchase([FromBody] GooglePlayPurchaseRequest request)
         {
-            try
-            {
-                _logger.LogInformation("Received Google Play purchase verification request for product {ProductId}", request.ProductId);
-
-                if (!ModelState.IsValid)
-                {
-                    return BadRequest(new GooglePlayPurchaseResponse 
-                    { 
-                        IsValid = false, 
-                        ErrorMessage = "Invalid request data" 
-                    });
-                }
-
-                // Verify the purchase with Google Play
-                var purchase = await googlePlayService.VerifyProductPurchaseAsync(
-                    request.PackageName, 
-                    request.ProductId, 
-                    request.PurchaseToken);
-
-                // Check if purchase is valid and not consumed
-                if (purchase.PurchaseState != 0) // 0 = Purchased
-                {
-                    _logger.LogWarning("Invalid purchase state for product {ProductId}: {PurchaseState}", 
-                        request.ProductId, purchase.PurchaseState);
-                    
-                    return BadRequest(new GooglePlayPurchaseResponse 
-                    { 
-                        IsValid = false, 
-                        ErrorMessage = "Purchase is not in valid state",
-                        PurchaseState = purchase.PurchaseState
-                    });
-                }
-
-                // Check if purchase is already acknowledged/consumed
-                if (purchase.AcknowledgementState == 1) // 1 = Acknowledged
-                {
-                    _logger.LogWarning("Purchase already acknowledged for product {ProductId}", request.ProductId);
-                    
-                    return BadRequest(new GooglePlayPurchaseResponse 
-                    { 
-                        IsValid = false, 
-                        ErrorMessage = "Purchase already processed" 
-                    });
-                }
-
-                // Map Google Play product to internal product using database
-                TopUpProduct product;
-                try
-                {
-                    product = await productService.GetTopupProductByProvider(request.ProductId, "googlepay");
-                }
-                catch (ApiException)
-                {
-                    _logger.LogError("No internal product found for Google Play product {ProductId}", request.ProductId);
-                    
-                    return BadRequest(new GooglePlayPurchaseResponse 
-                    { 
-                        IsValid = false, 
-                        ErrorMessage = "Product not supported" 
-                    });
-                }
-
-                // Process the transaction
-                var customAmount = request.CustomAmount ?? 0;
-                await transactionService.AddTopUp(product.Id, request.UserId, purchase.OrderId, customAmount);
-
-                // Acknowledge the purchase with Google Play
-                await googlePlayService.AcknowledgeProductPurchaseAsync(
-                    request.PackageName, 
-                    request.ProductId, 
-                    request.PurchaseToken);
-
-                // Send payment event
-                await paymentEventProducer.ProduceEvent(new PaymentEvent
-                {
-                    PayedAmount = (double)product.Price,
-                    ProductId = product.Id.ToString(),
-                    UserId = request.UserId,
-                    Currency = product.CurrencyCode,
-                    PaymentMethod = "googlepay",
-                    PaymentProvider = "Google Play",
-                    PaymentProviderTransactionId = purchase.OrderId,
-                    Timestamp = DateTime.UtcNow
-                });
-
-                _logger.LogInformation("Successfully processed Google Play purchase for product {ProductId}, user {UserId}", 
-                    request.ProductId, request.UserId);
-
-                return Ok(new GooglePlayPurchaseResponse 
-                { 
-                    IsValid = true,
-                    PurchaseState = purchase.PurchaseState
-                });
-            }
-            catch (TransactionService.DupplicateTransactionException)
-            {
-                _logger.LogWarning("Duplicate transaction for Google Play product {ProductId}, user {UserId}", 
-                    request.ProductId, request.UserId);
-                
-                // Still acknowledge the purchase if it was a duplicate
-                try
-                {
-                    await googlePlayService.AcknowledgeProductPurchaseAsync(
-                        request.PackageName, 
-                        request.ProductId, 
-                        request.PurchaseToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to acknowledge duplicate purchase");
-                }
-
-                return Ok(new GooglePlayPurchaseResponse 
-                { 
-                    IsValid = true, 
-                    ErrorMessage = "Transaction already processed" 
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to verify Google Play purchase for product {ProductId}", request.ProductId);
-                
-                return StatusCode(500, new GooglePlayPurchaseResponse 
-                { 
-                    IsValid = false, 
-                    ErrorMessage = "Internal server error" 
-                });
-            }
+            // Delegate to the centralized GooglePayController implementation to avoid duplicate logic
+            return await _googlePayController.VerifyPurchase(request);
         }
 
         /// <summary>
@@ -686,7 +564,7 @@ namespace Payments.Controllers
 
                 // Parse the notification
                 var notification = JsonConvert.DeserializeObject<GooglePlayNotification>(json);
-                
+
                 if (notification == null)
                 {
                     _logger.LogWarning("Failed to parse Google Play notification");
@@ -700,7 +578,7 @@ namespace Payments.Controllers
                 {
                     await HandleOneTimeProductNotification(notification.OneTimeProductNotification, notification.PackageName);
                 }
-                
+
                 // Handle subscription notifications
                 if (notification.SubscriptionNotification != null)
                 {
@@ -731,7 +609,7 @@ namespace Payments.Controllers
         {
             try
             {
-                _logger.LogInformation("Handling one-time product notification for SKU {Sku}, type {NotificationType}", 
+                _logger.LogInformation("Handling one-time product notification for SKU {Sku}, type {NotificationType}",
                     notification.Sku, notification.NotificationType);
 
                 switch (notification.NotificationType)
@@ -739,13 +617,13 @@ namespace Payments.Controllers
                     case 1: // ONE_TIME_PRODUCT_PURCHASED
                         // Verify and process the purchase
                         var purchase = await googlePlayService.VerifyProductPurchaseAsync(
-                            packageName, 
-                            notification.Sku, 
+                            packageName,
+                            notification.Sku,
                             notification.PurchaseToken);
 
                         // Extract user ID from DeveloperPayload or ObfuscatedAccountId
                         string userId = ExtractUserIdFromPurchase(purchase, notification.Sku);
-                        
+
                         if (!string.IsNullOrEmpty(userId))
                         {
                             await ProcessGooglePlayProductPurchase(notification.Sku, userId, purchase, notification.PurchaseToken);
@@ -782,7 +660,7 @@ namespace Payments.Controllers
         {
             try
             {
-                _logger.LogInformation("Handling subscription notification for subscription {SubscriptionId}, type {NotificationType}", 
+                _logger.LogInformation("Handling subscription notification for subscription {SubscriptionId}, type {NotificationType}",
                     notification.SubscriptionId, notification.NotificationType);
 
                 switch (notification.NotificationType)
@@ -792,17 +670,17 @@ namespace Payments.Controllers
                     case 4: // SUBSCRIPTION_PURCHASED
                         // Verify and process the subscription
                         var subscription = await googlePlayService.VerifySubscriptionPurchaseAsync(
-                            packageName, 
-                            notification.SubscriptionId, 
+                            packageName,
+                            notification.SubscriptionId,
                             notification.PurchaseToken);
 
                         // Extract user ID from DeveloperPayload or ObfuscatedAccountId
                         string userId = ExtractUserIdFromSubscription(subscription, notification.SubscriptionId);
-                        
+
                         if (!string.IsNullOrEmpty(userId))
                         {
                             await ProcessGooglePlaySubscriptionPurchase(notification.SubscriptionId, userId, subscription, notification.PurchaseToken, notification.NotificationType);
-                            _logger.LogInformation("Subscription event processed and credited: {SubscriptionId}, type: {NotificationType} for user {UserId}", 
+                            _logger.LogInformation("Subscription event processed and credited: {SubscriptionId}, type: {NotificationType} for user {UserId}",
                                 notification.SubscriptionId, notification.NotificationType, userId);
                         }
                         else
@@ -1038,7 +916,7 @@ namespace Payments.Controllers
                     Timestamp = DateTime.UtcNow
                 });
 
-                _logger.LogInformation("Successfully processed Google Play product purchase for SKU {Sku}, user {UserId}, orderId {OrderId}", 
+                _logger.LogInformation("Successfully processed Google Play product purchase for SKU {Sku}, user {UserId}, orderId {OrderId}",
                     sku, userId, purchase.OrderId);
             }
             catch (TransactionService.DupplicateTransactionException)
@@ -1112,7 +990,7 @@ namespace Payments.Controllers
                     Timestamp = DateTime.UtcNow
                 });
 
-                _logger.LogInformation("Successfully processed Google Play subscription purchase for ID {SubscriptionId}, user {UserId}, orderId {OrderId}", 
+                _logger.LogInformation("Successfully processed Google Play subscription purchase for ID {SubscriptionId}, user {UserId}, orderId {OrderId}",
                     subscriptionId, userId, orderId);
             }
             catch (TransactionService.DupplicateTransactionException)
@@ -1136,19 +1014,19 @@ namespace Payments.Controllers
             /// </summary>
             [DataMember(Name = "id")]
             public string Id { get; set; }
-            
+
             /// <summary>
             /// Webhook creation time
             /// </summary>
             [DataMember(Name = "create_time")]
             public DateTime CreateTime;
-            
+
             /// <summary>
             /// Event type
             /// </summary>
             [DataMember(Name = "event_type")]
             public string EventType;
-            
+
             /// <summary>
             /// Resource data
             /// </summary>
