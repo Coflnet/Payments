@@ -155,7 +155,7 @@ public class SubscriptionService
         {
             logger.LogError(e, "Error adding topup transaction");
             await transaction.RollbackAsync();
-            return;
+            throw;
         }
         logger.LogInformation("starting purchase");
         await transactionService.PurchaseService(product.Slug, customData.UserId, 1, referenceId, product);
