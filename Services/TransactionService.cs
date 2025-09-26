@@ -77,6 +77,141 @@ namespace Coflnet.Payments.Services
             return (tx, true);
         }
 
+        /// <summary>
+        /// Executes an action inside the current transaction or a newly created one.
+        /// If a new transaction is created (owns == true) the wrapper will commit on success
+        /// and rollback on exception and will dispose the transaction. If the transaction
+        /// already existed (owns == false) the wrapper will not commit/rollback/dispose it.
+        /// </summary>
+        public async Task WithTransactionAsync(Func<IDbContextTransaction, bool, Task> action, bool autoCommit = true)
+        {
+            var (tx, owns) = await AcquireTransactionIfNoneAsync();
+            logger.LogDebug("WithTransactionAsync (void): acquired tx {TxHash} owns={Owns} current={CurrentHash}", tx?.GetHashCode(), owns, db.Database.CurrentTransaction?.GetHashCode());
+            try
+            {
+                await action(tx, owns);
+                if (owns && autoCommit)
+                {
+                    if (db.Database.CurrentTransaction == tx)
+                    {
+                        logger.LogDebug("WithTransactionAsync (void): attempting commit tx {TxHash}", tx?.GetHashCode());
+                        try
+                        {
+                            await tx.CommitAsync();
+                            logger.LogDebug("WithTransactionAsync (void): committed tx {TxHash}", tx?.GetHashCode());
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogWarning(ex, "WithTransactionAsync (void): commit failed for tx {TxHash}", tx?.GetHashCode());
+                            throw;
+                        }
+                    }
+                    else
+                    {
+                        logger.LogDebug("WithTransactionAsync (void): current ambient transaction differs from acquired tx {TxHash} current={CurrentHash}", tx?.GetHashCode(), db.Database.CurrentTransaction?.GetHashCode());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "WithTransactionAsync (void): caught exception, owns={Owns}, tx={TxHash}", owns, tx?.GetHashCode());
+                if (owns)
+                {
+                    if (db.Database.CurrentTransaction == tx)
+                    {
+                        logger.LogDebug("WithTransactionAsync (void): attempting rollback tx {TxHash}", tx?.GetHashCode());
+                        try
+                        {
+                            await tx.RollbackAsync();
+                            logger.LogDebug("WithTransactionAsync (void): rolled back tx {TxHash}", tx?.GetHashCode());
+                        }
+                        catch (Exception rex)
+                        {
+                            logger.LogWarning(rex, "WithTransactionAsync (void): rollback failed for tx {TxHash}", tx?.GetHashCode());
+                        }
+                    }
+                    else
+                    {
+                        logger.LogDebug("WithTransactionAsync (void): cannot rollback because ambient transaction differs from acquired tx {TxHash} current={CurrentHash}", tx?.GetHashCode(), db.Database.CurrentTransaction?.GetHashCode());
+                    }
+                }
+                throw;
+            }
+            finally
+            {
+                if (owns && tx != null)
+                {
+                    logger.LogDebug("WithTransactionAsync (void): disposing tx {TxHash}", tx?.GetHashCode());
+                    try { await tx.DisposeAsync(); } catch (Exception dex) { logger.LogWarning(dex, "WithTransactionAsync (void): dispose failed for tx {TxHash}", tx?.GetHashCode()); }
+                }
+            }
+        }
+
+        public async Task<T> WithTransactionAsync<T>(Func<IDbContextTransaction, bool, Task<T>> action, bool autoCommit = true)
+        {
+            var (tx, owns) = await AcquireTransactionIfNoneAsync();
+            logger.LogDebug("WithTransactionAsync<T>: acquired tx {TxHash} owns={Owns} current={CurrentHash}", tx?.GetHashCode(), owns, db.Database.CurrentTransaction?.GetHashCode());
+            try
+            {
+                var result = await action(tx, owns);
+                if (owns && autoCommit)
+                {
+                    if (db.Database.CurrentTransaction == tx)
+                    {
+                        logger.LogDebug("WithTransactionAsync<T>: attempting commit tx {TxHash}", tx?.GetHashCode());
+                        try
+                        {
+                            await tx.CommitAsync();
+                            logger.LogDebug("WithTransactionAsync<T>: committed tx {TxHash}", tx?.GetHashCode());
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogWarning(ex, "WithTransactionAsync<T>: commit failed for tx {TxHash}", tx?.GetHashCode());
+                            throw;
+                        }
+                    }
+                    else
+                    {
+                        logger.LogDebug("WithTransactionAsync<T>: current ambient transaction differs from acquired tx {TxHash} current={CurrentHash}", tx?.GetHashCode(), db.Database.CurrentTransaction?.GetHashCode());
+                    }
+                }
+                return result;
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "WithTransactionAsync<T>: caught exception, owns={Owns}, tx={TxHash}", owns, tx?.GetHashCode());
+                if (owns)
+                {
+                    if (db.Database.CurrentTransaction == tx)
+                    {
+                        logger.LogDebug("WithTransactionAsync<T>: attempting rollback tx {TxHash}", tx?.GetHashCode());
+                        try
+                        {
+                            await tx.RollbackAsync();
+                            logger.LogDebug("WithTransactionAsync<T>: rolled back tx {TxHash}", tx?.GetHashCode());
+                        }
+                        catch (Exception rex)
+                        {
+                            logger.LogWarning(rex, "WithTransactionAsync<T>: rollback failed for tx {TxHash}", tx?.GetHashCode());
+                        }
+                    }
+                    else
+                    {
+                        logger.LogDebug("WithTransactionAsync<T>: cannot rollback because ambient transaction differs from acquired tx {TxHash} current={CurrentHash}", tx?.GetHashCode(), db.Database.CurrentTransaction?.GetHashCode());
+                    }
+                }
+                throw;
+            }
+            finally
+            {
+                if (owns && tx != null)
+                {
+                    logger.LogDebug("WithTransactionAsync<T>: disposing tx {TxHash}", tx?.GetHashCode());
+                    try { await tx.DisposeAsync(); } catch (Exception dex) { logger.LogWarning(dex, "WithTransactionAsync<T>: dispose failed for tx {TxHash}", tx?.GetHashCode()); }
+                }
+            }
+        }
+
 
         /// <summary>
         /// Execute a custom topup that changes an users balance in some way
@@ -101,59 +236,26 @@ namespace Coflnet.Payments.Services
 
         public async Task CreateTransactionInTransaction(TopUpProduct product, string userId, decimal changeamount, string reference)
         {
-            var (tx, ownsTransaction) = await AcquireTransactionIfNoneAsync();
-            try
+            await WithTransactionAsync(async (tx, owns) =>
             {
                 var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
                 if (user == null)
-                {
-                    if (ownsTransaction)
-                        await db.Database.RollbackTransactionAsync();
                     throw new ApiException("user doesn't exist");
-                }
-                await CreateAndProduceTransaction(product, user, changeamount, reference, ownsTransaction);
-            }
-            catch
-            {
-                if (ownsTransaction)
-                    await db.Database.RollbackTransactionAsync();
-                throw;
-            }
-            finally
-            {
-                if (ownsTransaction && tx != null)
-                    await tx.DisposeAsync();
-            }
+                await CreateAndProduceTransaction(product, user, changeamount, reference, owns);
+            });
         }
         public async Task CreateTransactionInTransaction(TopUpProduct product, User user, decimal changeamount, string reference)
         {
-            var (tx, ownsTransaction) = await AcquireTransactionIfNoneAsync();
-            try
+            await WithTransactionAsync(async (tx, owns) =>
             {
                 user = await db.Users.Where(u => u.Id == user.Id).FirstOrDefaultAsync(); // reload user for transaction lock
-                await CreateAndProduceTransaction(product, user, changeamount, reference, ownsTransaction);
-            }
-            catch
-            {
-                if (ownsTransaction)
-                    await db.Database.RollbackTransactionAsync();
-                throw;
-            }
-            finally
-            {
-                if (ownsTransaction && tx != null)
-                    await tx.DisposeAsync();
-            }
+                await CreateAndProduceTransaction(product, user, changeamount, reference, owns);
+            });
         }
 
         private async Task CreateAndProduceTransaction(TopUpProduct product, User user, decimal changeamount, string reference, bool commitTransaction)
         {
             var transactionEvent = await CreateTransaction(product, user, changeamount, reference);
-
-            if (commitTransaction)
-            {
-                await db.Database.CommitTransactionAsync();
-            }
             await transactionEventProducer.ProduceEvent(transactionEvent);
         }
 
@@ -205,8 +307,7 @@ namespace Coflnet.Payments.Services
             PurchaseableProduct product = await GetProduct(productSlug);
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
-            var (dbTransaction, owns) = await AcquireTransactionIfNoneAsync();
-            try
+            await WithTransactionAsync(async (tx, owns) =>
             {
                 var user = await userService.GetOrCreate(userId);
                 if (user.Owns.Where(p => p.Product == product && p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
@@ -218,21 +319,8 @@ namespace Coflnet.Payments.Services
                 user.Owns.Add(new OwnerShip() { Expires = DateTime.UtcNow.AddSeconds(product.OwnershipSeconds), Product = product, User = user });
                 db.Update(user);
                 await db.SaveChangesAsync();
-                if (owns)
-                    await db.Database.CommitTransactionAsync();
                 await transactionEventProducer.ProduceEvent(transactionEvent);
-            }
-            catch
-            {
-                if (owns)
-                    await db.Database.RollbackTransactionAsync();
-                throw;
-            }
-            finally
-            {
-                if (owns && dbTransaction != null)
-                    await dbTransaction.DisposeAsync();
-            }
+            });
         }
 
         public async Task<PurchaseableProduct> GetProduct(string productSlug)
@@ -256,24 +344,12 @@ namespace Coflnet.Payments.Services
             if (!dbProduct.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
 
-            var (transaction, ownsTransaction) = await AcquireTransactionIfNoneAsync();
-            try
+            await WithTransactionAsync(async (tx, owns) =>
             {
                 var user = await userService.GetOrCreate(userId);
-                var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
-                await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, transaction, user, adjustedProduct, ownsTransaction);
-            }
-            catch
-            {
-                if (ownsTransaction)
-                    await db.Database.RollbackTransactionAsync();
-                throw;
-            }
-            finally
-            {
-                if (ownsTransaction && transaction != null)
-                    await transaction.DisposeAsync();
-            }
+                var adjustedProduct = ruleEngine == null ? dbProduct : (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
+                await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, tx, user, adjustedProduct, owns);
+            });
         }
 
         public async Task<RuleResult> GetAdjustedProduct(string productSlug, string userId)
@@ -290,15 +366,11 @@ namespace Coflnet.Payments.Services
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
             {
-                if (commitTransaction)
-                    await transaction.RollbackAsync();
                 throw new ApiException("already owned for too long");
             }
             var price = adjustedProduct.Cost * count;
             if (user.AvailableBalance < price && adjustedProduct.Slug != "revert")
             {
-                if (commitTransaction)
-                    await transaction.RollbackAsync();
                 logger.LogError($"User {user.ExternalId} doesn't have the required {price} amount to purchase {productSlug} (only {user.AvailableBalance} available)");
                 throw new ApiException("insuficcient balance");
             }
@@ -327,8 +399,7 @@ namespace Coflnet.Payments.Services
 
             db.Update(user);
             await db.SaveChangesAsync();
-            if (commitTransaction)
-                await db.Database.CommitTransactionAsync();
+            // commit is handled by the transaction wrapper (WithTransactionAsync) when this method owns the transaction
             await transactionEventProducer.ProduceEvent(transactionEvent);
             return transactionEvent;
         }
@@ -343,8 +414,7 @@ namespace Coflnet.Payments.Services
             var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t => t.Product).FirstOrDefault();
             var dbProduct = await GetProduct("revert");
 
-            var (dbTransaction, owns) = await AcquireTransactionIfNoneAsync();
-            try
+            return await WithTransactionAsync(async (tx, owns) =>
             {
                 var user = await userService.GetOrCreate(userId);
                 var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
@@ -354,19 +424,8 @@ namespace Coflnet.Payments.Services
                 if (!adjustTime)
                     adjustedProduct.OwnershipSeconds = 0;
                 adjustedProduct.Slug = "revert";
-                return await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, dbTransaction, user, adjustedProduct, true);
-            }
-            catch
-            {
-                if (owns)
-                    await db.Database.RollbackTransactionAsync();
-                throw;
-            }
-            finally
-            {
-                if (owns && dbTransaction != null)
-                    await dbTransaction.DisposeAsync();
-            }
+                return await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, tx, user, adjustedProduct, owns);
+            });
         }
 
         public static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
@@ -382,8 +441,7 @@ namespace Coflnet.Payments.Services
             if (changeamount < 1)
                 throw new ApiException("The minimum transaction amount is 1");
 
-            var (dbTransaction, owns) = await AcquireTransactionIfNoneAsync();
-            try
+            return await WithTransactionAsync(async (tx, owns) =>
             {
             var product = db.Products.Where(p => p.Slug == "transfer").FirstOrDefault();
             var initiatingUser = await userService.GetAndInclude(userId, u => u);
@@ -411,24 +469,11 @@ namespace Coflnet.Payments.Services
             var transactionEvent = await CreateTransaction(product, initiatingUser, senderDeduct, reference);
             var receiveTransaction = await CreateTransaction(product, targetUser, changeamount, reference);
 
-            if (owns)
-                await db.Database.CommitTransactionAsync();
             await transactionEventProducer.ProduceEvent(transactionEvent);
             await transactionEventProducer.ProduceEvent(receiveTransaction);
             logger.LogInformation("After transaction user {sending} now has {newBalance} and user {receiving} has {newBalanceReceiving}", initiatingUser.ExternalId, initiatingUser.Balance, targetUser.ExternalId, targetUser.Balance);
             return transactionEvent;
-            }
-            catch
-            {
-                if (owns)
-                    await db.Database.RollbackTransactionAsync();
-                throw;
-            }
-            finally
-            {
-                if (owns && dbTransaction != null)
-                    await dbTransaction.DisposeAsync();
-            }
+            });
         }
 
         private async Task AssertNotToManyTransfersReceived(PurchaseableProduct product, DateTime minTime, User targetUser)
