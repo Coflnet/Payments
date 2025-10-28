@@ -56,7 +56,7 @@ namespace Payments.Controllers
                 packageName: request.PackageName,
                 purchaseToken: request.PurchaseToken,
                 userId: request.UserId,
-                customAmount: request.CustomAmount ?? 0,
+                customAmount: 0,
                 paymentMethod: "googlepay",
                 isSubscription: false,
                 logContext: $"product {request.ProductId}"

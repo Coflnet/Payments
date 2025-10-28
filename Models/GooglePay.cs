@@ -36,11 +36,6 @@ namespace Coflnet.Payments.Models.GooglePay
         /// Custom amount for the purchase (optional)
         /// </summary>
         public long? CustomAmount { get; set; }
-
-        /// <summary>
-        /// Internal product ID mapping to our system
-        /// </summary>
-        public int? InternalProductId { get; set; }
     }
 
     /// <summary>
