@@ -51,7 +51,7 @@ namespace Payments.Controllers
         [HttpPost("verify")]
         public async Task<ActionResult<GooglePlayPurchaseResponse>> VerifyPurchase([FromBody] GooglePlayPurchaseRequest request)
         {
-            return await ProcessGooglePlayTransaction(
+            var response = await ProcessGooglePlayTransaction(
                 productId: request.ProductId,
                 packageName: request.PackageName,
                 purchaseToken: request.PurchaseToken,
@@ -61,6 +61,12 @@ namespace Payments.Controllers
                 isSubscription: false,
                 logContext: $"product {request.ProductId}"
             );
+            if (!response.Value.IsValid)
+            {
+                _logger.LogWarning("Google Play purchase verification failed for product {ProductId}, token {token} user {UserId}: {ErrorMessage}",
+                    request.ProductId, request.PurchaseToken, request.UserId, response.Value.ErrorMessage);
+            }
+            return response;
         }
 
         /// <summary>
