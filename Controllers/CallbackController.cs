@@ -571,7 +571,7 @@ namespace Payments.Controllers
                     return BadRequest("Invalid notification format");
                 }
 
-                _logger.LogInformation("Processing Google Play notification for package {PackageName}", notification.PackageName);
+                _logger.LogInformation("Processing Google Play notification for package {PackageName}\n{full}", notification.PackageName, json);
 
                 // Handle one-time product notifications
                 if (notification.OneTimeProductNotification != null)
