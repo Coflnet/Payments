@@ -64,11 +64,15 @@ namespace Payments.Controllers
                 isSubscription: false,
                 logContext: $"product {request.ProductId}"
             );
-            if (!response.Value.IsValid)
+            // The ProcessGooglePlayTransaction method may return an IActionResult (error) instead of a typed Value.
+            // Protect against null Value to avoid NullReferenceException in the controller.
+            if (response.Value == null ||!response.Value.IsValid)
             {
-                _logger.LogWarning("Google Play purchase verification failed for product {ProductId}, token {token} user {UserId}: {ErrorMessage}",
-                    request.ProductId, request.PurchaseToken, request.UserId, response.Value.ErrorMessage);
+                _logger.LogWarning("Google Play purchase verification returned no typed value for product {ProductId}. Result object: {Result}",
+                    request.ProductId, response.Result);
+                return response;
             }
+
             return response;
         }
 
