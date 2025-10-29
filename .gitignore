@@ -4,3 +4,4 @@ obj/
 !Client/generate.sh
 Client/out
 /Client/*nupkg
+google-cloud.json

@@ -8,6 +8,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Coflnet.Payments.Models.GooglePay;
 using Coflnet.Payments.Models;
+using System.Text.Json.Serialization;
+using System.Text.Json;
 
 namespace Coflnet.Payments.Services
 {
@@ -25,7 +27,7 @@ namespace Coflnet.Payments.Services
             _logger = logger;
             _settings = configuration.GetSection("GOOGLEPAY").Get<GooglePlaySettings>()
                        ?? throw new ArgumentException("Google Pay settings not configured");
-
+            logger.LogInformation(JsonSerializer.Serialize(_settings));
             try
             {
                 _androidPublisherService = CreateAndroidPublisherService();
@@ -187,6 +189,70 @@ namespace Coflnet.Payments.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to acknowledge Google Play subscription purchase for subscription {SubscriptionId}", subscriptionId);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Gets in-app product details including localized pricing
+        /// </summary>
+        /// <param name="packageName">The package name of the app</param>
+        /// <param name="productId">The product ID (SKU)</param>
+        /// <returns>Product details including price information</returns>
+        public async Task<Google.Apis.AndroidPublisher.v3.Data.InAppProduct> GetProductDetailsAsync(
+            string packageName, string productId)
+        {
+            try
+            {
+                if (_androidPublisherService == null)
+                {
+                    throw new InvalidOperationException("Google Play service is not properly initialized. Check your Google Play service account credentials.");
+                }
+
+                _logger.LogInformation("Getting Google Play product details for product {ProductId}", productId);
+
+                var request = _androidPublisherService.Inappproducts.Get(packageName, productId);
+                var product = await request.ExecuteAsync();
+
+                _logger.LogInformation("Product details retrieved for product {ProductId}", productId);
+
+                return product;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Google Play product details for product {ProductId}", productId);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Gets subscription details including localized pricing
+        /// </summary>
+        /// <param name="packageName">The package name of the app</param>
+        /// <param name="productId">The subscription ID (SKU)</param>
+        /// <returns>Subscription details including price information</returns>
+        public async Task<Google.Apis.AndroidPublisher.v3.Data.Subscription> GetSubscriptionDetailsAsync(
+            string packageName, string productId)
+        {
+            try
+            {
+                if (_androidPublisherService == null)
+                {
+                    throw new InvalidOperationException("Google Play service is not properly initialized. Check your Google Play service account credentials.");
+                }
+
+                _logger.LogInformation("Getting Google Play subscription details for subscription {ProductId}", productId);
+
+                var request = _androidPublisherService.Monetization.Subscriptions.Get(packageName, productId);
+                var subscription = await request.ExecuteAsync();
+
+                _logger.LogInformation("Subscription details retrieved for subscription {ProductId}", productId);
+
+                return subscription;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Google Play subscription details for subscription {ProductId}", productId);
                 throw;
             }
         }

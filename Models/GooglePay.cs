@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using Newtonsoft.Json;
 
@@ -214,4 +215,96 @@ namespace Coflnet.Payments.Models.GooglePay
         /// </summary>
         public string ApplicationName { get; set; }
     }
+
+    /// <summary>
+    /// Request to get localized pricing for a Google Play product
+    /// </summary>
+    public class GooglePlayProductPricingRequest
+    {
+        /// <summary>
+        /// The product ID (SKU) from Google Play
+        /// </summary>
+        [Required]
+        public string ProductId { get; set; }
+
+        /// <summary>
+        /// The package name of the application
+        /// </summary>
+        [Required]
+        public string PackageName { get; set; }
+    }
+
+    /// <summary>
+    /// Response containing localized pricing information for a Google Play product
+    /// </summary>
+    public class GooglePlayProductPricingResponse
+    {
+        /// <summary>
+        /// The product ID (SKU)
+        /// </summary>
+        public string ProductId { get; set; }
+
+        /// <summary>
+        /// The product status (active, inactive, etc.)
+        /// </summary>
+        public string Status { get; set; }
+
+        /// <summary>
+        /// Purchase type (managedUser, managedGlobal, subscription)
+        /// </summary>
+        public string PurchaseType { get; set; }
+
+        /// <summary>
+        /// Default language code
+        /// </summary>
+        public string DefaultLanguage { get; set; }
+
+        /// <summary>
+        /// Localized product listings with pricing
+        /// </summary>
+        public Dictionary<string, LocalizedListing> Listings { get; set; }
+
+        /// <summary>
+        /// Pricing information per country/region
+        /// </summary>
+        public Dictionary<string, PriceInfo> Prices { get; set; }
+    }
+
+    /// <summary>
+    /// Localized product listing information
+    /// </summary>
+    public class LocalizedListing
+    {
+        /// <summary>
+        /// Localized title
+        /// </summary>
+        public string Title { get; set; }
+
+        /// <summary>
+        /// Localized description
+        /// </summary>
+        public string Description { get; set; }
+    }
+
+    /// <summary>
+    /// Price information for a specific country/currency
+    /// </summary>
+    public class PriceInfo
+    {
+        /// <summary>
+        /// Price in micro-units (divide by 1,000,000 for actual price)
+        /// </summary>
+        public string PriceMicros { get; set; }
+
+        /// <summary>
+        /// Currency code (ISO 4217)
+        /// </summary>
+        public string Currency { get; set; }
+
+        /// <summary>
+        /// Formatted price string with currency symbol
+        /// </summary>
+        public string FormattedPrice { get; set; }
+    }
 }
+

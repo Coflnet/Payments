@@ -1,10 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.GooglePay;
 using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using GoogleApiPrice = Google.Apis.AndroidPublisher.v3.Data.Price;
+// ...existing usings...
 
 namespace Payments.Controllers
 {
@@ -87,6 +90,144 @@ namespace Payments.Controllers
                 isSubscription: true,
                 logContext: $"subscription {request.SubscriptionId}"
             );
+        }
+
+        /// <summary>
+        /// Gets localized pricing information for a Google Play product
+        /// </summary>
+        /// <param name="request">The product pricing request</param>
+        /// <returns>Localized pricing information</returns>
+        [HttpPost("product-pricing")]
+        public async Task<ActionResult<GooglePlayProductPricingResponse>> GetProductPricing([FromBody] GooglePlayProductPricingRequest request)
+        {
+            try
+            {
+                _logger.LogInformation("Getting pricing for Google Play product {ProductId}", request.ProductId);
+
+                if (!ModelState.IsValid)
+                {
+                    return BadRequest(ModelState);
+                }
+
+                // Get product details from Google Play
+                var productDetails = await _googlePlayService.GetProductDetailsAsync(request.PackageName, request.ProductId);
+
+                // Map to our response model
+                var response = new GooglePlayProductPricingResponse
+                {
+                    ProductId = productDetails.Sku,
+                    Status = productDetails.Status,
+                    PurchaseType = productDetails.PurchaseType,
+                    DefaultLanguage = productDetails.DefaultLanguage,
+                    Listings = new Dictionary<string, LocalizedListing>(),
+                    Prices = new Dictionary<string, PriceInfo>()
+                };
+
+                // Map localized listings
+                if (productDetails.Listings != null)
+                {
+                    foreach (var listing in productDetails.Listings)
+                    {
+                        response.Listings[listing.Key] = new LocalizedListing
+                        {
+                            Title = listing.Value.Title,
+                            Description = listing.Value.Description
+                        };
+                    }
+                }
+
+                // Map prices
+                if (productDetails.Prices != null)
+                {
+                    foreach (var priceEntry in productDetails.Prices)
+                    {
+                        try
+                        {
+                            // Serialize the returned object to JSON and parse known fields without using reflection/dynamic
+                            var valueObj = (object)priceEntry.Value;
+                            var json = Newtonsoft.Json.JsonConvert.SerializeObject(valueObj ?? new object());
+                            var j = Newtonsoft.Json.Linq.JObject.Parse(json ?? "{}");
+
+                            // Try common field names used by Google API
+                            var priceMicros = (string)(j["priceMicros"] ?? j["priceAmountMicros"] ?? j["price_amount_micros"] ?? j["price_micro"]);
+                            var currency = (string)(j["currency"] ?? j["currencyCode"] ?? j["currency_code"]);
+                            var formatted = (string)(j["formattedPrice"] ?? j["price"] ?? j["formatted_price"]);
+
+                            // Fallback: if formatted price is missing, try to derive it from micros and currency
+                            if (string.IsNullOrEmpty(formatted) && long.TryParse(priceMicros, out var micros) && !string.IsNullOrEmpty(currency))
+                            {
+                                try
+                                {
+                                    var amount = micros / 1_000_000m;
+                                    formatted = string.Format("{0} {1:N2}", currency, amount);
+                                }
+                                catch
+                                {
+                                    // ignore formatting errors
+                                }
+                            }
+
+                            response.Prices[priceEntry.Key] = new PriceInfo
+                            {
+                                PriceMicros = priceMicros,
+                                Currency = currency,
+                                FormattedPrice = formatted
+                            };
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to map price entry for locale {Locale}", priceEntry.Key);
+                            response.Prices[priceEntry.Key] = new PriceInfo
+                            {
+                                PriceMicros = null,
+                                Currency = null,
+                                FormattedPrice = null
+                            };
+                        }
+                    }
+                }
+
+                _logger.LogInformation("Successfully retrieved pricing for Google Play product {ProductId}", request.ProductId);
+
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get pricing for Google Play product {ProductId}", request.ProductId);
+                return StatusCode(500, new { error = "Failed to retrieve product pricing" });
+            }
+        }
+
+        /// <summary>
+        /// Gets localized pricing information for a Google Play subscription
+        /// </summary>
+        /// <param name="request">The subscription pricing request</param>
+        /// <returns>Localized pricing information</returns>
+        [HttpPost("subscription-pricing")]
+        public async Task<ActionResult<object>> GetSubscriptionPricing([FromBody] GooglePlayProductPricingRequest request)
+        {
+            try
+            {
+                _logger.LogInformation("Getting pricing for Google Play subscription {ProductId}", request.ProductId);
+
+                if (!ModelState.IsValid)
+                {
+                    return BadRequest(ModelState);
+                }
+
+                // Get subscription details from Google Play
+                var subscriptionDetails = await _googlePlayService.GetSubscriptionDetailsAsync(request.PackageName, request.ProductId);
+
+                _logger.LogInformation("Successfully retrieved pricing for Google Play subscription {ProductId}", request.ProductId);
+
+                // Return the full subscription details (which includes base plans with pricing)
+                return Ok(subscriptionDetails);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get pricing for Google Play subscription {ProductId}", request.ProductId);
+                return StatusCode(500, new { error = "Failed to retrieve subscription pricing" });
+            }
         }
 
         /// <summary>

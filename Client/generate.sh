@@ -1,4 +1,4 @@
-VERSION=0.17.1
+VERSION=0.17.2
 PACKAGE_NAME=Coflnet.Payments.Client
 
 docker run --rm -v "${PWD}:/local" --network host -u $(id -u ${USER}):$(id -g ${USER})  openapitools/openapi-generator-cli generate \
@@ -39,3 +39,4 @@ replace_flags $TypeFile
 dotnet pack
 cp src/$PACKAGE_NAME/bin/Release/$PACKAGE_NAME.*.nupkg ..
 dotnet nuget push ../$PACKAGE_NAME.$VERSION.nupkg --api-key $NUGET_API_KEY --source "nuget.org" --skip-duplicate
+rm *.sln
