@@ -56,7 +56,18 @@ namespace Coflnet.Payments.Models
         /// Licenses owned by one user
         /// </summary>
         public DbSet<License> Licenses { get; set; }
+        /// <summary>
+        /// User subscriptions
+        /// </summary>
         public DbSet<UserSubscription> Subscriptions { get; set; }
+        /// <summary>
+        /// Creator codes for discounts and revenue attribution
+        /// </summary>
+        public DbSet<CreatorCode> CreatorCodes { get; set; }
+        /// <summary>
+        /// Revenue records from creator code usage
+        /// </summary>
+        public DbSet<CreatorCodeRevenue> CreatorCodeRevenues { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -123,6 +134,21 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<UserSubscription>(entity =>
             {
                 entity.HasIndex(e => e.ExternalId);
+            });
+
+            modelBuilder.Entity<CreatorCode>(entity =>
+            {
+                entity.HasIndex(e => e.Code).IsUnique();
+                entity.HasIndex(e => e.CreatorUserId);
+                entity.HasIndex(e => e.IsActive);
+            });
+
+            modelBuilder.Entity<CreatorCodeRevenue>(entity =>
+            {
+                entity.HasIndex(e => e.CreatorCodeId);
+                entity.HasIndex(e => e.PurchasedAt);
+                entity.HasIndex(e => e.IsPaidOut);
+                entity.HasIndex(e => new { e.CreatorCodeId, e.PurchasedAt });
             });
         }
     }

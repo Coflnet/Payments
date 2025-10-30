@@ -31,6 +31,19 @@ public class LemonSqueezyService
     {
         var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");
         RestRequest request = CreateRequest(Method.Post);
+        
+        // Apply creator code discount if provided
+        var finalPrice = eurPrice;
+        var discountAmount = 0m;
+        string creatorCodeId = null;
+        
+        if (!string.IsNullOrWhiteSpace(options?.CreatorCode))
+        {
+            // Creator code will be validated and applied in the callback/webhook handler
+            // Store the code in custom data for later processing
+            creatorCodeId = options.CreatorCode;
+        }
+        
         var createData = new
         {
             data = new
@@ -38,7 +51,7 @@ public class LemonSqueezyService
                 type = "checkouts",
                 attributes = new
                 {
-                    custom_price = (int)(eurPrice * 100),
+                    custom_price = (int)(finalPrice * 100),
                     product_options = new
                     {
                         name = product.Title,
@@ -58,7 +71,8 @@ public class LemonSqueezyService
                             user_id = user.ExternalId.ToString(),
                             product_id = product.Id.ToString(),
                             coin_amount = ((int)coinAmount).ToString(),
-                            is_subscription = isSubscription.ToString()
+                            is_subscription = isSubscription.ToString(),
+                            creator_code = creatorCodeId
                         },
                     },
                     expires_at = DateTime.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")

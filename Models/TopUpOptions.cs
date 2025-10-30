@@ -38,4 +38,9 @@ public class TopUpOptions
     /// </summary>
     [MaxLength(32)]
     public string Fingerprint { get; set; }
+    /// <summary>
+    /// Optional creator code to apply discount and attribute purchase
+    /// </summary>
+    [MaxLength(50)]
+    public string CreatorCode { get; set; }
 }

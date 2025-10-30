@@ -188,12 +188,14 @@ public class CustomData
         string userId,
         int productId,
         long coinAmount,
-        string isSubscription)
+        string isSubscription,
+        string creatorCode = null)
     {
         this.UserId = userId;
         this.ProductId = productId;
         this.CoinAmount = coinAmount;
         IsSubscription = isSubscription;
+        CreatorCode = creatorCode;
     }
 
     [JsonPropertyName("user_id")]
@@ -204,6 +206,8 @@ public class CustomData
     public long CoinAmount { get; }
     [JsonPropertyName("is_subscription")]
     public string IsSubscription { get; }
+    [JsonPropertyName("creator_code")]
+    public string CreatorCode { get; }
 }
 
 public class Customer

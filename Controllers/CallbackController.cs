@@ -42,6 +42,7 @@ namespace Payments.Controllers
         private readonly GooglePlayService googlePlayService;
         private readonly Coflnet.Payments.Services.ProductService productService;
         private readonly GooglePayController _googlePayController;
+        private readonly CreatorCodeService _creatorCodeService;
 
         public CallbackController(
             IConfiguration config,
@@ -53,7 +54,8 @@ namespace Payments.Controllers
             Coflnet.Payments.Services.SubscriptionService subscriptionService,
             ILogger<GooglePayController> googlePayLogger,
             GooglePlayService googlePlayService,
-            Coflnet.Payments.Services.ProductService productService)
+            Coflnet.Payments.Services.ProductService productService,
+            CreatorCodeService creatorCodeService)
         {
             _logger = logger;
             db = context;
@@ -63,6 +65,7 @@ namespace Payments.Controllers
             this.paypalClient = paypalClient;
             this.paymentEventProducer = paymentEventProducer;
             this.subscriptionService = subscriptionService;
+            this._creatorCodeService = creatorCodeService;
             this.googlePlayService = googlePlayService;
             this.productService = productService;
             // instantiate GooglePayController to reuse its verification logic and keep a single implementation
@@ -241,6 +244,46 @@ namespace Payments.Controllers
                     _logger.LogInformation("lemonsqueezy subscription payment, skipping");
                     return Ok();
                 }
+                
+                // Process creator code if provided
+                if (!string.IsNullOrWhiteSpace(meta.CustomData.CreatorCode))
+                {
+                    try
+                    {
+                        var creatorCode = await _creatorCodeService.ValidateCreatorCodeAsync(meta.CustomData.CreatorCode);
+                        if (creatorCode != null)
+                        {
+                            // Calculate discount and revenue
+                            var originalPrice = data.Attributes.Total / 100m; // Convert from cents
+                            var currency = data.Attributes.Currency.ToUpper();
+                            var discountAmount = originalPrice * (creatorCode.DiscountPercent / 100m);
+                            var finalPrice = originalPrice - discountAmount;
+                            var creatorRevenue = finalPrice * (creatorCode.RevenueSharePercent / 100m);
+                            
+                            // Record the revenue
+                            await _creatorCodeService.RecordRevenueAsync(
+                                creatorCode.Id,
+                                meta.CustomData.UserId,
+                                meta.CustomData.ProductId,
+                                originalPrice,
+                                discountAmount,
+                                finalPrice,
+                                creatorRevenue,
+                                currency,
+                                data.Attributes.Identifier
+                            );
+                            
+                            _logger.LogInformation("Creator code {Code} applied: discount={Discount}%, revenue={Revenue} {Currency}",
+                                creatorCode.Code, creatorCode.DiscountPercent, creatorRevenue, currency);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to process creator code {Code}", meta.CustomData.CreatorCode);
+                        // Continue processing the transaction even if creator code fails
+                    }
+                }
+                
                 await transactionService.AddTopUp(meta.CustomData.ProductId, meta.CustomData.UserId, data.Attributes.Identifier, meta.CustomData.CoinAmount);
                 await db.SaveChangesAsync();
                 _logger.LogInformation($"lemonsqueezy topup {meta.CustomData.ProductId} {meta.CustomData.UserId} {data.Attributes.Identifier} {meta.CustomData.CoinAmount}");
