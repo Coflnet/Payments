@@ -33,6 +33,7 @@ namespace Payments.Controllers
         private readonly UserService userService;
         private readonly PayPalHttpClient paypalClient;
         private readonly LemonSqueezyService lemonSqueezyService;
+        private readonly CreatorCodeService creatorCodeService;
 
         /// <summary>
         /// Creates a new instance of the <see cref="TopUpController"/> class
@@ -44,7 +45,8 @@ namespace Payments.Controllers
             IConfiguration config,
             UserService userService,
             PayPalHttpClient paypalClient,
-            LemonSqueezyService lemonSqueezyService)
+            LemonSqueezyService lemonSqueezyService,
+            CreatorCodeService creatorCodeService)
         {
             _logger = logger;
             db = context;
@@ -54,6 +56,7 @@ namespace Payments.Controllers
             this.paypalClient = paypalClient;
             this.transactionService = transactionService;
             this.lemonSqueezyService = lemonSqueezyService;
+            this.creatorCodeService = creatorCodeService;
         }
 
 
@@ -85,7 +88,7 @@ namespace Payments.Controllers
             if (product == null)
                 throw new ApiException("Product not found");
 
-            GetPriceAndCoins(topupotions, product, out decimal eurPrice, out decimal coinAmount);
+            var (eurPrice, coinAmount, validatedCode) = await GetPriceAndCoins(topupotions, product);
 
             var instance = await AttemptBlockFraud(topupotions, user, product, eurPrice);
             if(instance.SessionId != null)
@@ -229,7 +232,7 @@ namespace Payments.Controllers
                 throw new ApiException($"We are sorry but we can not sell to your country ({user.Country}) at this time, please make sure to select the correct country in the selection and try again with the avilable payment provider");
             Console.WriteLine("Creating paypal payment for user {0} from {1}", user.Id, user.Country);
             var product = await GetTopupProduct(productId, "paypal");
-            GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
+            var (eurPrice, coinAmount, validatedCode) = await GetPriceAndCoins(options, product);
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var order = new OrderRequest()
             {
@@ -302,7 +305,7 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             TopUpProduct product = await GetTopupProduct(productId, "lemonsqueezy");
-            GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
+            var (eurPrice, coinAmount, validatedCode) = await GetPriceAndCoins(options, product);
             var variantId = config["LEMONSQUEEZY:VARIANT_ID"];
             return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, false);
         }
@@ -316,7 +319,7 @@ namespace Payments.Controllers
             Console.WriteLine(JsonConvert.SerializeObject(product));
             if (!product.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("Product is not a service, can't be subscribed to");
-            GetPriceAndCoins(options, product, out decimal eurPrice, out decimal coinAmount);
+            var (eurPrice, coinAmount, validatedCode) = await GetPriceAndCoins(options, product);
             var variantId = config["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"];
             if (product.OwnershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
                 variantId = config["LEMONSQUEEZY:YEAR_SUBSCRIPTION_VARIANT_ID"];
@@ -332,20 +335,45 @@ namespace Payments.Controllers
             return new(product);
         }
 
-        private static void GetPriceAndCoins(TopUpOptions options, TopUpProduct product, out decimal eurPrice, out decimal coinAmount)
+        private async Task<(decimal eurPrice, decimal coinAmount, CreatorCode validatedCode)> GetPriceAndCoins(TopUpOptions options, TopUpProduct product)
         {
-            eurPrice = product.Price;
-            coinAmount = product.Cost;
+            decimal eurPrice = product.Price;
+            decimal coinAmount = product.Cost;
+            CreatorCode validatedCode = null;
+
+            // Validate and apply creator code discount if provided
+            if (!string.IsNullOrWhiteSpace(options?.CreatorCode))
+            {
+                validatedCode = await creatorCodeService.ValidateCreatorCodeAsync(options.CreatorCode);
+                if (validatedCode == null)
+                {
+                    throw new ApiException("Invalid or expired creator code");
+                }
+
+                // Apply discount to the base price
+                var discount = Math.Round(eurPrice * validatedCode.DiscountPercent / 100, 2);
+                eurPrice -= discount;
+                
+                _logger.LogInformation("Applied creator code {CreatorCode} with {DiscountPercent}% discount to product {ProductSlug}. Original price: {OriginalPrice}, Discounted price: {DiscountedPrice}",
+                    validatedCode.Code, validatedCode.DiscountPercent, product.Slug, product.Price, eurPrice);
+            }
+
+            // Apply custom coin amount if specified
             if ((options?.TopUpAmount ?? 0) > 0)
             {
                 var targetCoins = options.TopUpAmount;
                 if (targetCoins < product.Cost)
                     throw new ApiException($"The topUpAmount has to be bigger than the cost of product {product.Slug} ({product.Cost.ToString("0,##")})");
+                
+                // Scale the price based on the coin amount (after discount has been applied)
                 eurPrice = Math.Round(eurPrice * targetCoins / product.Cost, 2);
                 coinAmount = targetCoins;
+                
                 // format with dot as thousands seperator
                 product.Title = product.Title.Replace(".", ",").Replace(product.Cost.ToString("0,##"), targetCoins.ToString("0,##"));
             }
+
+            return (eurPrice, coinAmount, validatedCode);
         }
 
         /// <summary>
