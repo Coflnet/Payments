@@ -43,4 +43,9 @@ public class TopUpOptions
     /// </summary>
     [MaxLength(50)]
     public string CreatorCode { get; set; }
+    /// <summary>
+    /// Optional LemonSqueezy discount code to apply at checkout
+    /// </summary>
+    [MaxLength(50)]
+    public string DiscountCode { get; set; }
 }

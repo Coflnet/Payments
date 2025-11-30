@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
+using Coflnet.Payments.Models.LemonSqueezy;
 using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -72,6 +73,31 @@ namespace Payments.Controllers
         }
 
         /// <summary>
+        /// Validates a LemonSqueezy discount code
+        /// </summary>
+        /// <param name="code">The discount code to validate</param>
+        /// <param name="isSubscription">Whether this is for a subscription purchase (optional)</param>
+        /// <returns>Discount info if valid, or IsValid=false if invalid</returns>
+        [HttpGet]
+        [Route("discount/validate")]
+        public async Task<ActionResult<ValidatedDiscount>> ValidateDiscountCode([FromQuery] string code, [FromQuery] bool? isSubscription = null)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                return BadRequest(new ValidatedDiscount { Code = code, IsValid = false, Name = "Discount code is required" });
+            }
+            
+            var discount = await lemonSqueezyService.ValidateDiscountCodeAsync(code, isSubscription);
+            if (discount == null)
+            {
+                return Ok(new ValidatedDiscount { Code = code, IsValid = false, Name = "Invalid or expired discount code" });
+            }
+            
+            // Return the discount (might have IsValid=false if subscription-only and not a subscription)
+            return Ok(discount);
+        }
+
+        /// <summary>
         /// Creates a payment session with stripe
         /// </summary>
         /// <param name="userId"></param>
@@ -88,7 +114,15 @@ namespace Payments.Controllers
             if (product == null)
                 throw new ApiException("Product not found");
 
-            var (eurPrice, coinAmount, validatedCode) = await GetPriceAndCoins(topupotions, product);
+            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(topupotions, product);
+            
+            // For Stripe, apply the LemonSqueezy discount code to the price directly
+            if (validatedDiscount != null && validatedDiscount.IsValid)
+            {
+                eurPrice = validatedDiscount.CalculateDiscountedPrice(eurPrice);
+                _logger.LogInformation("Applied discount code {Code} to Stripe checkout. New price: {Price}", 
+                    validatedDiscount.Code, eurPrice);
+            }
 
             var instance = await AttemptBlockFraud(topupotions, user, product, eurPrice);
             if(instance.SessionId != null)
@@ -232,7 +266,16 @@ namespace Payments.Controllers
                 throw new ApiException($"We are sorry but we can not sell to your country ({user.Country}) at this time, please make sure to select the correct country in the selection and try again with the avilable payment provider");
             Console.WriteLine("Creating paypal payment for user {0} from {1}", user.Id, user.Country);
             var product = await GetTopupProduct(productId, "paypal");
-            var (eurPrice, coinAmount, validatedCode) = await GetPriceAndCoins(options, product);
+            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product);
+            
+            // For PayPal, apply the LemonSqueezy discount code to the price directly
+            if (validatedDiscount != null && validatedDiscount.IsValid)
+            {
+                eurPrice = validatedDiscount.CalculateDiscountedPrice(eurPrice);
+                _logger.LogInformation("Applied discount code {Code} to PayPal checkout. New price: {Price}", 
+                    validatedDiscount.Code, eurPrice);
+            }
+            
             var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
             var order = new OrderRequest()
             {
@@ -305,9 +348,10 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             TopUpProduct product = await GetTopupProduct(productId, "lemonsqueezy");
-            var (eurPrice, coinAmount, validatedCode) = await GetPriceAndCoins(options, product);
+            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: false);
             var variantId = config["LEMONSQUEEZY:VARIANT_ID"];
-            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, false);
+            // For LemonSqueezy, pass the discount code to their checkout (they apply it)
+            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, false, validatedDiscount);
         }
         [HttpPost]
         [Route("lemonsqueezy/subscribe")]
@@ -319,11 +363,12 @@ namespace Payments.Controllers
             Console.WriteLine(JsonConvert.SerializeObject(product));
             if (!product.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("Product is not a service, can't be subscribed to");
-            var (eurPrice, coinAmount, validatedCode) = await GetPriceAndCoins(options, product);
+            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true);
             var variantId = config["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"];
             if (product.OwnershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
                 variantId = config["LEMONSQUEEZY:YEAR_SUBSCRIPTION_VARIANT_ID"];
-            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true);
+            // For LemonSqueezy subscriptions, pass the discount code to their checkout
+            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true, validatedDiscount);
         }
 
         private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)
@@ -335,11 +380,12 @@ namespace Payments.Controllers
             return new(product);
         }
 
-        private async Task<(decimal eurPrice, decimal coinAmount, CreatorCode validatedCode)> GetPriceAndCoins(TopUpOptions options, TopUpProduct product)
+        private async Task<(decimal eurPrice, decimal coinAmount, CreatorCode validatedCode, ValidatedDiscount validatedDiscount)> GetPriceAndCoins(TopUpOptions options, TopUpProduct product, bool isSubscription = false)
         {
             decimal eurPrice = product.Price;
             decimal coinAmount = product.Cost;
             CreatorCode validatedCode = null;
+            ValidatedDiscount validatedDiscount = null;
 
             // Validate and apply creator code discount if provided
             if (!string.IsNullOrWhiteSpace(options?.CreatorCode))
@@ -358,6 +404,24 @@ namespace Payments.Controllers
                     validatedCode.Code, validatedCode.DiscountPercent, product.Slug, product.Price, eurPrice);
             }
 
+            // Validate LemonSqueezy discount code if provided (for Stripe/PayPal we apply it ourselves, for LemonSqueezy it's passed to their checkout)
+            if (!string.IsNullOrWhiteSpace(options?.DiscountCode))
+            {
+                validatedDiscount = await lemonSqueezyService.ValidateDiscountCodeAsync(options.DiscountCode, isSubscription);
+                if (validatedDiscount == null || !validatedDiscount.IsValid)
+                {
+                    var errorMessage = validatedDiscount?.Name ?? "Invalid or expired discount code";
+                    if (validatedDiscount?.IsSubscriptionOnly == true && !isSubscription)
+                    {
+                        errorMessage = "This discount code is only valid for subscriptions";
+                    }
+                    throw new ApiException(errorMessage);
+                }
+                
+                _logger.LogInformation("Validated discount code {Code} ({Type}: {Amount}, SubscriptionOnly: {SubOnly})", 
+                    validatedDiscount.Code, validatedDiscount.AmountType, validatedDiscount.Amount, validatedDiscount.IsSubscriptionOnly);
+            }
+
             // Apply custom coin amount if specified
             if ((options?.TopUpAmount ?? 0) > 0)
             {
@@ -373,7 +437,7 @@ namespace Payments.Controllers
                 product.Title = product.Title.Replace(".", ",").Replace(product.Cost.ToString("0,##"), targetCoins.ToString("0,##"));
             }
 
-            return (eurPrice, coinAmount, validatedCode);
+            return (eurPrice, coinAmount, validatedCode, validatedDiscount);
         }
 
         /// <summary>
