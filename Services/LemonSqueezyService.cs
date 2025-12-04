@@ -220,6 +220,47 @@ public class LemonSqueezyService
         logger.LogInformation(response.Content);
     }
 
+    /// <summary>
+    /// Resume a cancelled subscription that is still in grace period.
+    /// A subscription can be resumed if it was cancelled but hasn't reached its ends_at date yet.
+    /// </summary>
+    /// <param name="subscriptionId">The LemonSqueezy subscription ID</param>
+    /// <returns>True if successfully resumed, false otherwise</returns>
+    public async Task<bool> ResumeSubscription(string subscriptionId)
+    {
+        var restclient = new RestClient("https://api.lemonsqueezy.com");
+        var request = new RestRequest($"/v1/subscriptions/{subscriptionId}", Method.Patch);
+        request.AddHeader("Accept", "application/vnd.api+json");
+        request.AddHeader("Content-Type", "application/vnd.api+json");
+        request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+        
+        var body = new
+        {
+            data = new
+            {
+                type = "subscriptions",
+                id = subscriptionId,
+                attributes = new
+                {
+                    cancelled = false
+                }
+            }
+        };
+        
+        request.AddJsonBody(body);
+        var response = await restclient.ExecuteAsync(request);
+        
+        if (!response.IsSuccessful)
+        {
+            logger.LogWarning("Failed to resume subscription {SubscriptionId}: {StatusCode} {Content}", 
+                subscriptionId, response.StatusCode, response.Content);
+            return false;
+        }
+        
+        logger.LogInformation("Successfully resumed subscription {SubscriptionId}", subscriptionId);
+        return true;
+    }
+
     public async Task<TopUpIdResponse> SetupPayment(TopUpOptions options, User user, Product product, decimal eurPrice, decimal coinAmount, string variantId, bool isSubscription, ValidatedDiscount validatedDiscount = null)
     {
         var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");

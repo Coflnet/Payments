@@ -173,6 +173,44 @@ public class SubscriptionService
         await lemonSqueezyService.CancelSubscription(subscription.ExternalId);
     }
 
+    /// <summary>
+    /// Resume a cancelled subscription that is still in grace period.
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID</param>
+    /// <returns>True if successfully resumed</returns>
+    public async Task<bool> ResumeSubscription(string userId, string subscriptionId)
+    {
+        var subscription = await context.Subscriptions
+            .Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId)
+            .FirstOrDefaultAsync();
+        
+        if (subscription == null)
+        {
+            throw new ApiException("Subscription not found");
+        }
+        
+        if (subscription.Status != "cancelled")
+        {
+            throw new ApiException($"Subscription is not cancelled, current status: {subscription.Status}");
+        }
+        
+        if (subscription.EndsAt.HasValue && subscription.EndsAt.Value < DateTime.UtcNow)
+        {
+            throw new ApiException("Subscription grace period has expired and cannot be resumed");
+        }
+        
+        var success = await lemonSqueezyService.ResumeSubscription(subscription.ExternalId);
+        
+        if (success)
+        {
+            subscription.Status = "active";
+            await context.SaveChangesAsync();
+        }
+        
+        return success;
+    }
+
     internal async Task RefundPayment(Webhook webhook)
     {
         var userId = webhook.Meta.CustomData.UserId;

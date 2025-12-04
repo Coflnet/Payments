@@ -32,4 +32,18 @@ public class SubscriptionController : ControllerBase
     {
         await subscriptionService.CancelSubscription(userId, subscriptionId);
     }
+
+    /// <summary>
+    /// Resume a cancelled subscription that is still in grace period.
+    /// A subscription can only be resumed if it was cancelled but hasn't reached its ends_at date yet.
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID from LemonSqueezy</param>
+    /// <returns>True if successfully resumed</returns>
+    [HttpPost]
+    [Route("resume/{subscriptionId}")]
+    public async Task<bool> ResumeSubscription(string userId, string subscriptionId)
+    {
+        return await subscriptionService.ResumeSubscription(userId, subscriptionId);
+    }
 }
