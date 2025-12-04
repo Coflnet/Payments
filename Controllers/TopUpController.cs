@@ -169,7 +169,8 @@ namespace Payments.Controllers
                 SuccessUrl = topupotions?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"],
                 CancelUrl = topupotions?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
                 ClientReferenceId = user.ExternalId,
-                CustomerEmail = topupotions?.UserEmail
+                CustomerEmail = topupotions?.UserEmail,
+                Locale = topupotions?.Locale
             };
             var service = new SessionService();
             Session session;

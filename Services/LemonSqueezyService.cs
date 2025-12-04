@@ -285,6 +285,13 @@ public class LemonSqueezyService
             logger.LogInformation("Applying LemonSqueezy discount code {Code} to checkout", discountCode);
         }
         
+        // Extract country code from locale (e.g., "en-US" -> "US", "de-DE" -> "DE")
+        string countryCode = null;
+        if (!string.IsNullOrWhiteSpace(options?.Locale) && options.Locale.Contains('-'))
+        {
+            countryCode = options.Locale.Split('-').Last().ToUpperInvariant();
+        }
+        
         var createData = new
         {
             data = new
@@ -309,6 +316,7 @@ public class LemonSqueezyService
                     {
                         email = options?.UserEmail,
                         discount_code = discountCode, // LemonSqueezy will apply this discount
+                        billing_address = countryCode != null ? new { country = countryCode } : null,
                         custom = new
                         {
                             user_id = user.ExternalId.ToString(),
