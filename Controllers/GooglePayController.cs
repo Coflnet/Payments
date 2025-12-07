@@ -6,6 +6,7 @@ using Coflnet.Payments.Models.GooglePay;
 using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using GoogleApiPrice = Google.Apis.AndroidPublisher.v3.Data.Price;
 // ...existing usings...
 
@@ -69,7 +70,7 @@ namespace Payments.Controllers
             if (response.Value == null ||!response.Value.IsValid)
             {
                 _logger.LogWarning("Google Play purchase verification returned no typed value for product {ProductId}. Result object: {Result}",
-                    request.ProductId, response.Result);
+                    request.ProductId, JsonConvert.SerializeObject(response));
                 return response;
             }
 
