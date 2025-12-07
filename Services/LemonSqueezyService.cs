@@ -261,6 +261,150 @@ public class LemonSqueezyService
         return true;
     }
 
+    /// <summary>
+    /// Get all invoices for a subscription
+    /// </summary>
+    /// <param name="subscriptionId">The LemonSqueezy subscription ID</param>
+    /// <returns>List of subscription invoices</returns>
+    public async Task<List<SubscriptionInvoice>> GetSubscriptionInvoicesAsync(string subscriptionId)
+    {
+        var restclient = new RestClient("https://api.lemonsqueezy.com");
+        var invoices = new List<SubscriptionInvoice>();
+        int page = 1;
+        const int maxPages = 10;
+        
+        while (page <= maxPages)
+        {
+            var request = new RestRequest($"/v1/subscription-invoices?filter[subscription_id]={subscriptionId}&page[number]={page}&page[size]=50", Method.Get);
+            request.AddHeader("Accept", "application/vnd.api+json");
+            request.AddHeader("Content-Type", "application/vnd.api+json");
+            request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+            
+            var response = await restclient.ExecuteAsync(request);
+            
+            if (!response.IsSuccessful)
+            {
+                logger.LogWarning("Failed to fetch subscription invoices: {StatusCode} {Content}", 
+                    response.StatusCode, response.Content);
+                break;
+            }
+            
+            var json = System.Text.Json.JsonDocument.Parse(response.Content);
+            
+            if (!json.RootElement.TryGetProperty("data", out var dataArray) || dataArray.GetArrayLength() == 0)
+            {
+                break;
+            }
+            
+            foreach (var item in dataArray.EnumerateArray())
+            {
+                var attrs = item.GetProperty("attributes");
+                var invoice = new SubscriptionInvoice
+                {
+                    Id = item.GetProperty("id").GetString(),
+                    SubscriptionId = attrs.GetProperty("subscription_id").GetInt32(),
+                    UserName = attrs.TryGetProperty("user_name", out var userName) ? userName.GetString() : null,
+                    UserEmail = attrs.TryGetProperty("user_email", out var userEmail) ? userEmail.GetString() : null,
+                    BillingReason = attrs.TryGetProperty("billing_reason", out var billingReason) ? billingReason.GetString() : null,
+                    CardBrand = attrs.TryGetProperty("card_brand", out var cardBrand) ? cardBrand.GetString() : null,
+                    CardLastFour = attrs.TryGetProperty("card_last_four", out var cardLastFour) ? cardLastFour.GetString() : null,
+                    Currency = attrs.TryGetProperty("currency", out var currency) ? currency.GetString() : null,
+                    Status = attrs.TryGetProperty("status", out var status) ? status.GetString() : null,
+                    StatusFormatted = attrs.TryGetProperty("status_formatted", out var statusFormatted) ? statusFormatted.GetString() : null,
+                    Refunded = attrs.TryGetProperty("refunded", out var refunded) && refunded.GetBoolean(),
+                    Subtotal = attrs.TryGetProperty("subtotal", out var subtotal) ? subtotal.GetInt32() : 0,
+                    DiscountTotal = attrs.TryGetProperty("discount_total", out var discountTotal) ? discountTotal.GetInt32() : 0,
+                    Tax = attrs.TryGetProperty("tax", out var tax) ? tax.GetInt32() : 0,
+                    Total = attrs.TryGetProperty("total", out var total) ? total.GetInt32() : 0,
+                    SubtotalFormatted = attrs.TryGetProperty("subtotal_formatted", out var subtotalFormatted) ? subtotalFormatted.GetString() : null,
+                    TotalFormatted = attrs.TryGetProperty("total_formatted", out var totalFormatted) ? totalFormatted.GetString() : null,
+                    CreatedAt = attrs.TryGetProperty("created_at", out var createdAt) ? DateTime.Parse(createdAt.GetString()) : DateTime.MinValue,
+                    UpdatedAt = attrs.TryGetProperty("updated_at", out var updatedAt) ? DateTime.Parse(updatedAt.GetString()) : DateTime.MinValue
+                };
+                
+                // Get invoice URL from urls object
+                if (attrs.TryGetProperty("urls", out var urls) && urls.TryGetProperty("invoice_url", out var invoiceUrl))
+                {
+                    invoice.InvoiceUrl = invoiceUrl.GetString();
+                }
+                
+                invoices.Add(invoice);
+            }
+            
+            // Check if there are more pages
+            if (json.RootElement.TryGetProperty("meta", out var meta) && 
+                meta.TryGetProperty("page", out var pageInfo) &&
+                pageInfo.TryGetProperty("lastPage", out var lastPage))
+            {
+                if (page >= lastPage.GetInt32())
+                    break;
+            }
+            else
+            {
+                break;
+            }
+            
+            page++;
+        }
+        
+        return invoices;
+    }
+
+    /// <summary>
+    /// Generate a download link for a subscription invoice
+    /// </summary>
+    /// <param name="invoiceId">The invoice ID</param>
+    /// <param name="request">The invoice generation request with address details</param>
+    /// <returns>The download URL or null if failed</returns>
+    public async Task<string> GenerateInvoiceDownloadLinkAsync(string invoiceId, GenerateInvoiceRequest request)
+    {
+        var restclient = new RestClient("https://api.lemonsqueezy.com");
+        
+        // Build query parameters
+        var queryParams = new List<string>
+        {
+            $"name={Uri.EscapeDataString(request.Name ?? "")}",
+            $"address={Uri.EscapeDataString(request.Address ?? "")}",
+            $"city={Uri.EscapeDataString(request.City ?? "")}",
+            $"zip_code={Uri.EscapeDataString(request.ZipCode ?? "")}",
+            $"country={Uri.EscapeDataString(request.Country ?? "")}"
+        };
+        
+        if (!string.IsNullOrEmpty(request.State))
+            queryParams.Add($"state={Uri.EscapeDataString(request.State)}");
+        if (!string.IsNullOrEmpty(request.Notes))
+            queryParams.Add($"notes={Uri.EscapeDataString(request.Notes)}");
+        if (!string.IsNullOrEmpty(request.Locale))
+            queryParams.Add($"locale={Uri.EscapeDataString(request.Locale)}");
+        
+        var queryString = string.Join("&", queryParams);
+        var apiRequest = new RestRequest($"/v1/subscription-invoices/{invoiceId}/generate-invoice?{queryString}", Method.Post);
+        apiRequest.AddHeader("Accept", "application/vnd.api+json");
+        apiRequest.AddHeader("Content-Type", "application/vnd.api+json");
+        apiRequest.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+        
+        var response = await restclient.ExecuteAsync(apiRequest);
+        
+        if (!response.IsSuccessful)
+        {
+            logger.LogWarning("Failed to generate invoice download link for invoice {InvoiceId}: {StatusCode} {Content}", 
+                invoiceId, response.StatusCode, response.Content);
+            return null;
+        }
+        
+        var json = System.Text.Json.JsonDocument.Parse(response.Content);
+        
+        if (json.RootElement.TryGetProperty("meta", out var meta) &&
+            meta.TryGetProperty("urls", out var urls) &&
+            urls.TryGetProperty("download_invoice", out var downloadUrl))
+        {
+            return downloadUrl.GetString();
+        }
+        
+        logger.LogWarning("Invoice download URL not found in response for invoice {InvoiceId}", invoiceId);
+        return null;
+    }
+
     public async Task<TopUpIdResponse> SetupPayment(TopUpOptions options, User user, Product product, decimal eurPrice, decimal coinAmount, string variantId, bool isSubscription, ValidatedDiscount validatedDiscount = null)
     {
         var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");

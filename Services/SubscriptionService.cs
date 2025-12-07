@@ -211,6 +211,61 @@ public class SubscriptionService
         return success;
     }
 
+    /// <summary>
+    /// Get all invoices for a subscription
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID</param>
+    /// <returns>List of subscription invoices</returns>
+    public async Task<IEnumerable<SubscriptionInvoice>> GetSubscriptionInvoices(string userId, string subscriptionId)
+    {
+        var subscription = await context.Subscriptions
+            .Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId)
+            .FirstOrDefaultAsync();
+        
+        if (subscription == null)
+        {
+            throw new ApiException("Subscription not found");
+        }
+        
+        return await lemonSqueezyService.GetSubscriptionInvoicesAsync(subscription.ExternalId);
+    }
+
+    /// <summary>
+    /// Generate a download link for a subscription invoice
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="invoiceId">The invoice ID</param>
+    /// <param name="request">Invoice generation request with address details</param>
+    /// <returns>Download URL response</returns>
+    public async Task<InvoiceDownloadResponse> GenerateInvoiceDownloadLink(string userId, string invoiceId, GenerateInvoiceRequest request)
+    {
+        // Validate required fields
+        if (string.IsNullOrWhiteSpace(request.Name))
+            throw new ApiException("Name is required");
+        if (string.IsNullOrWhiteSpace(request.Address))
+            throw new ApiException("Address is required");
+        if (string.IsNullOrWhiteSpace(request.City))
+            throw new ApiException("City is required");
+        if (string.IsNullOrWhiteSpace(request.ZipCode))
+            throw new ApiException("ZIP code is required");
+        if (string.IsNullOrWhiteSpace(request.Country))
+            throw new ApiException("Country is required");
+        
+        // For US and CA, state is required
+        if ((request.Country == "US" || request.Country == "CA") && string.IsNullOrWhiteSpace(request.State))
+            throw new ApiException("State is required for US and CA");
+        
+        var downloadUrl = await lemonSqueezyService.GenerateInvoiceDownloadLinkAsync(invoiceId, request);
+        
+        if (downloadUrl == null)
+        {
+            throw new ApiException("Failed to generate invoice download link");
+        }
+        
+        return new InvoiceDownloadResponse { DownloadUrl = downloadUrl };
+    }
+
     internal async Task RefundPayment(Webhook webhook)
     {
         var userId = webhook.Meta.CustomData.UserId;

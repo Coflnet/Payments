@@ -46,4 +46,31 @@ public class SubscriptionController : ControllerBase
     {
         return await subscriptionService.ResumeSubscription(userId, subscriptionId);
     }
+
+    /// <summary>
+    /// Get all invoices for a subscription
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID from LemonSqueezy</param>
+    /// <returns>List of subscription invoices</returns>
+    [HttpGet]
+    [Route("{subscriptionId}/invoices")]
+    public async Task<IEnumerable<SubscriptionInvoice>> GetSubscriptionInvoices(string userId, string subscriptionId)
+    {
+        return await subscriptionService.GetSubscriptionInvoices(userId, subscriptionId);
+    }
+
+    /// <summary>
+    /// Generate a download link for a subscription invoice
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="invoiceId">The invoice ID</param>
+    /// <param name="request">Invoice generation request with address details</param>
+    /// <returns>Download URL for the invoice PDF</returns>
+    [HttpPost]
+    [Route("invoice/{invoiceId}/download")]
+    public async Task<InvoiceDownloadResponse> GenerateInvoiceDownloadLink(string userId, string invoiceId, [FromBody] GenerateInvoiceRequest request)
+    {
+        return await subscriptionService.GenerateInvoiceDownloadLink(userId, invoiceId, request);
+    }
 }
