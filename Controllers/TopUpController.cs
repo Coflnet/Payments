@@ -60,7 +60,6 @@ namespace Payments.Controllers
             this.creatorCodeService = creatorCodeService;
         }
 
-
         /// <summary>
         /// All available topup options
         /// </summary>
@@ -169,8 +168,7 @@ namespace Payments.Controllers
                 SuccessUrl = topupotions?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"],
                 CancelUrl = topupotions?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
                 ClientReferenceId = user.ExternalId,
-                CustomerEmail = topupotions?.UserEmail,
-                Locale = topupotions?.Locale
+                CustomerEmail = topupotions?.UserEmail
             };
             var service = new SessionService();
             Session session;
@@ -228,7 +226,7 @@ namespace Payments.Controllers
                 Amount = eurPrice,
                 CreateOnIp = userIp,
                 DeviceFingerprint = topupotions.Fingerprint,
-                Locale = topupotions.Locale,
+                Locale = topupotions?.Locale,
                 Provider = product.ProviderSlug
             };
                 db.Add(request);
@@ -253,7 +251,7 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             AssertUserCountry(options);
-            if (user.Country == null && options.Locale != null)
+            if (user.Country == null && options?.Locale != null)
             {
                 user.Country = options.Locale.Split('-').Last();
                 await db.SaveChangesAsync();
