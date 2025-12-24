@@ -2,6 +2,88 @@ using System.Text.Json.Serialization;
 
 namespace Coflnet.Payments.Models.LemonSqueezy;
 
+// Product API models for variant discovery
+public class ProductListResponse
+{
+    [JsonPropertyName("data")]
+    public ProductData[] Data { get; set; }
+    
+    [JsonPropertyName("meta")]
+    public MetaData Meta { get; set; }
+}
+
+public class ProductData
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; }
+    
+    [JsonPropertyName("attributes")]
+    public ProductAttributes Attributes { get; set; }
+}
+
+public class ProductAttributes
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; }
+    
+    [JsonPropertyName("slug")]
+    public string Slug { get; set; }
+    
+    [JsonPropertyName("status")]
+    public string Status { get; set; }
+}
+
+public class VariantListResponse
+{
+    [JsonPropertyName("data")]
+    public VariantData[] Data { get; set; }
+}
+
+public class VariantData
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; }
+    
+    [JsonPropertyName("attributes")]
+    public VariantAttributes Attributes { get; set; }
+}
+
+public class VariantAttributes
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; }
+    
+    [JsonPropertyName("is_subscription")]
+    public bool IsSubscription { get; set; }
+    
+    [JsonPropertyName("interval")]
+    public string Interval { get; set; }
+    
+    [JsonPropertyName("interval_count")]
+    public int IntervalCount { get; set; }
+    
+    [JsonPropertyName("price")]
+    public int Price { get; set; }
+    
+    [JsonPropertyName("product_id")]
+    public int ProductId { get; set; }
+}
+
+public class MetaData
+{
+    [JsonPropertyName("page")]
+    public PageMetaInfo Page { get; set; }
+}
+
+public class PageMetaInfo
+{
+    [JsonPropertyName("currentPage")]
+    public int CurrentPage { get; set; }
+    
+    [JsonPropertyName("lastPage")]
+    public int LastPage { get; set; }
+}
+
 // Root myDeserializedClass = JsonSerializer.Deserialize<Root>(myJsonResponse);
 public class Attributes
 {

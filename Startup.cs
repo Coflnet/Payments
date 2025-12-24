@@ -113,6 +113,7 @@ namespace Coflnet.Payments
             StripeConfiguration.ApiKey = Configuration["STRIPE:KEY"];
             services.AddSingleton<MigrationService>();
             services.AddHostedService(d=>d.GetRequiredService<MigrationService>());
+            services.AddHostedService<LemonSqueezyInitializationService>();
             services.AddJaeger(0.1, 10);
         }
 

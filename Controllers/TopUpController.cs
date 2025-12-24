@@ -363,9 +363,10 @@ namespace Payments.Controllers
             if (!product.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("Product is not a service, can't be subscribed to");
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true);
-            var variantId = config["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"];
-            if (product.OwnershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
-                variantId = config["LEMONSQUEEZY:YEAR_SUBSCRIPTION_VARIANT_ID"];
+            
+            // Use the variant discovery service to get the correct variant ID based on subscription duration
+            var variantId = lemonSqueezyService.GetVariantId((int)product.OwnershipSeconds);
+            
             // For LemonSqueezy subscriptions, pass the discount code to their checkout
             return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true, validatedDiscount);
         }

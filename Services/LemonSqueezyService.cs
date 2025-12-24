@@ -17,11 +17,144 @@ public class LemonSqueezyService
 {
     private IConfiguration config;
     private ILogger<LemonSqueezyService> logger;
+    private Dictionary<string, string> variantCache = new Dictionary<string, string>();
 
     public LemonSqueezyService(IConfiguration config, ILogger<LemonSqueezyService> logger)
     {
         this.config = config;
         this.logger = logger;
+    }
+
+    /// <summary>
+    /// Discover and cache product variants from LemonSqueezy API
+    /// This should be called on startup to populate variant IDs automatically
+    /// </summary>
+    public async Task DiscoverVariantsAsync()
+    {
+        try
+        {
+            var storeId = config["LEMONSQUEEZY:STORE_ID"];
+            var restclient = new RestClient("https://api.lemonsqueezy.com");
+            
+            logger.LogInformation("Starting variant discovery for store {StoreId}", storeId);
+            
+            // Fetch all products for the store
+            var productsRequest = new RestRequest($"/v1/products?filter[store_id]={storeId}", Method.Get);
+            productsRequest.AddHeader("Accept", "application/vnd.api+json");
+            productsRequest.AddHeader("Content-Type", "application/vnd.api+json");
+            productsRequest.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+            
+            var productsResponse = await restclient.ExecuteAsync(productsRequest);
+            if (!productsResponse.IsSuccessful)
+            {
+                logger.LogError("Failed to fetch products: {StatusCode} {Content}", 
+                    productsResponse.StatusCode, productsResponse.Content);
+                return;
+            }
+            
+            var products = System.Text.Json.JsonSerializer.Deserialize<ProductListResponse>(
+                productsResponse.Content,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            
+            if (products?.Data == null)
+            {
+                logger.LogWarning("No products found in response");
+                return;
+            }
+            
+            logger.LogInformation("Found {Count} products", products.Data.Length);
+            
+            // For each product, fetch its variants
+            foreach (var product in products.Data.Where(p => p.Attributes.Status == "published"))
+            {
+                var variantsRequest = new RestRequest($"/v1/products/{product.Id}/variants", Method.Get);
+                variantsRequest.AddHeader("Accept", "application/vnd.api+json");
+                variantsRequest.AddHeader("Content-Type", "application/vnd.api+json");
+                variantsRequest.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+                
+                var variantsResponse = await restclient.ExecuteAsync(variantsRequest);
+                if (!variantsResponse.IsSuccessful)
+                {
+                    logger.LogWarning("Failed to fetch variants for product {ProductId}: {StatusCode}", 
+                        product.Id, variantsResponse.StatusCode);
+                    continue;
+                }
+                
+                var variants = System.Text.Json.JsonSerializer.Deserialize<VariantListResponse>(
+                    variantsResponse.Content,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                
+                if (variants?.Data == null || variants.Data.Length == 0)
+                    continue;
+                
+                // Process subscription variants
+                foreach (var variant in variants.Data.Where(v => v.Attributes.IsSubscription))
+                {
+                    var attrs = variant.Attributes;
+                    var key = GetVariantCacheKey(attrs.Interval, attrs.IntervalCount);
+                    
+                    if (!variantCache.ContainsKey(key))
+                    {
+                        variantCache[key] = variant.Id;
+                        logger.LogInformation("Discovered variant: {ProductName} - {Interval} x {Count} = ID {VariantId}", 
+                            product.Attributes.Name, attrs.Interval, attrs.IntervalCount, variant.Id);
+                    }
+                }
+                
+                // Process non-subscription variants (regular top-up)
+                var regularVariant = variants.Data.FirstOrDefault(v => !v.Attributes.IsSubscription);
+                if (regularVariant != null)
+                {
+                    variantCache["regular"] = regularVariant.Id;
+                    logger.LogInformation("Discovered regular variant: {ProductName} = ID {VariantId}", 
+                        product.Attributes.Name, regularVariant.Id);
+                }
+            }
+            
+            logger.LogInformation("Variant discovery complete. Cached {Count} variants", variantCache.Count);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error during variant discovery");
+        }
+    }
+
+    /// <summary>
+    /// Get variant ID from cache or configuration based on subscription duration
+    /// </summary>
+    /// <param name="ownershipSeconds">Subscription duration in seconds</param>
+    /// <returns>Variant ID string</returns>
+    public string GetVariantId(int ownershipSeconds)
+    {
+        // Try cache first
+        if (ownershipSeconds == (int)TimeSpan.FromDays(30).TotalSeconds)
+        {
+            if (variantCache.TryGetValue("week_4", out var monthlyId))
+                return monthlyId;
+        }
+        else if (ownershipSeconds == (int)TimeSpan.FromDays(90).TotalSeconds)
+        {
+            if (variantCache.TryGetValue("month_3", out var quarterlyId))
+                return quarterlyId;
+        }
+        else if (ownershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
+        {
+            if (variantCache.TryGetValue("year_1", out var yearlyId))
+                return yearlyId;
+        }
+        
+        // Fallback to configuration
+        if (ownershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
+            return config["LEMONSQUEEZY:YEAR_SUBSCRIPTION_VARIANT_ID"];
+        else if (ownershipSeconds == (int)TimeSpan.FromDays(90).TotalSeconds)
+            return config["LEMONSQUEEZY:QUARTER_SUBSCRIPTION_VARIANT_ID"];
+        
+        return config["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"];
+    }
+
+    private string GetVariantCacheKey(string interval, int intervalCount)
+    {
+        return $"{interval}_{intervalCount}";
     }
 
     /// <summary>
@@ -118,6 +251,7 @@ public class LemonSqueezyService
                         {
                             // Check if any of the limited variants match subscription variant IDs
                             var subscriptionVariantId = config["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"];
+                            var quarterSubscriptionVariantId = config["LEMONSQUEEZY:QUARTER_SUBSCRIPTION_VARIANT_ID"];
                             var yearSubscriptionVariantId = config["LEMONSQUEEZY:YEAR_SUBSCRIPTION_VARIANT_ID"];
                             var regularVariantId = config["LEMONSQUEEZY:VARIANT_ID"];
                             
@@ -140,7 +274,9 @@ public class LemonSqueezyService
                             }
                             
                             // If limited to subscription variants only (not regular variant)
-                            var hasSubscriptionVariant = variantIds.Contains(subscriptionVariantId) || variantIds.Contains(yearSubscriptionVariantId);
+                            var hasSubscriptionVariant = variantIds.Contains(subscriptionVariantId) 
+                                || variantIds.Contains(quarterSubscriptionVariantId)
+                                || variantIds.Contains(yearSubscriptionVariantId);
                             var hasRegularVariant = variantIds.Contains(regularVariantId);
                             
                             isSubscriptionOnly = hasSubscriptionVariant && !hasRegularVariant;
