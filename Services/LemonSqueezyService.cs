@@ -541,6 +541,81 @@ public class LemonSqueezyService
         return null;
     }
 
+    /// <summary>
+    /// Refund a subscription invoice payment. Refunds can only be issued up to 3 days after the invoice was created.
+    /// </summary>
+    /// <param name="invoiceId">The subscription invoice ID</param>
+    /// <param name="amountInCents">Optional refund amount in cents. If not specified, a full refund will be issued.</param>
+    /// <returns>RefundResponse containing the updated invoice details, or null if refund failed</returns>
+    public async Task<RefundResponse> RefundInvoiceAsync(string invoiceId, int? amountInCents = null)
+    {
+        try
+        {
+            var restclient = new RestClient("https://api.lemonsqueezy.com");
+            var request = new RestRequest($"/v1/subscription-invoices/{invoiceId}/refund", Method.Post);
+            request.AddHeader("Accept", "application/vnd.api+json");
+            request.AddHeader("Content-Type", "application/vnd.api+json");
+            request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+            
+            // Build the request body
+            var attributes = new Dictionary<string, object>();
+            if (amountInCents.HasValue)
+            {
+                attributes["amount"] = amountInCents.Value;
+            }
+            
+            var body = new
+            {
+                data = new
+                {
+                    type = "subscription-invoices",
+                    id = invoiceId,
+                    attributes = attributes
+                }
+            };
+            
+            request.AddJsonBody(body);
+            
+            var response = await restclient.ExecuteAsync(request);
+            
+            if (!response.IsSuccessful)
+            {
+                logger.LogWarning("Failed to refund subscription invoice {InvoiceId}: {StatusCode} {Content}", 
+                    invoiceId, response.StatusCode, response.Content);
+                return null;
+            }
+            
+            // Parse the response
+            var json = System.Text.Json.JsonDocument.Parse(response.Content);
+            
+            if (!json.RootElement.TryGetProperty("data", out var dataObj))
+            {
+                logger.LogWarning("Invalid response format when refunding invoice {InvoiceId}", invoiceId);
+                return null;
+            }
+            
+            var attrs = dataObj.GetProperty("attributes");
+            var refundResponse = new RefundResponse
+            {
+                Id = dataObj.GetProperty("id").GetString(),
+                Refunded = attrs.TryGetProperty("refunded", out var refunded) && refunded.GetBoolean(),
+                RefundedAmount = attrs.TryGetProperty("refunded_amount", out var refundedAmount) ? refundedAmount.GetInt32() : 0,
+                RefundedAmountFormatted = attrs.TryGetProperty("refunded_amount_formatted", out var refundedAmountFormatted) ? refundedAmountFormatted.GetString() : null,
+                Status = attrs.TryGetProperty("status", out var status) ? status.GetString() : null
+            };
+            
+            logger.LogInformation("Successfully refunded invoice {InvoiceId}: amount={Amount}, formatted={Formatted}", 
+                invoiceId, refundResponse.RefundedAmount, refundResponse.RefundedAmountFormatted);
+            
+            return refundResponse;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error refunding subscription invoice {InvoiceId}", invoiceId);
+            return null;
+        }
+    }
+
     public async Task<TopUpIdResponse> SetupPayment(TopUpOptions options, User user, Product product, decimal eurPrice, decimal coinAmount, string variantId, bool isSubscription, ValidatedDiscount validatedDiscount = null)
     {
         var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");

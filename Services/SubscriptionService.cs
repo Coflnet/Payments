@@ -266,6 +266,56 @@ public class SubscriptionService
         return new InvoiceDownloadResponse { DownloadUrl = downloadUrl };
     }
 
+    /// <summary>
+    /// Refund a subscription invoice payment. Refunds can only be issued up to 3 days after the invoice was created.
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID from LemonSqueezy</param>
+    /// <param name="invoiceId">The subscription invoice ID</param>
+    /// <param name="request">Optional refund amount in cents. If not specified, a full refund will be issued.</param>
+    /// <returns>RefundResponse containing the updated invoice details</returns>
+    public async Task<RefundResponse> RefundSubscriptionPayment(string userId, string subscriptionId, string invoiceId, RefundRequest request)
+    {
+        // Validate user subscription
+        var subscription = await context.Subscriptions
+            .Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId)
+            .FirstOrDefaultAsync();
+        
+        if (subscription == null)
+        {
+            throw new ApiException("Subscription not found");
+        }
+        
+        // Get the invoice details to check the age
+        var invoices = await lemonSqueezyService.GetSubscriptionInvoicesAsync(subscriptionId);
+        var invoice = invoices?.FirstOrDefault(i => i.Id == invoiceId);
+        
+        if (invoice == null)
+        {
+            throw new ApiException("Invoice not found");
+        }
+        
+        // Check if invoice is within the 3-day refund window
+        var daysSinceCreation = (DateTime.UtcNow - invoice.CreatedAt).TotalDays;
+        if (daysSinceCreation > 3)
+        {
+            throw new ApiException($"Refund window has expired. Invoices can only be refunded within 3 days of creation. This invoice was created {daysSinceCreation:F1} days ago.");
+        }
+        
+        // Issue the refund
+        var refundResponse = await lemonSqueezyService.RefundInvoiceAsync(invoiceId, request?.Amount);
+        
+        if (refundResponse == null)
+        {
+            throw new ApiException("Failed to process refund. Please try again later.");
+        }
+        
+        logger.LogInformation("Subscription payment refunded for user {UserId}, subscription {SubscriptionId}, invoice {InvoiceId}: amount={Amount}", 
+            userId, subscriptionId, invoiceId, refundResponse.RefundedAmount);
+        
+        return refundResponse;
+    }
+
     internal async Task RefundPayment(Webhook webhook)
     {
         var userId = webhook.Meta.CustomData.UserId;

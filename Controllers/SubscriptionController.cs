@@ -73,4 +73,19 @@ public class SubscriptionController : ControllerBase
     {
         return await subscriptionService.GenerateInvoiceDownloadLink(userId, invoiceId, request);
     }
+
+    /// <summary>
+    /// Refund a subscription invoice payment. Refunds can only be issued up to 3 days after the invoice was created.
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID from LemonSqueezy</param>
+    /// <param name="invoiceId">The subscription invoice ID</param>
+    /// <param name="request">Optional refund amount in cents. If not specified, a full refund will be issued.</param>
+    /// <returns>RefundResponse containing the updated invoice details</returns>
+    [HttpPost]
+    [Route("{subscriptionId}/invoice/{invoiceId}/refund")]
+    public async Task<RefundResponse> RefundSubscriptionPayment(string userId, string subscriptionId, string invoiceId, [FromBody] RefundRequest request = null)
+    {
+        return await subscriptionService.RefundSubscriptionPayment(userId, subscriptionId, invoiceId, request);
+    }
 }

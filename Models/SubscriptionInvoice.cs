@@ -165,3 +165,45 @@ public class InvoiceDownloadResponse
     /// </summary>
     public string DownloadUrl { get; set; }
 }
+
+/// <summary>
+/// Request model for refunding a subscription invoice payment
+/// </summary>
+public class RefundRequest
+{
+    /// <summary>
+    /// Optional. The amount to refund in cents. If not specified, a full refund will be issued.
+    /// </summary>
+    public int? Amount { get; set; }
+}
+
+/// <summary>
+/// Response model for a refunded invoice
+/// </summary>
+public class RefundResponse
+{
+    /// <summary>
+    /// The invoice ID
+    /// </summary>
+    public string Id { get; set; }
+    
+    /// <summary>
+    /// Whether the invoice was refunded
+    /// </summary>
+    public bool Refunded { get; set; }
+    
+    /// <summary>
+    /// The amount refunded in cents
+    /// </summary>
+    public int RefundedAmount { get; set; }
+    
+    /// <summary>
+    /// Formatted refund amount string
+    /// </summary>
+    public string RefundedAmountFormatted { get; set; }
+    
+    /// <summary>
+    /// Current status of the invoice
+    /// </summary>
+    public string Status { get; set; }
+}
