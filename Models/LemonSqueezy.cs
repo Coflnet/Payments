@@ -259,6 +259,8 @@ public class Attributes
     public DateTime? RenewsAt { get; set; }
     [JsonPropertyName("ends_at")]
     public DateTime? EndsAt { get; set; }
+    [JsonPropertyName("trial_ends_at")]
+    public DateTime? TrialEndsAt { get; set; }
 }
 
 

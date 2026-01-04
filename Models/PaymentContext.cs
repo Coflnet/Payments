@@ -61,6 +61,10 @@ namespace Coflnet.Payments.Models
         /// </summary>
         public DbSet<UserSubscription> Subscriptions { get; set; }
         /// <summary>
+        /// Trial usage records to prevent multiple trials per user/product
+        /// </summary>
+        public DbSet<TrialUsage> TrialUsages { get; set; }
+        /// <summary>
         /// Creator codes for discounts and revenue attribution
         /// </summary>
         public DbSet<CreatorCode> CreatorCodes { get; set; }
@@ -134,6 +138,12 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<UserSubscription>(entity =>
             {
                 entity.HasIndex(e => e.ExternalId);
+            });
+
+            modelBuilder.Entity<TrialUsage>(entity =>
+            {
+                entity.HasIndex(e => new { e.UserId, e.ProductId }).IsUnique();
+                entity.HasIndex(e => e.TrialStartedAt);
             });
 
             modelBuilder.Entity<CreatorCode>(entity =>

@@ -83,6 +83,14 @@ public class SubscriptionService
         subscription.EndsAt = attributes.EndsAt;
         subscription.ExternalCustomerId = attributes.CustomerId.ToString();
         subscription.ExternalId = webhook.Data.Id;
+        subscription.TrialEndsAt = attributes.TrialEndsAt;
+        
+        // Handle trial subscription: grant access for trial period but don't credit coins
+        if (attributes.Status == "on_trial" && attributes.TrialEndsAt.HasValue)
+        {
+            await HandleTrialSubscription(webhook, subscription, product);
+        }
+        
         await context.SaveChangesAsync();
         if(subscription.Status == "expired")
         {
@@ -91,6 +99,96 @@ public class SubscriptionService
             await RevertPurchase(userId, referenceId + "-topup");
             await RevertPurchase(userId, referenceId);
             return;
+        }
+    }
+
+    /// <summary>
+    /// Handle trial subscription - grant access for trial period without crediting coins
+    /// </summary>
+    private async Task HandleTrialSubscription(Webhook webhook, UserSubscription subscription, TopUpProduct product)
+    {
+        var userId = webhook.Meta.CustomData.UserId;
+        var attributes = webhook.Data.Attributes;
+        var trialEndDate = attributes.TrialEndsAt.Value;
+        
+        // Record trial usage to prevent multiple trials
+        await lemonSqueezyService.RecordTrialUsageAsync(userId, product.Id, webhook.Data.Id);
+        subscription.TrialUsedAt = DateTime.UtcNow;
+        
+        // Check if we've already granted trial access for this subscription
+        var trialReferenceId = $"trial-{webhook.Data.Id}";
+        var existingOwnership = await context.OwnerShips
+            .Where(o => o.User.ExternalId == userId && o.Product.Slug == product.Slug)
+            .FirstOrDefaultAsync();
+
+        if (existingOwnership != null)
+        {
+            // Check if already extended by this trial
+            var trialTransaction = await context.FiniteTransactions
+                .Where(t => t.Reference == trialReferenceId)
+                .FirstOrDefaultAsync();
+            
+            if (trialTransaction != null)
+            {
+                logger.LogInformation("Trial access already granted for user {UserId} product {ProductId}", userId, product.Id);
+                return;
+            }
+            
+            // Extend existing ownership to trial end date if trial extends beyond current expiry
+            if (existingOwnership.Expires < trialEndDate)
+            {
+                existingOwnership.Expires = trialEndDate;
+                logger.LogInformation("Extended existing ownership for user {UserId} product {ProductId} to trial end {TrialEnd}", 
+                    userId, product.Id, trialEndDate);
+            }
+        }
+        else
+        {
+            // Create new ownership for trial period
+            var user = await userService.GetOrCreate(userId);
+            // Look for product by slug in both Products and TopUpProducts (with SERVICE type)
+            Product serviceProduct = await context.Products.Where(p => p.Slug == product.Slug).FirstOrDefaultAsync();
+            if (serviceProduct == null)
+            {
+                // TopUpProduct with SERVICE type can also be used for ownership
+                serviceProduct = await context.TopUpProducts.Where(p => p.Slug == product.Slug && p.Type.HasFlag(Product.ProductType.SERVICE)).FirstOrDefaultAsync();
+            }
+            if (serviceProduct == null)
+            {
+                logger.LogWarning("Could not find service product for trial slug {ProductSlug}", product.Slug);
+                return;
+            }
+            
+            var ownership = new OwnerShip
+            {
+                User = user,
+                Product = serviceProduct,
+                Expires = trialEndDate
+            };
+            context.OwnerShips.Add(ownership);
+            logger.LogInformation("Created trial ownership for user {UserId} product {ProductSlug} until {TrialEnd}", 
+                userId, product.Slug, trialEndDate);
+        }
+
+        // Record a $0 transaction for audit trail (no coins credited)
+        try
+        {
+            var revertProduct = await productService.GetProduct("revert");
+            var user = await userService.GetOrCreate(userId);
+            var transaction = new FiniteTransaction
+            {
+                User = user,
+                Product = revertProduct,
+                Amount = 0,
+                Reference = trialReferenceId,
+                Timestamp = DateTime.UtcNow
+            };
+            context.FiniteTransactions.Add(transaction);
+            logger.LogInformation("Recorded trial transaction for user {UserId} product {ProductId}", userId, product.Id);
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "Could not record trial transaction, continuing");
         }
     }
 
@@ -124,6 +222,16 @@ public class SubscriptionService
         var customData = data.Meta.CustomData;
         var product = context.TopUpProducts.Find(customData.ProductId);
         var referenceId = data.Data.Id + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
+        
+        // Skip extension for trial subscriptions - they don't pay yet
+        // Trial access is handled separately in HandleTrialSubscription
+        if (data.Data.Attributes.Status == "on_trial")
+        {
+            logger.LogInformation("Subscription is on trial for user {UserId} product {ProductId}, skipping coin credit", 
+                customData.UserId, customData.ProductId);
+            return;
+        }
+        
         if (data.Data.Type == "subscription-invoices")
         {
             referenceId = data.Data.Attributes.SubscriptionId + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");

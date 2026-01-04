@@ -1,4 +1,4 @@
-VERSION=0.19.0
+VERSION=0.20.0
 PACKAGE_NAME=Coflnet.Payments.Client
 
 docker run --rm -v "${PWD}:/local" --network host -u $(id -u ${USER}):$(id -g ${USER})  openapitools/openapi-generator-cli generate \

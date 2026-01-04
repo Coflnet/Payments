@@ -367,8 +367,23 @@ namespace Payments.Controllers
             // Use the variant discovery service to get the correct variant ID based on subscription duration
             var variantId = lemonSqueezyService.GetVariantId((int)product.OwnershipSeconds);
             
-            // For LemonSqueezy subscriptions, pass the discount code to their checkout
-            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true, validatedDiscount);
+            // Handle trial options - validate user hasn't already used trial for this product
+            bool enableTrial = options?.EnableTrial ?? false;
+            int trialLengthDays = Math.Min(Math.Max(options?.TrialLengthDays ?? 3, 1), 3); // Cap at 3 days
+            
+            if (enableTrial)
+            {
+                // Check if user has already used trial for this product
+                var hasUsedTrial = await lemonSqueezyService.HasUserUsedTrialAsync(userId, product.Id);
+                if (hasUsedTrial)
+                {
+                    _logger.LogInformation("User {UserId} has already used trial for product {ProductId}, disabling trial", userId, product.Id);
+                    enableTrial = false;
+                }
+            }
+            
+            // For LemonSqueezy subscriptions, pass the discount code and trial options to their checkout
+            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true, validatedDiscount, enableTrial, trialLengthDays);
         }
 
         private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)

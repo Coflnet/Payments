@@ -48,4 +48,13 @@ public class TopUpOptions
     /// </summary>
     [MaxLength(50)]
     public string DiscountCode { get; set; }
+    /// <summary>
+    /// Whether to enable free trial for subscription. Defaults to false.
+    /// Trials are limited to 3 days maximum and can only be used once per user/product.
+    /// </summary>
+    public bool EnableTrial { get; set; } = false;
+    /// <summary>
+    /// Trial length in days (1-3). Only used if EnableTrial is true. Defaults to 3.
+    /// </summary>
+    public int TrialLengthDays { get; set; } = 3;
 }

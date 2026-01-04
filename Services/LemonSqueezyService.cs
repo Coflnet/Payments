@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.LemonSqueezy;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -18,11 +19,16 @@ public class LemonSqueezyService
     private IConfiguration config;
     private ILogger<LemonSqueezyService> logger;
     private Dictionary<string, string> variantCache = new Dictionary<string, string>();
+    private PaymentContext context;
 
-    public LemonSqueezyService(IConfiguration config, ILogger<LemonSqueezyService> logger)
+    /// <summary>
+    /// Creates a new instance of LemonSqueezyService
+    /// </summary>
+    public LemonSqueezyService(IConfiguration config, ILogger<LemonSqueezyService> logger, PaymentContext context)
     {
         this.config = config;
         this.logger = logger;
+        this.context = context;
     }
 
     /// <summary>
@@ -155,6 +161,61 @@ public class LemonSqueezyService
     private string GetVariantCacheKey(string interval, int intervalCount)
     {
         return $"{interval}_{intervalCount}";
+    }
+
+    /// <summary>
+    /// Check if a user has already used a trial for a specific product
+    /// </summary>
+    /// <param name="userId">External user ID</param>
+    /// <param name="productId">Product ID</param>
+    /// <returns>True if user has already used trial for this product</returns>
+    public async Task<bool> HasUserUsedTrialAsync(string userId, int productId)
+    {
+        var user = await context.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
+        if (user == null)
+            return false;
+
+        return await context.TrialUsages
+            .AnyAsync(t => t.UserId == user.Id && t.ProductId == productId);
+    }
+
+    /// <summary>
+    /// Record that a user has used a trial for a product
+    /// </summary>
+    /// <param name="userId">External user ID</param>
+    /// <param name="productId">Product ID</param>
+    /// <param name="externalSubscriptionId">External subscription ID from LemonSqueezy</param>
+    public async Task RecordTrialUsageAsync(string userId, int productId, string externalSubscriptionId)
+    {
+        var user = await context.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
+        if (user == null)
+        {
+            logger.LogWarning("Cannot record trial usage: user {UserId} not found", userId);
+            return;
+        }
+
+        // Check if already recorded
+        var existingUsage = await context.TrialUsages
+            .FirstOrDefaultAsync(t => t.UserId == user.Id && t.ProductId == productId);
+        
+        if (existingUsage != null)
+        {
+            logger.LogInformation("Trial usage already recorded for user {UserId} product {ProductId}", userId, productId);
+            return;
+        }
+
+        var trialUsage = new TrialUsage
+        {
+            UserId = user.Id,
+            ProductId = productId,
+            TrialStartedAt = DateTime.UtcNow,
+            ExternalSubscriptionId = externalSubscriptionId
+        };
+
+        context.TrialUsages.Add(trialUsage);
+        await context.SaveChangesAsync();
+        logger.LogInformation("Recorded trial usage for user {UserId} product {ProductId} subscription {SubscriptionId}", 
+            userId, productId, externalSubscriptionId);
     }
 
     /// <summary>
@@ -616,7 +677,7 @@ public class LemonSqueezyService
         }
     }
 
-    public async Task<TopUpIdResponse> SetupPayment(TopUpOptions options, User user, Product product, decimal eurPrice, decimal coinAmount, string variantId, bool isSubscription, ValidatedDiscount validatedDiscount = null)
+    public async Task<TopUpIdResponse> SetupPayment(TopUpOptions options, User user, Product product, decimal eurPrice, decimal coinAmount, string variantId, bool isSubscription, ValidatedDiscount validatedDiscount = null, bool enableTrial = false, int trialLengthDays = 3)
     {
         var restclient = new RestClient("https://api.lemonsqueezy.com/v1/checkouts");
         RestRequest request = CreateRequest(Method.Post);
@@ -646,6 +707,26 @@ public class LemonSqueezyService
         {
             countryCode = options.Locale.Split('-').Last().ToUpperInvariant();
         }
+
+        // Validate and cap trial length (max 3 days)
+        var effectiveTrialDays = Math.Min(Math.Max(trialLengthDays, 1), 3);
+        
+        // Build checkout_options dynamically based on whether trial is enabled
+        // skip_trial: if true, removes free trial even if product has one configured
+        // For subscriptions with trial enabled, we don't skip trial
+        // For subscriptions without trial or non-subscriptions, we skip any configured trial
+        var checkoutOptions = new Dictionary<string, object>
+        {
+            { "subscription_preview", true },
+            { "discount", !string.IsNullOrEmpty(discountCode) }
+        };
+        
+        // Only set skip_trial if this is a subscription and trial is NOT enabled
+        // (we want to skip any default product trial if the user hasn't opted into trial)
+        if (isSubscription && !enableTrial)
+        {
+            checkoutOptions["skip_trial"] = true;
+        }
         
         var createData = new
         {
@@ -662,11 +743,7 @@ public class LemonSqueezyService
                         receipt_button_text = "Go to your account",
                         description = product.Description ?? "Will be credited to your account",
                     },
-                    checkout_options = new
-                    {
-                        subscription_preview = true,
-                        discount = !string.IsNullOrEmpty(discountCode) // show discount field if code provided
-                    },
+                    checkout_options = checkoutOptions,
                     checkout_data = new
                     {
                         email = options?.UserEmail,
@@ -678,7 +755,9 @@ public class LemonSqueezyService
                             product_id = product.Id.ToString(),
                             coin_amount = ((int)coinAmount).ToString(),
                             is_subscription = isSubscription.ToString(),
-                            creator_code = creatorCodeId
+                            creator_code = creatorCodeId,
+                            enable_trial = enableTrial.ToString(),
+                            trial_length_days = effectiveTrialDays.ToString()
                         },
                     },
                     expires_at = DateTime.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")
