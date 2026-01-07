@@ -308,15 +308,12 @@ public class SubscriptionService
             throw new ApiException("Subscription grace period has expired and cannot be resumed");
         }
         
-        var success = await lemonSqueezyService.ResumeSubscription(subscription.ExternalId);
+        await lemonSqueezyService.ResumeSubscription(subscription.ExternalId);
         
-        if (success)
-        {
-            subscription.Status = "active";
-            await context.SaveChangesAsync();
-        }
+        subscription.Status = "active";
+        await context.SaveChangesAsync();
         
-        return success;
+        return true;
     }
 
     /// <summary>

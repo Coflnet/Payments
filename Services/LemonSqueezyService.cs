@@ -451,7 +451,7 @@ public class LemonSqueezyService
         {
             logger.LogWarning("Failed to resume subscription {SubscriptionId}: {StatusCode} {Content}", 
                 subscriptionId, response.StatusCode, response.Content);
-            return false;
+            throw new ApiException($"Failed to resume subscription {subscriptionId}: {response.StatusCode} {response.Content}");
         }
         
         logger.LogInformation("Successfully resumed subscription {SubscriptionId}", subscriptionId);
