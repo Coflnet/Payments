@@ -383,7 +383,7 @@ namespace Payments.Controllers
             }
             
             // For LemonSqueezy subscriptions, pass the discount code and trial options to their checkout
-            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true, validatedDiscount, enableTrial, trialLengthDays);
+            return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true, validatedDiscount, enableTrial:enableTrial, trialLengthDays);
         }
 
         private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)
