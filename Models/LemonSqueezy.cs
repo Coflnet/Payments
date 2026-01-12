@@ -261,6 +261,8 @@ public class Attributes
     public DateTime? EndsAt { get; set; }
     [JsonPropertyName("trial_ends_at")]
     public DateTime? TrialEndsAt { get; set; }
+    [JsonPropertyName("payment_processor")]
+    public string PaymentProcessor { get; set; }
 }
 
 

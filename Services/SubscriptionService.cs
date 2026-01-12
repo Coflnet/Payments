@@ -90,6 +90,16 @@ public class SubscriptionService
         {
             await HandleTrialSubscription(webhook, subscription, product);
         }
+        // Handle PayPal subscriptions: PayPal doesn't send subscription_payment_success webhooks when order is created
+        // so we need to treat subscription_created with PayPal payment processor as a payment event
+        else if (webhook.Meta.EventName == "subscription_created" 
+            && attributes.Status == "active" 
+            && attributes.PaymentProcessor?.Equals("paypal", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            logger.LogInformation("PayPal subscription created for user {UserId} product {ProductId}, treating as payment", 
+                userId, webhook.Meta.CustomData.ProductId);
+            await TryExtendSubscription(webhook);
+        }
         
         await context.SaveChangesAsync();
         if(subscription.Status == "expired")

@@ -23,6 +23,7 @@ public class SubscriptionServiceTests
     private TransactionService transactionService;
     private LemonSqueezyService lemonSqueezyService;
     private ProductService productService;
+    private GroupService groupService;
 
     [SetUp]
     public async Task Setup()
@@ -58,10 +59,12 @@ public class SubscriptionServiceTests
             NullLogger<LemonSqueezyService>.Instance,
             context);
         
+        groupService = new GroupService(NullLogger<GroupService>.Instance, context);
+        
         productService = new ProductService(
             NullLogger<ProductService>.Instance, 
             context, 
-            null);
+            groupService);
 
         subscriptionService = new SubscriptionService(
             NullLogger<SubscriptionService>.Instance,
@@ -94,6 +97,9 @@ public class SubscriptionServiceTests
         context.Products.Add(revertProduct);
 
         await context.SaveChangesAsync();
+        
+        // Set up group for the product so ownership can be extended
+        await groupService.AddProductToGroup(topup, topup.Slug);
     }
 
     [TearDown]
@@ -327,6 +333,105 @@ public class SubscriptionServiceTests
         Assert.That(subscription.TrialUsedAt, Is.Not.Null);
     }
 
+    /// <summary>
+    /// Test that PayPal subscription_created event grants ownership when there's no subscription_payment_success webhook.
+    /// This is a regression test for the issue where PayPal subscriptions were not crediting ownership 
+    /// because PayPal doesn't send subscription_payment_success webhooks.
+    /// 
+    /// Sample anonymized webhook data:
+    /// {
+    ///   "meta": {
+    ///     "test_mode": false,
+    ///     "event_name": "subscription_created",
+    ///     "custom_data": {
+    ///       "user_id": "{{USER_ID}}",
+    ///       "product_id": "{{PRODUCT_ID}}",
+    ///       "coin_amount": "1800",
+    ///       "enable_trial": "False",
+    ///       "is_subscription": "True",
+    ///       "trial_length_days": "3"
+    ///     },
+    ///     "webhook_id": "{{WEBHOOK_UUID}}"
+    ///   },
+    ///   "data": {
+    ///     "type": "subscriptions",
+    ///     "id": "{{SUBSCRIPTION_ID}}",
+    ///     "attributes": {
+    ///       "store_id": {{STORE_ID}},
+    ///       "customer_id": {{CUSTOMER_ID}},
+    ///       "order_id": {{ORDER_ID}},
+    ///       "product_name": "Monthly premium",
+    ///       "status": "active",
+    ///       "payment_processor": "paypal",
+    ///       "renews_at": "{{RENEWS_AT}}",
+    ///       "created_at": "{{CREATED_AT}}",
+    ///       "updated_at": "{{UPDATED_AT}}"
+    ///     }
+    ///   }
+    /// }
+    /// </summary>
+    [Test]
+    public async Task PayPalSubscriptionCreated_GrantsOwnership_WhenNoPaymentSuccessWebhook()
+    {
+        // Arrange
+        var user = await userService.GetOrCreate("test-user-paypal-sub");
+        var product = await context.TopUpProducts.FirstAsync();
+        var initialBalance = user.Balance;
+        var renewsAt = DateTime.UtcNow.AddDays(30);
+        
+        // Create a PayPal subscription_created webhook (simulating what LemonSqueezy sends for PayPal subscriptions)
+        var webhook = CreatePayPalSubscriptionCreatedWebhook(user.ExternalId, product.Id, renewsAt);
+
+        // Act
+        await subscriptionService.UpdateSubscription(webhook);
+
+        // Assert - User should have ownership
+        var ownership = await context.OwnerShips
+            .Where(o => o.User.ExternalId == user.ExternalId && o.Product.Slug == product.Slug)
+            .FirstOrDefaultAsync();
+        Assert.That(ownership, Is.Not.Null, "User should have ownership record after PayPal subscription_created");
+        Assert.That(ownership.Expires, Is.GreaterThan(DateTime.UtcNow), "Ownership should not be expired");
+        
+        // User should have subscription record
+        var subscription = await context.Subscriptions
+            .Where(s => s.User.ExternalId == user.ExternalId && s.Product.Id == product.Id)
+            .FirstOrDefaultAsync();
+        Assert.That(subscription, Is.Not.Null);
+        Assert.That(subscription.Status, Is.EqualTo("active"));
+    }
+
+    /// <summary>
+    /// Test that non-PayPal subscription_created events do NOT automatically grant ownership
+    /// (they should wait for subscription_payment_success webhook)
+    /// </summary>
+    [Test]
+    public async Task NonPayPalSubscriptionCreated_DoesNotGrantOwnership_WaitsForPaymentWebhook()
+    {
+        // Arrange
+        var user = await userService.GetOrCreate("test-user-stripe-sub");
+        var product = await context.TopUpProducts.FirstAsync();
+        var renewsAt = DateTime.UtcNow.AddDays(30);
+        
+        // Create a subscription_created webhook without PayPal payment processor (e.g., Stripe/card)
+        var webhook = CreateNonPayPalSubscriptionCreatedWebhook(user.ExternalId, product.Id, renewsAt);
+
+        // Act
+        await subscriptionService.UpdateSubscription(webhook);
+
+        // Assert - User should NOT have ownership yet (waiting for payment webhook)
+        var ownership = await context.OwnerShips
+            .Where(o => o.User.ExternalId == user.ExternalId && o.Product.Slug == product.Slug)
+            .FirstOrDefaultAsync();
+        Assert.That(ownership, Is.Null, "Non-PayPal subscription should wait for subscription_payment_success webhook");
+        
+        // But subscription record should exist
+        var subscription = await context.Subscriptions
+            .Where(s => s.User.ExternalId == user.ExternalId && s.Product.Id == product.Id)
+            .FirstOrDefaultAsync();
+        Assert.That(subscription, Is.Not.Null);
+        Assert.That(subscription.Status, Is.EqualTo("active"));
+    }
+
     #region Helper Methods
 
     private Webhook CreateTrialSubscriptionWebhook(string userId, int productId, DateTime trialEndsAt, string subscriptionId = "test-sub-123")
@@ -422,6 +527,113 @@ public class SubscriptionServiceTests
         );
         attrs.TrialEndsAt = trialEndsAt;
         return attrs;
+    }
+
+    /// <summary>
+    /// Creates a PayPal subscription_created webhook similar to what LemonSqueezy sends.
+    /// PayPal subscriptions are unique in that they don't send subscription_payment_success webhooks,
+    /// so the subscription_created event with status "active" indicates successful payment.
+    /// 
+    /// Sample anonymized data structure:
+    /// - event_name: subscription_created
+    /// - status: active
+    /// - payment_processor: paypal
+    /// </summary>
+    private Webhook CreatePayPalSubscriptionCreatedWebhook(string userId, int productId, DateTime renewsAt, string subscriptionId = "paypal-sub-123")
+    {
+        var customData = new CustomData(userId, productId, 1800, "True");
+        var meta = new Meta(false, "subscription_created", customData);
+        var attributes = new Attributes(
+            storeId: 12595,
+            customerId: 7539567,
+            identifier: "{{ORDER_IDENTIFIER}}",
+            orderNumber: 7249373,
+            userName: "{{USER_NAME}}",
+            userEmail: "{{USER_EMAIL}}",
+            currency: "EUR",
+            currencyRate: "1.16868030",
+            taxName: "VAT",
+            taxRate: 19,
+            status: "active",
+            statusFormatted: "Active",
+            refunded: false,
+            refundedAt: null,
+            subtotal: 969,
+            discountTotal: 0,
+            tax: 184,
+            total: 1153,
+            subtotalUsd: 1132,
+            discountTotalUsd: 0,
+            taxUsd: 215,
+            totalUsd: 1347,
+            subtotalFormatted: "€9.69",
+            discountTotalFormatted: "€0.00",
+            taxFormatted: "€1.84",
+            totalFormatted: "€11.53",
+            firstOrderItem: null,
+            urls: null,
+            createdAt: DateTime.UtcNow,
+            updatedAt: DateTime.UtcNow,
+            testMode: false,
+            subscriptionId: 0,
+            renewsAt: renewsAt,
+            endsAt: null
+        );
+        // Set PayPal as the payment processor - this is the key difference from other payment methods
+        attributes.PaymentProcessor = "paypal";
+        var data = new Data("subscriptions", subscriptionId, attributes, null, null);
+        return new Webhook(meta, data);
+    }
+
+    /// <summary>
+    /// Creates a non-PayPal (e.g., Stripe/card) subscription_created webhook.
+    /// These subscriptions WILL receive a separate subscription_payment_success webhook,
+    /// so we should not grant ownership from subscription_created alone.
+    /// </summary>
+    private Webhook CreateNonPayPalSubscriptionCreatedWebhook(string userId, int productId, DateTime renewsAt, string subscriptionId = "stripe-sub-123")
+    {
+        var customData = new CustomData(userId, productId, 1800, "True");
+        var meta = new Meta(false, "subscription_created", customData);
+        var attributes = new Attributes(
+            storeId: 12595,
+            customerId: 7539567,
+            identifier: "{{ORDER_IDENTIFIER}}",
+            orderNumber: 7249373,
+            userName: "{{USER_NAME}}",
+            userEmail: "{{USER_EMAIL}}",
+            currency: "EUR",
+            currencyRate: "1.16868030",
+            taxName: "VAT",
+            taxRate: 19,
+            status: "active",
+            statusFormatted: "Active",
+            refunded: false,
+            refundedAt: null,
+            subtotal: 969,
+            discountTotal: 0,
+            tax: 184,
+            total: 1153,
+            subtotalUsd: 1132,
+            discountTotalUsd: 0,
+            taxUsd: 215,
+            totalUsd: 1347,
+            subtotalFormatted: "€9.69",
+            discountTotalFormatted: "€0.00",
+            taxFormatted: "€1.84",
+            totalFormatted: "€11.53",
+            firstOrderItem: null,
+            urls: null,
+            createdAt: DateTime.UtcNow,
+            updatedAt: DateTime.UtcNow,
+            testMode: false,
+            subscriptionId: 0,
+            renewsAt: renewsAt,
+            endsAt: null
+        );
+        // No payment processor set, or could be set to "stripe" - NOT paypal
+        attributes.PaymentProcessor = null;
+        var data = new Data("subscriptions", subscriptionId, attributes, null, null);
+        return new Webhook(meta, data);
     }
 
     #endregion
