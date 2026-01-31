@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.GooglePay;
+using Coflnet.Payments.Models.CoinGate;
 using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
@@ -43,6 +44,7 @@ namespace Payments.Controllers
         private readonly Coflnet.Payments.Services.ProductService productService;
         private readonly GooglePayController _googlePayController;
         private readonly CreatorCodeService _creatorCodeService;
+        private readonly CoinGateService _coinGateService;
 
         public CallbackController(
             IConfiguration config,
@@ -55,7 +57,8 @@ namespace Payments.Controllers
             ILogger<GooglePayController> googlePayLogger,
             GooglePlayService googlePlayService,
             Coflnet.Payments.Services.ProductService productService,
-            CreatorCodeService creatorCodeService)
+            CreatorCodeService creatorCodeService,
+            CoinGateService coinGateService)
         {
             _logger = logger;
             db = context;
@@ -66,6 +69,7 @@ namespace Payments.Controllers
             this.paymentEventProducer = paymentEventProducer;
             this.subscriptionService = subscriptionService;
             this._creatorCodeService = creatorCodeService;
+            this._coinGateService = coinGateService;
             this.googlePlayService = googlePlayService;
             this.productService = productService;
             // instantiate GooglePayController to reuse its verification logic and keep a single implementation
@@ -315,6 +319,161 @@ namespace Payments.Controllers
                 return StatusCode(500);
             }
             return Ok();
+        }
+
+        /// <summary>
+        /// Webhook callback for CoinGate cryptocurrency payments
+        /// </summary>
+        /// <param name="userId">User ID from callback URL</param>
+        /// <param name="productId">Product ID from callback URL</param>
+        /// <param name="coinAmount">Coin amount from callback URL</param>
+        /// <returns>Status result</returns>
+        [HttpPost]
+        [Route("coingate")]
+        public async Task<IActionResult> CoinGate(
+            [FromQuery] string userId, 
+            [FromQuery] int productId, 
+            [FromQuery] decimal coinAmount)
+        {
+            _logger.LogInformation("Received callback from CoinGate for user {UserId}, product {ProductId}", userId, productId);
+
+            var syncIOFeature = HttpContext.Features.Get<IHttpBodyControlFeature>();
+            if (syncIOFeature != null)
+            {
+                syncIOFeature.AllowSynchronousIO = true;
+            }
+
+            string json = "";
+            try
+            {
+                json = await new StreamReader(Request.Body).ReadToEndAsync();
+                _logger.LogInformation("CoinGate callback body: {Body}", json);
+
+                if (string.IsNullOrEmpty(json))
+                {
+                    _logger.LogWarning("CoinGate callback received empty body");
+                    return BadRequest("Empty request body");
+                }
+
+                // Parse the callback data
+                CoinGateCallback callback;
+                
+                // CoinGate can send data as form-encoded or JSON depending on API App configuration
+                if (Request.ContentType?.Contains("application/json") == true)
+                {
+                    callback = System.Text.Json.JsonSerializer.Deserialize<CoinGateCallback>(json, new System.Text.Json.JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    });
+                }
+                else
+                {
+                    // Parse form-encoded data
+                    var formData = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(json);
+                    callback = new CoinGateCallback
+                    {
+                        Id = long.Parse(formData["id"].ToString()),
+                        OrderId = formData["order_id"].ToString(),
+                        Status = formData["status"].ToString(),
+                        PriceAmount = decimal.Parse(formData["price_amount"].ToString()),
+                        PriceCurrency = formData["price_currency"].ToString(),
+                        ReceiveCurrency = formData.ContainsKey("receive_currency") ? formData["receive_currency"].ToString() : null,
+                        ReceiveAmount = formData.ContainsKey("receive_amount") && decimal.TryParse(formData["receive_amount"].ToString(), out var ra) ? ra : null,
+                        PayAmount = formData.ContainsKey("pay_amount") && decimal.TryParse(formData["pay_amount"].ToString(), out var pa) ? pa : null,
+                        PayCurrency = formData.ContainsKey("pay_currency") ? formData["pay_currency"].ToString() : null,
+                        Token = formData.ContainsKey("token") ? formData["token"].ToString() : null,
+                        CreatedAt = DateTime.TryParse(formData["created_at"].ToString(), out var ca) ? ca : DateTime.UtcNow
+                    };
+                }
+
+                _logger.LogInformation("CoinGate callback parsed: OrderId={OrderId}, Status={Status}, Amount={Amount} {Currency}", 
+                    callback.OrderId, callback.Status, callback.PriceAmount, callback.PriceCurrency);
+
+                // Verify the callback by fetching the order from CoinGate API
+                var isValid = await _coinGateService.VerifyCallback(callback, userId, productId, coinAmount);
+                if (!isValid)
+                {
+                    _logger.LogWarning("CoinGate callback verification failed for order {OrderId}", callback.OrderId);
+                    return StatusCode(400, "Callback verification failed");
+                }
+
+                // Process based on status
+                switch (callback.Status)
+                {
+                    case CoinGateOrderStatus.Paid:
+                        _logger.LogInformation("CoinGate payment completed for order {OrderId}, user {UserId}", callback.OrderId, userId);
+                        
+                        try
+                        {
+                            // Use the CoinGate order ID as the transaction reference
+                            var reference = $"coingate:{callback.Id}";
+                            await transactionService.AddTopUp(productId, userId, reference, (int)coinAmount);
+
+                            // Send payment event
+                            await paymentEventProducer.ProduceEvent(new PaymentEvent
+                            {
+                                PayedAmount = (double)callback.PriceAmount,
+                                ProductId = productId.ToString(),
+                                UserId = userId,
+                                Currency = callback.PriceCurrency,
+                                PaymentMethod = callback.PayCurrency ?? "crypto",
+                                PaymentProvider = "coingate",
+                                PaymentProviderTransactionId = callback.Id.ToString(),
+                                Timestamp = callback.CreatedAt
+                            });
+
+                            _logger.LogInformation("CoinGate topup processed successfully: {OrderId}, {Amount} coins for user {UserId}", 
+                                callback.OrderId, coinAmount, userId);
+                        }
+                        catch (TransactionService.DupplicateTransactionException)
+                        {
+                            _logger.LogInformation("CoinGate duplicate transaction for order {OrderId}", callback.OrderId);
+                            // Already processed, return success
+                        }
+                        break;
+
+                    case CoinGateOrderStatus.Confirming:
+                    case CoinGateOrderStatus.Pending:
+                        _logger.LogInformation("CoinGate payment pending/confirming for order {OrderId}", callback.OrderId);
+                        // Payment is in progress, nothing to do yet
+                        break;
+
+                    case CoinGateOrderStatus.Expired:
+                    case CoinGateOrderStatus.Canceled:
+                        _logger.LogInformation("CoinGate payment {Status} for order {OrderId}", callback.Status, callback.OrderId);
+                        // Payment was not completed
+                        break;
+
+                    case CoinGateOrderStatus.Invalid:
+                        _logger.LogWarning("CoinGate payment invalid for order {OrderId}", callback.OrderId);
+                        // Payment failed or was underpaid
+                        break;
+
+                    case CoinGateOrderStatus.Refunded:
+                        _logger.LogInformation("CoinGate payment refunded for order {OrderId}, reverting transaction", callback.OrderId);
+                        try
+                        {
+                            var reference = $"coingate:{callback.Id}";
+                            await RevertTopUpWithReference(reference);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Failed to revert CoinGate transaction for order {OrderId}", callback.OrderId);
+                        }
+                        break;
+
+                    default:
+                        _logger.LogWarning("CoinGate unknown status {Status} for order {OrderId}", callback.Status, callback.OrderId);
+                        break;
+                }
+
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "CoinGate callback processing failed. Body: {Body}", json);
+                return StatusCode(500);
+            }
         }
 
         private async Task RevertSubscriptionPayment(Webhook webhook)

@@ -16,6 +16,7 @@ using PayPalCheckoutSdk.Orders;
 using PayPalHttp;
 using RestSharp;
 using Stripe.Checkout;
+using Coflnet.Payments.Models.CoinGate;
 
 namespace Payments.Controllers
 {
@@ -35,6 +36,7 @@ namespace Payments.Controllers
         private readonly PayPalHttpClient paypalClient;
         private readonly LemonSqueezyService lemonSqueezyService;
         private readonly CreatorCodeService creatorCodeService;
+        private readonly CoinGateService coinGateService;
 
         /// <summary>
         /// Creates a new instance of the <see cref="TopUpController"/> class
@@ -47,7 +49,8 @@ namespace Payments.Controllers
             UserService userService,
             PayPalHttpClient paypalClient,
             LemonSqueezyService lemonSqueezyService,
-            CreatorCodeService creatorCodeService)
+            CreatorCodeService creatorCodeService,
+            CoinGateService coinGateService)
         {
             _logger = logger;
             db = context;
@@ -58,6 +61,7 @@ namespace Payments.Controllers
             this.transactionService = transactionService;
             this.lemonSqueezyService = lemonSqueezyService;
             this.creatorCodeService = creatorCodeService;
+            this.coinGateService = coinGateService;
         }
 
         /// <summary>
@@ -384,6 +388,45 @@ namespace Payments.Controllers
             
             // For LemonSqueezy subscriptions, pass the discount code and trial options to their checkout
             return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true, validatedDiscount, enableTrial:enableTrial, trialLengthDays);
+        }
+
+        /// <summary>
+        /// Creates a cryptocurrency payment session with CoinGate
+        /// </summary>
+        /// <param name="userId">The user ID</param>
+        /// <param name="productId">The product ID to purchase</param>
+        /// <param name="options">Additional topup options</param>
+        /// <returns>Payment session with redirect URL</returns>
+        [HttpPost]
+        [Route("coingate")]
+        public async Task<TopUpIdResponse> CreateCoinGate(string userId, string productId, [FromBody] TopUpOptions options = null)
+        {
+            var user = await userService.GetOrCreate(userId);
+            AssertUserCountry(options);
+            var product = await GetTopupProduct(productId, "coingate");
+            
+            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product);
+            
+            // Apply discount to the price if provided
+            if (validatedDiscount != null && validatedDiscount.IsValid)
+            {
+                eurPrice = validatedDiscount.CalculateDiscountedPrice(eurPrice);
+                _logger.LogInformation("Applied discount code {Code} to CoinGate checkout. New price: {Price}", 
+                    validatedDiscount.Code, eurPrice);
+            }
+
+            if (user.Locale == null && options?.UserIp != null)
+            {
+                user.Locale = options?.Locale;
+                user.Ip = System.Net.IPAddress.Parse(options.UserIp).ToString();
+                user.Country = options?.Locale?.Split('-').Last();
+                await db.SaveChangesAsync();
+            }
+
+            _logger.LogInformation("Creating CoinGate payment for user {UserId} product {ProductId} amount {Amount}", 
+                user.ExternalId, productId, eurPrice);
+
+            return await coinGateService.CreateOrder(user, product, eurPrice, coinAmount, options);
         }
 
         private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)

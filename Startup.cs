@@ -86,6 +86,7 @@ namespace Coflnet.Payments
             services.AddScoped<LicenseService>();
             services.AddScoped<GroupService>();
             services.AddScoped<CreatorCodeService>();
+            services.AddScoped<CoinGateService>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))
             {
