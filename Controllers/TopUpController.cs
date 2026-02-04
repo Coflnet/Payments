@@ -368,9 +368,6 @@ namespace Payments.Controllers
                 throw new ApiException("Product is not a service, can't be subscribed to");
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true);
             
-            // Use the variant discovery service to get the correct variant ID based on subscription duration
-            var variantId = lemonSqueezyService.GetVariantId((int)product.OwnershipSeconds);
-            
             // Handle trial options - validate user hasn't already used trial for this product
             bool enableTrial = options?.EnableTrial ?? false;
             int trialLengthDays = Math.Min(Math.Max(options?.TrialLengthDays ?? 3, 1), 3); // Cap at 3 days
@@ -384,6 +381,25 @@ namespace Payments.Controllers
                     _logger.LogInformation("User {UserId} has already used trial for product {ProductId}, disabling trial", userId, product.Id);
                     enableTrial = false;
                 }
+            }
+            
+            // Use smart variant selection - prioritize trial preference, then best price match
+            // This allows using variants without trial for PayPal (workaround for LemonSqueezy bug)
+            var targetPriceCents = (int)(eurPrice * 100);
+            var bestVariant = lemonSqueezyService.GetBestVariant((int)product.OwnershipSeconds, enableTrial, targetPriceCents);
+            
+            string variantId;
+            if (bestVariant != null)
+            {
+                variantId = bestVariant.VariantId;
+                _logger.LogInformation("Using best matching variant: {VariantName} (ID: {VariantId}) HasTrial: {HasTrial} Price: {Price}",
+                    bestVariant.VariantName, bestVariant.VariantId, bestVariant.HasFreeTrial, bestVariant.Price);
+            }
+            else
+            {
+                // Fallback to legacy variant selection
+                variantId = lemonSqueezyService.GetVariantId((int)product.OwnershipSeconds);
+                _logger.LogWarning("No matching variant found via GetBestVariant, falling back to GetVariantId: {VariantId}", variantId);
             }
             
             // For LemonSqueezy subscriptions, pass the discount code and trial options to their checkout

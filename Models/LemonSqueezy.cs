@@ -2,6 +2,67 @@ using System.Text.Json.Serialization;
 
 namespace Coflnet.Payments.Models.LemonSqueezy;
 
+/// <summary>
+/// Cached variant information for intelligent variant selection
+/// </summary>
+public class VariantInfo
+{
+    /// <summary>
+    /// The LemonSqueezy variant ID
+    /// </summary>
+    public string VariantId { get; set; }
+    
+    /// <summary>
+    /// Product name for logging
+    /// </summary>
+    public string ProductName { get; set; }
+    
+    /// <summary>
+    /// Variant name (e.g., "Monthly - No Trial", "Monthly - With Trial")
+    /// </summary>
+    public string VariantName { get; set; }
+    
+    /// <summary>
+    /// Price in cents
+    /// </summary>
+    public int Price { get; set; }
+    
+    /// <summary>
+    /// Whether this variant has a free trial configured
+    /// </summary>
+    public bool HasFreeTrial { get; set; }
+    
+    /// <summary>
+    /// Trial interval unit (e.g., "day", "week")
+    /// </summary>
+    public string TrialInterval { get; set; }
+    
+    /// <summary>
+    /// Number of trial interval units
+    /// </summary>
+    public int TrialIntervalCount { get; set; }
+    
+    /// <summary>
+    /// Subscription interval unit (e.g., "week", "month", "year")
+    /// </summary>
+    public string Interval { get; set; }
+    
+    /// <summary>
+    /// Number of subscription interval units (e.g., 4 weeks, 1 month)
+    /// </summary>
+    public int IntervalCount { get; set; }
+    
+    /// <summary>
+    /// Whether this is a subscription variant
+    /// </summary>
+    public bool IsSubscription { get; set; }
+    
+    /// <summary>
+    /// Product ID in LemonSqueezy
+    /// </summary>
+    public int ProductId { get; set; }
+}
+
 // Product API models for variant discovery
 public class ProductListResponse
 {
@@ -67,6 +128,18 @@ public class VariantAttributes
     
     [JsonPropertyName("product_id")]
     public int ProductId { get; set; }
+    
+    [JsonPropertyName("has_free_trial")]
+    public bool HasFreeTrial { get; set; }
+    
+    [JsonPropertyName("trial_interval")]
+    public string TrialInterval { get; set; }
+    
+    [JsonPropertyName("trial_interval_count")]
+    public int TrialIntervalCount { get; set; }
+    
+    [JsonPropertyName("status")]
+    public string Status { get; set; }
 }
 
 public class MetaData
