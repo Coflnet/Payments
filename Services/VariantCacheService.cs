@@ -99,26 +99,40 @@ public class VariantCacheService
     /// <summary>
     /// Get the best variant for a subscription based on duration, trial preference, and price.
     /// Prioritizes trial preference (with/without trial), then selects the best price match.
+    /// Rounds ownership duration to nearest 12-hour interval to handle buffer time in subscriptions.
     /// </summary>
     public VariantInfo GetBestVariant(int ownershipSeconds, bool enableTrial, int? targetPrice = null)
     {
-        // Determine the interval key based on ownership duration
+        // Round to nearest 12-hour interval to handle buffer time (e.g., 28 days + 3 hours should match 28 days)
+        int twelveHoursInSeconds = (int)TimeSpan.FromHours(12).TotalSeconds;
+        int roundedSeconds = (int)Math.Round((double)ownershipSeconds / twelveHoursInSeconds) * twelveHoursInSeconds;
+        
+        // Determine the interval key based on rounded ownership duration
         string intervalKey;
-        if (ownershipSeconds == (int)TimeSpan.FromDays(30).TotalSeconds)
+        int thirtyDays = (int)TimeSpan.FromDays(30).TotalSeconds;
+        int ninetyDays = (int)TimeSpan.FromDays(90).TotalSeconds;
+        int threeSixtyFiveDays = (int)TimeSpan.FromDays(365).TotalSeconds;
+        
+        // Use 3-day tolerance to handle variations like 28 days matching to 30 days (4 weeks)
+        // This handles cases where products have buffer time or slightly different durations
+        int tolerance = (int)TimeSpan.FromDays(3).TotalSeconds;
+        
+        if (Math.Abs(roundedSeconds - thirtyDays) <= tolerance)
         {
             intervalKey = "week_4";
         }
-        else if (ownershipSeconds == (int)TimeSpan.FromDays(90).TotalSeconds)
+        else if (Math.Abs(roundedSeconds - ninetyDays) <= tolerance)
         {
             intervalKey = "month_3";
         }
-        else if (ownershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
+        else if (Math.Abs(roundedSeconds - threeSixtyFiveDays) <= tolerance)
         {
             intervalKey = "year_1";
         }
         else
         {
-            logger.LogWarning("Unknown ownership duration {Seconds} seconds, cannot find best variant", ownershipSeconds);
+            logger.LogWarning("Unknown ownership duration {Seconds} seconds (rounded to {RoundedSeconds}), cannot find best variant", 
+                ownershipSeconds, roundedSeconds);
             return null;
         }
 

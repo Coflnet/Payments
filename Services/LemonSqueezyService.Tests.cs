@@ -309,4 +309,31 @@ public class LemonSqueezyServiceTests
         Assert.That(result.VariantId, Is.EqualTo("3"), "Should select closest lower price (2400)");
         Assert.That(result.Price, Is.EqualTo(2400));
     }
-}
+
+    /// <summary>
+    /// Tests that GetBestVariant correctly handles ownership durations with buffer time.
+    /// For example, 28 days + 3 hours (2430000 seconds) should match 28-day (week_4) variants.
+    /// This handles the case where subscriptions have extra time to avoid service interruptions.
+    /// </summary>
+    [Test]
+    public void GetBestVariant_HandlesBufferTime_InOwnershipDuration()
+    {
+        // Arrange
+        var variantsWeek4 = new List<VariantInfo>
+        {
+            new VariantInfo { VariantId = "1", Price = 3500, HasFreeTrial = false, Interval = "week", IntervalCount = 4, IsSubscription = true }
+        };
+
+        cacheService.AddVariantInfo("week_4", variantsWeek4[0]);
+
+        // Act - 2430000 seconds is 28 days + 3 hours (buffer time for renewals)
+        // This should round to 28 days and match week_4 interval
+        int ownershipWithBuffer = 2430000; // 28.125 days
+        var result = service.GetBestVariant(ownershipWithBuffer, enableTrial: false, targetPrice: 3500);
+
+        // Assert
+        Assert.That(result, Is.Not.Null, "Should find variant despite buffer time in ownership duration");
+        Assert.That(result.VariantId, Is.EqualTo("1"));
+        Assert.That(result.Interval, Is.EqualTo("week"));
+        Assert.That(result.IntervalCount, Is.EqualTo(4));
+    }}
