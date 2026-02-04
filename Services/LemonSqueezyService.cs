@@ -18,22 +18,18 @@ public class LemonSqueezyService
 {
     private IConfiguration config;
     private ILogger<LemonSqueezyService> logger;
-    private Dictionary<string, string> variantCache = new Dictionary<string, string>();
-    /// <summary>
-    /// Enhanced variant cache storing full variant info keyed by interval (e.g., "week_4")
-    /// Each key maps to a list of variants (with/without trial, different prices)
-    /// </summary>
-    private Dictionary<string, List<VariantInfo>> variantInfoCache = new Dictionary<string, List<VariantInfo>>();
     private PaymentContext context;
+    private VariantCacheService variantCache;
 
     /// <summary>
     /// Creates a new instance of LemonSqueezyService
     /// </summary>
-    public LemonSqueezyService(IConfiguration config, ILogger<LemonSqueezyService> logger, PaymentContext context)
+    public LemonSqueezyService(IConfiguration config, ILogger<LemonSqueezyService> logger, PaymentContext context, VariantCacheService variantCache)
     {
         this.config = config;
         this.logger = logger;
         this.context = context;
+        this.variantCache = variantCache;
     }
 
     /// <summary>
@@ -99,7 +95,7 @@ public class LemonSqueezyService
                     continue;
 
                 // Process subscription variants - store full variant info for intelligent selection
-                foreach (var variant in variants.Data.Where(v => v.Attributes.IsSubscription && v.Attributes.Status == "published"))
+                foreach (var variant in variants.Data.Where(v => v.Attributes.IsSubscription))
                 {
                     var attrs = variant.Attributes;
                     var key = GetVariantCacheKey(attrs.Interval, attrs.IntervalCount);
@@ -112,29 +108,19 @@ public class LemonSqueezyService
                         VariantName = attrs.Name,
                         Price = attrs.Price,
                         HasFreeTrial = attrs.HasFreeTrial,
-                        TrialInterval = attrs.TrialInterval,
-                        TrialIntervalCount = attrs.TrialIntervalCount,
                         Interval = attrs.Interval,
                         IntervalCount = attrs.IntervalCount,
                         IsSubscription = attrs.IsSubscription,
                         ProductId = attrs.ProductId
                     };
 
-                    // Add to enhanced cache (list of variants per interval)
-                    if (!variantInfoCache.ContainsKey(key))
-                    {
-                        variantInfoCache[key] = new List<VariantInfo>();
-                    }
-                    variantInfoCache[key].Add(variantInfo);
+                    // Add to variant cache service
+                    variantCache.AddVariantInfo(key, variantInfo);
 
                     // For backward compatibility, also update simple cache with first non-trial variant
-                    // or first variant if no non-trial exists
-                    if (!variantCache.ContainsKey(key) || !attrs.HasFreeTrial)
+                    if (!attrs.HasFreeTrial)
                     {
-                        if (!variantCache.ContainsKey(key) || !attrs.HasFreeTrial)
-                        {
-                            variantCache[key] = variant.Id;
-                        }
+                        variantCache.AddSimpleVariant(key, variant.Id);
                     }
 
                     logger.LogInformation("Discovered variant: {ProductName} - {VariantName} ({Interval} x {Count}) Price: {Price} Trial: {HasTrial} = ID {VariantId}",
@@ -142,19 +128,18 @@ public class LemonSqueezyService
                 }
 
                 // Process non-subscription variants (regular top-up)
-                var regularVariant = variants.Data.FirstOrDefault(v => !v.Attributes.IsSubscription && v.Attributes.Status == "published");
+                var regularVariant = variants.Data.FirstOrDefault(v => !v.Attributes.IsSubscription);
                 if (regularVariant != null)
                 {
-                    variantCache["regular"] = regularVariant.Id;
+                    variantCache.AddSimpleVariant("regular", regularVariant.Id);
                     logger.LogInformation("Discovered regular variant: {ProductName} = ID {VariantId}",
                         product.Attributes.Name, regularVariant.Id);
                 }
             }
 
+            var stats = variantCache.GetStats();
             logger.LogInformation("Variant discovery complete. Cached {SimpleCount} simple variants, {EnhancedCount} interval groups with {TotalVariants} total variants",
-                variantCache.Count,
-                variantInfoCache.Count,
-                variantInfoCache.Values.Sum(v => v.Count));
+                stats.SimpleVariants, stats.IntervalGroups, stats.TotalVariants);
         }
         catch (Exception ex)
         {
@@ -172,17 +157,17 @@ public class LemonSqueezyService
         // Try cache first
         if (ownershipSeconds == (int)TimeSpan.FromDays(30).TotalSeconds)
         {
-            if (variantCache.TryGetValue("week_4", out var monthlyId))
+            if (variantCache.TryGetSimpleVariant("week_4", out var monthlyId))
                 return monthlyId;
         }
         else if (ownershipSeconds == (int)TimeSpan.FromDays(90).TotalSeconds)
         {
-            if (variantCache.TryGetValue("month_3", out var quarterlyId))
+            if (variantCache.TryGetSimpleVariant("month_3", out var quarterlyId))
                 return quarterlyId;
         }
         else if (ownershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
         {
-            if (variantCache.TryGetValue("year_1", out var yearlyId))
+            if (variantCache.TryGetSimpleVariant("year_1", out var yearlyId))
                 return yearlyId;
         }
 
@@ -202,106 +187,11 @@ public class LemonSqueezyService
 
     /// <summary>
     /// Get the best variant for a subscription based on duration, trial preference, and price.
-    /// Prioritizes trial preference (with/without trial), then selects the best price match.
+    /// Delegates to VariantCacheService for actual selection logic.
     /// </summary>
-    /// <param name="ownershipSeconds">Subscription duration in seconds</param>
-    /// <param name="enableTrial">Whether to prefer variants with trial enabled</param>
-    /// <param name="targetPrice">Optional target price in cents for best price matching</param>
-    /// <returns>Best matching VariantInfo, or null if no match found</returns>
     public VariantInfo GetBestVariant(int ownershipSeconds, bool enableTrial, int? targetPrice = null)
     {
-        // Determine the interval key based on ownership duration
-        string intervalKey;
-        if (ownershipSeconds == (int)TimeSpan.FromDays(30).TotalSeconds)
-        {
-            intervalKey = "week_4";
-        }
-        else if (ownershipSeconds == (int)TimeSpan.FromDays(90).TotalSeconds)
-        {
-            intervalKey = "month_3";
-        }
-        else if (ownershipSeconds == (int)TimeSpan.FromDays(365).TotalSeconds)
-        {
-            intervalKey = "year_1";
-        }
-        else
-        {
-            logger.LogWarning("Unknown ownership duration {Seconds} seconds, cannot find best variant", ownershipSeconds);
-            return null;
-        }
-
-        // Check if we have variants for this interval
-        if (!variantInfoCache.TryGetValue(intervalKey, out var variants) || variants.Count == 0)
-        {
-            logger.LogWarning("No cached variants found for interval key {Key}", intervalKey);
-            return null;
-        }
-
-        logger.LogDebug("Selecting best variant for {IntervalKey} with enableTrial={EnableTrial}, targetPrice={TargetPrice}. Found {Count} variants",
-            intervalKey, enableTrial, targetPrice, variants.Count);
-
-        // Step 1: Filter by trial preference
-        // First, try to find variants that match the trial preference exactly
-        var matchingTrialVariants = variants.Where(v => v.HasFreeTrial == enableTrial).ToList();
-        
-        // If no exact match found, use all variants (fallback)
-        var candidateVariants = matchingTrialVariants.Count > 0 ? matchingTrialVariants : variants;
-
-        if (matchingTrialVariants.Count == 0)
-        {
-            logger.LogInformation("No variants with HasFreeTrial={EnableTrial} found for {IntervalKey}, using all variants", 
-                enableTrial, intervalKey);
-        }
-
-        // Step 2: Select best price match
-        VariantInfo bestVariant;
-        if (targetPrice.HasValue && targetPrice.Value > 0)
-        {
-            // Find variant with price closest to (but not exceeding) target price
-            // Prefer exact match, then closest lower price, then closest higher price
-            var exactMatch = candidateVariants.FirstOrDefault(v => v.Price == targetPrice.Value);
-            if (exactMatch != null)
-            {
-                bestVariant = exactMatch;
-            }
-            else
-            {
-                // Find closest price - prefer lower prices that don't exceed target
-                var lowerOrEqual = candidateVariants
-                    .Where(v => v.Price <= targetPrice.Value)
-                    .OrderByDescending(v => v.Price)
-                    .FirstOrDefault();
-                
-                if (lowerOrEqual != null)
-                {
-                    bestVariant = lowerOrEqual;
-                }
-                else
-                {
-                    // No lower prices available, pick the lowest available price
-                    bestVariant = candidateVariants.OrderBy(v => v.Price).First();
-                }
-            }
-        }
-        else
-        {
-            // No target price specified - just pick first matching variant (lowest price)
-            bestVariant = candidateVariants.OrderBy(v => v.Price).First();
-        }
-
-        logger.LogInformation("Selected variant: {VariantName} (ID: {VariantId}) Price: {Price} HasTrial: {HasTrial} for {IntervalKey}",
-            bestVariant.VariantName, bestVariant.VariantId, bestVariant.Price, bestVariant.HasFreeTrial, intervalKey);
-
-        return bestVariant;
-    }
-
-    /// <summary>
-    /// Get all cached variants for debugging/admin purposes
-    /// </summary>
-    /// <returns>Dictionary of interval keys to their variant lists</returns>
-    public Dictionary<string, List<VariantInfo>> GetAllCachedVariants()
-    {
-        return new Dictionary<string, List<VariantInfo>>(variantInfoCache);
+        return variantCache.GetBestVariant(ownershipSeconds, enableTrial, targetPrice);
     }
 
     /// <summary>
@@ -930,7 +820,7 @@ public class LemonSqueezyService
         request.AddJsonBody(json);
         logger.LogInformation($"Creating lemonsqueezy checkout with: \n{json}");
         var response = await restclient.ExecuteAsync(request);
-        logger.LogInformation(response.Content);
+        logger.LogInformation(response.StatusCode + response.Content);
         var result = JsonConvert.DeserializeObject(response.Content);
         var data = JObject.Parse(result.ToString());
         var checkoutId = (string)data["data"]["id"];

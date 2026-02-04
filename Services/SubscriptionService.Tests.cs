@@ -54,10 +54,13 @@ public class SubscriptionServiceTests
         configMock.Setup(c => c["LEMONSQUEEZY:STORE_ID"]).Returns("12345");
         configMock.Setup(c => c["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"]).Returns("variant-1");
         
+        var variantCacheService = new VariantCacheService(NullLogger<VariantCacheService>.Instance);
+        
         lemonSqueezyService = new LemonSqueezyService(
             configMock.Object, 
             NullLogger<LemonSqueezyService>.Instance,
-            context);
+            context,
+            variantCacheService);
         
         groupService = new GroupService(NullLogger<GroupService>.Instance, context);
         
