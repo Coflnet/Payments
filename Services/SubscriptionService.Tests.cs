@@ -432,6 +432,47 @@ public class SubscriptionServiceTests
         Assert.That(subscription.Status, Is.EqualTo("active"));
     }
 
+    /// <summary>
+    /// Test that PayPal subscriptions don't get double-credited when both subscription_created
+    /// and subscription_payment_success (with billing_reason "initial") webhooks are received.
+    /// This is a regression test for the bug where PayPal users got 56 days instead of 28 days.
+    /// </summary>
+    [Test]
+    public async Task PayPalSubscription_DoesNotDoubleCredit_WhenBothWebhooksReceived()
+    {
+        // Arrange
+        var user = await userService.GetOrCreate("test-user-paypal-double-credit");
+        var product = await context.TopUpProducts.FirstAsync();
+        var renewsAt = DateTime.UtcNow.AddDays(28);
+        var subscriptionId = "1843069";  // Use numeric ID like real LemonSqueezy webhooks
+        
+        // Act - Step 1: subscription_created webhook arrives (PayPal)
+        var createWebhook = CreatePayPalSubscriptionCreatedWebhook(user.ExternalId, product.Id, renewsAt, subscriptionId);
+        await subscriptionService.UpdateSubscription(createWebhook);
+        
+        // Get ownership after first webhook
+        var ownershipAfterCreate = await context.OwnerShips
+            .Where(o => o.User.ExternalId == user.ExternalId && o.Product.Slug == product.Slug)
+            .FirstOrDefaultAsync();
+        Assert.That(ownershipAfterCreate, Is.Not.Null, "User should have ownership after subscription_created");
+        var expiryAfterCreate = ownershipAfterCreate.Expires;
+        
+        // Act - Step 2: subscription_payment_success webhook arrives with billing_reason "initial"
+        var paymentWebhook = CreatePayPalPaymentSuccessWebhook(user.ExternalId, product.Id, subscriptionId);
+        await subscriptionService.PaymentReceived(paymentWebhook);
+        
+        // Assert - Ownership should NOT be extended again (no double-credit)
+        var ownershipAfterPayment = await context.OwnerShips
+            .Where(o => o.User.ExternalId == user.ExternalId && o.Product.Slug == product.Slug)
+            .FirstOrDefaultAsync();
+        Assert.That(ownershipAfterPayment, Is.Not.Null);
+        
+        // The expiry should be approximately the same (allowing for small time differences)
+        var timeDifference = (ownershipAfterPayment.Expires - expiryAfterCreate).TotalDays;
+        Assert.That(Math.Abs(timeDifference), Is.LessThan(1), 
+            $"Ownership should not be extended again. Original: {expiryAfterCreate}, After payment: {ownershipAfterPayment.Expires}, Diff: {timeDifference} days");
+    }
+
     #region Helper Methods
 
     private Webhook CreateTrialSubscriptionWebhook(string userId, int productId, DateTime trialEndsAt, string subscriptionId = "test-sub-123")
@@ -582,6 +623,57 @@ public class SubscriptionServiceTests
         // Set PayPal as the payment processor - this is the key difference from other payment methods
         attributes.PaymentProcessor = "paypal";
         var data = new Data("subscriptions", subscriptionId, attributes, null, null);
+        return new Webhook(meta, data);
+    }
+
+    /// <summary>
+    /// Creates a PayPal subscription_payment_success webhook with billing_reason "initial".
+    /// This simulates the case where PayPal eventually sends the payment success webhook
+    /// even though we already credited via subscription_created.
+    /// </summary>
+    private Webhook CreatePayPalPaymentSuccessWebhook(string userId, int productId, string subscriptionId)
+    {
+        var customData = new CustomData(userId, productId, 1800, "True");
+        var meta = new Meta(false, "subscription_payment_success", customData);
+        var attributes = new Attributes(
+            storeId: 12595,
+            customerId: 7539567,
+            identifier: "{{INVOICE_IDENTIFIER}}",
+            orderNumber: 0,
+            userName: "{{USER_NAME}}",
+            userEmail: "{{USER_EMAIL}}",
+            currency: "USD",
+            currencyRate: "1.00000000",
+            taxName: "Sales Tax",
+            taxRate: 0,
+            status: "paid",
+            statusFormatted: "Paid",
+            refunded: false,
+            refundedAt: null,
+            subtotal: 4229,
+            discountTotal: 0,
+            tax: 0,
+            total: 4229,
+            subtotalUsd: 4229,
+            discountTotalUsd: 0,
+            taxUsd: 0,
+            totalUsd: 4229,
+            subtotalFormatted: "$42.29",
+            discountTotalFormatted: "$0.00",
+            taxFormatted: "$0.00",
+            totalFormatted: "$42.29",
+            firstOrderItem: null,
+            urls: null,
+            createdAt: DateTime.UtcNow,
+            updatedAt: DateTime.UtcNow,
+            testMode: false,
+            subscriptionId: long.Parse(subscriptionId),  // Numeric subscription ID
+            renewsAt: null,
+            endsAt: null,
+            billingReason: "initial"  // Key: this is the initial payment
+        );
+        // Note: type is "subscription-invoices" for payment success webhooks
+        var data = new Data("subscription-invoices", "invoice-123", attributes, null, null);
         return new Webhook(meta, data);
     }
 

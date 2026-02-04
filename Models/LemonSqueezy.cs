@@ -120,10 +120,10 @@ public class Attributes
         DateTime createdAt,
         DateTime updatedAt,
         bool testMode,
-        long subscriptionId
-,
+        long subscriptionId,
         DateTime? renewsAt,
-        DateTime? endsAt)
+        DateTime? endsAt,
+        string billingReason = null)
     {
         this.StoreId = storeId;
         this.CustomerId = customerId;
@@ -159,6 +159,7 @@ public class Attributes
         this.SubscriptionId = subscriptionId;
         RenewsAt = renewsAt;
         EndsAt = endsAt;
+        BillingReason = billingReason;
     }
 
     [JsonPropertyName("store_id")]
@@ -263,6 +264,13 @@ public class Attributes
     public DateTime? TrialEndsAt { get; set; }
     [JsonPropertyName("payment_processor")]
     public string PaymentProcessor { get; set; }
+    
+    /// <summary>
+    /// Billing reason for subscription invoices. Values: "initial" for first payment, "renewal" for subsequent payments.
+    /// Only present in subscription_payment_success webhooks (type: subscription-invoices).
+    /// </summary>
+    [JsonPropertyName("billing_reason")]
+    public string BillingReason { get; set; }
 }
 
 

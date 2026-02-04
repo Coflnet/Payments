@@ -204,6 +204,34 @@ public class SubscriptionService
 
     internal async Task PaymentReceived(Webhook data)
     {
+        // For PayPal subscriptions with billing_reason "initial", check if we've already credited
+        // via subscription_created (PayPal doesn't always send subscription_payment_success reliably,
+        // but when it does, we shouldn't double-credit)
+        var billingReason = data.Data.Attributes.BillingReason;
+        if (billingReason?.Equals("initial", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            var subscriptionId = data.Data.Attributes.SubscriptionId.ToString();
+            var subscription = await context.Subscriptions.Where(s => s.ExternalId == subscriptionId).FirstOrDefaultAsync();
+            
+            // Check if this is a PayPal subscription that was already credited via subscription_created
+            if (subscription != null)
+            {
+                // Look for existing transaction from subscription_created using the subscription's created_at date
+                var createdDate = subscription.CreatedAt.Date.ToString("yyyy-MM-dd");
+                var existingReference = subscriptionId + createdDate;
+                var existingTransaction = await context.FiniteTransactions
+                    .Where(t => t.Reference == existingReference || t.Reference == existingReference + "-topup")
+                    .FirstOrDefaultAsync();
+                
+                if (existingTransaction != null)
+                {
+                    logger.LogInformation("Initial payment for subscription {SubscriptionId} was already credited via subscription_created, skipping duplicate from subscription_payment_success", 
+                        subscriptionId);
+                    return;
+                }
+            }
+        }
+        
         await TryExtendSubscription(data);
         try
         {
