@@ -102,6 +102,7 @@ public class CoinGateOrderResponse
     /// Price amount set by merchant
     /// </summary>
     [JsonPropertyName("price_amount")]
+    [JsonConverter(typeof(StringToDecimalConverter))]
     public decimal PriceAmount { get; set; }
 
     /// <summary>
@@ -120,12 +121,14 @@ public class CoinGateOrderResponse
     /// Amount to be received after fees
     /// </summary>
     [JsonPropertyName("receive_amount")]
+    [JsonConverter(typeof(StringToNullableDecimalConverter))]
     public decimal? ReceiveAmount { get; set; }
 
     /// <summary>
     /// Amount the customer needs to pay in cryptocurrency
     /// </summary>
     [JsonPropertyName("pay_amount")]
+    [JsonConverter(typeof(StringToNullableDecimalConverter))]
     public decimal? PayAmount { get; set; }
 
     /// <summary>
@@ -138,12 +141,14 @@ public class CoinGateOrderResponse
     /// Underpaid amount in pay_currency
     /// </summary>
     [JsonPropertyName("underpaid_amount")]
+    [JsonConverter(typeof(StringToNullableDecimalConverter))]
     public decimal? UnderpaidAmount { get; set; }
 
     /// <summary>
     /// Overpaid amount in pay_currency
     /// </summary>
     [JsonPropertyName("overpaid_amount")]
+    [JsonConverter(typeof(StringToNullableDecimalConverter))]
     public decimal? OverpaidAmount { get; set; }
 
     /// <summary>
@@ -216,6 +221,7 @@ public class CoinGateCallback
     /// Price amount set by merchant
     /// </summary>
     [JsonPropertyName("price_amount")]
+    [JsonConverter(typeof(StringToDecimalConverter))]
     public decimal PriceAmount { get; set; }
 
     /// <summary>
@@ -234,12 +240,14 @@ public class CoinGateCallback
     /// Amount received after fees
     /// </summary>
     [JsonPropertyName("receive_amount")]
+    [JsonConverter(typeof(StringToNullableDecimalConverter))]
     public decimal? ReceiveAmount { get; set; }
 
     /// <summary>
     /// Amount paid by shopper in cryptocurrency
     /// </summary>
     [JsonPropertyName("pay_amount")]
+    [JsonConverter(typeof(StringToNullableDecimalConverter))]
     public decimal? PayAmount { get; set; }
 
     /// <summary>
@@ -252,12 +260,14 @@ public class CoinGateCallback
     /// Underpaid amount in pay_currency
     /// </summary>
     [JsonPropertyName("underpaid_amount")]
+    [JsonConverter(typeof(StringToNullableDecimalConverter))]
     public decimal? UnderpaidAmount { get; set; }
 
     /// <summary>
     /// Overpaid amount in pay_currency
     /// </summary>
     [JsonPropertyName("overpaid_amount")]
+    [JsonConverter(typeof(StringToNullableDecimalConverter))]
     public decimal? OverpaidAmount { get; set; }
 
     /// <summary>

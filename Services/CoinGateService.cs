@@ -84,7 +84,7 @@ public class CoinGateService
             PriceCurrency = product.CurrencyCode ?? "EUR",
             ReceiveCurrency = _config["COINGATE:RECEIVE_CURRENCY"] ?? "EUR",
             Title = product.Title,
-            Description = $"{product.Description} - {coinAmount:N0} coins for user {user.ExternalId}",
+            Description = $"{product.Description} - {coinAmount:N0} coins for user {options.UserEmail ?? user.ExternalId}",
             CallbackUrl = $"{callbackBaseUrl}/Callback/coingate?userId={Uri.EscapeDataString(user.ExternalId)}&productId={product.Id}&coinAmount={coinAmount}",
             SuccessUrl = options?.SuccessUrl ?? _config["DEFAULT:SUCCESS_URL"],
             CancelUrl = options?.CancelUrl ?? _config["DEFAULT:CANCEL_URL"],
@@ -109,7 +109,7 @@ public class CoinGateService
             _logger.LogError("CoinGate API error: {StatusCode} - {Response}", response.StatusCode, responseContent);
             throw new ApiException($"CoinGate payment creation failed: {responseContent}");
         }
-
+        _logger.LogInformation("CoinGate API response: {Response}", responseContent);
         var orderResponse = JsonSerializer.Deserialize<CoinGateOrderResponse>(responseContent, new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
