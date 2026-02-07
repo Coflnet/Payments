@@ -101,6 +101,8 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => e.DeviceFingerprint);
                 entity.HasIndex(e => e.CreateOnIp);
                 entity.HasIndex(e => new { e.CreatedAt, e.SessionId });
+                entity.HasIndex(e => new { e.Provider, e.State, e.UpdatedAt });
+                entity.HasIndex(e => new { e.State, e.UpdatedAt });
             });
             modelBuilder.Entity<FiniteTransaction>(entity =>
             {
