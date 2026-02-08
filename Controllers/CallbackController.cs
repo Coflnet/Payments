@@ -397,6 +397,25 @@ namespace Payments.Controllers
                     return StatusCode(400, "Callback verification failed");
                 }
 
+                // Validate country restrictions for CoinGate payments (before processing)
+                var user = await db.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
+                var userCountry = user?.Country ?? "UNKNOWN";
+                
+                if (!DoWeAcceptCoinGateFrom(userCountry, coinAmount))
+                {
+                    _logger.LogWarning("CoinGate payment rejected: Country {Country} not accepted for CoinGate (amount: {Amount} coins, minimum for US: 3000)", 
+                        userCountry, coinAmount);
+                    
+                    // Update user's country if it changed
+                    if (user != null)
+                    {
+                        user.Country = userCountry;
+                        await db.SaveChangesAsync();
+                    }
+                    
+                    return Ok(); // Return OK to acknowledge callback, but don't process payment
+                }
+
                 // Process based on status
                 switch (callback.Status)
                 {
@@ -694,6 +713,63 @@ namespace Payments.Controllers
                                             && t.Timestamp > DateTime.UtcNow.AddDays(-1)).CountAsync() >= 2;
         }
 
+        /// <summary>
+        /// Validates if we accept CoinGate cryptocurrency payments from a specific country.
+        /// Rules:
+        /// - EU countries are always accepted
+        /// - US is accepted only for amounts >= 3000 CoflCoins
+        /// - VAT-free countries are accepted
+        /// </summary>
+        /// <param name="country">ISO 3166-1 alpha-2 country code</param>
+        /// <param name="coinAmount">Amount of CoflCoins being purchased</param>
+        /// <returns>True if we accept CoinGate payment from this country</returns>
+        public static bool DoWeAcceptCoinGateFrom(string country, decimal coinAmount)
+        {
+            // EU member states (27 countries as of 2024)
+            var euCountries = new string[] 
+            { 
+                "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", 
+                "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", 
+                "SI", "ES", "SE"
+            };
+
+            // Extra VAT-free countries
+            var vatFreCountries = new string[]
+            {
+                "BM", // Bermuda
+                "GI", // Gibraltar
+                "GG", // Guernsey
+                "GL", // Greenland
+                "HK", // Hong Kong
+                "KI", // Kiribati
+                "MO", // Macau
+                "MV", // Maldives
+                "GS", // South Georgia and South Sandwich Islands
+                "SJ", // Svalbard and Jan Mayen
+                "JE", // Jersey
+            };
+
+            // Check if country is in EU
+            if (euCountries.Contains(country))
+                return true;
+
+            // Check US - only if amount >= 3000 CoflCoins
+            if (country == "US")
+                return coinAmount >= 3000;
+
+            // Check VAT-free countries
+            if (vatFreCountries.Contains(country))
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Validates if we accept traditional payments (PayPal, etc.) from a specific country
+        /// </summary>
+        /// <param name="country">ISO 3166-1 alpha-2 country code</param>
+        /// <param name="postalCode">Postal code</param>
+        /// <returns>True if we accept payment from this country</returns>
         public static bool DoWeSellto(string country, string postalCode)
         {
             if (country == "GB" && (postalCode?.StartsWith("BT") ?? false))
