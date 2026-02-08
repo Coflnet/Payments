@@ -57,9 +57,13 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpGet]
         [Route("topup")]
-        public async Task<IEnumerable<TopUpProduct>> GetTopupOptions(int offset = 0, int amount = 20)
+        public async Task<IEnumerable<TopUpProduct>> GetTopupOptions(int offset = 0, int amount = 20, bool includeDisabled = false)
         {
-            return await db.TopUpProducts.OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
+            var query = db.TopUpProducts.AsQueryable();
+            if (!includeDisabled)
+                query = query.Where(p => !p.Type.HasFlag(Product.ProductType.DISABLED));
+
+            return await query.OrderBy(p => p.Id).Skip(offset).Take(amount).ToListAsync();
         }
 
 
