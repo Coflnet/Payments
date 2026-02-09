@@ -1518,6 +1518,13 @@ namespace Payments.Controllers
                 record.RecordedAt = DateTime.UtcNow;
                 if (record.PaidAt == default)
                     record.PaidAt = DateTime.UtcNow;
+                
+                // Ensure all DateTimes are UTC (PostgreSQL timestamp with time zone requires UTC)
+                if (record.PaidAt.Kind != DateTimeKind.Utc)
+                    record.PaidAt = record.PaidAt.ToUniversalTime();
+                if (record.RefundedAt.HasValue && record.RefundedAt.Value.Kind != DateTimeKind.Utc)
+                    record.RefundedAt = record.RefundedAt.Value.ToUniversalTime();
+                
                 if (record.NetAmount == 0 && record.GrossAmount > 0)
                     record.NetAmount = record.GrossAmount - record.TaxAmount - record.ProcessorFee;
 
