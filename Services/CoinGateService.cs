@@ -85,7 +85,7 @@ public class CoinGateService
             ReceiveCurrency = _config["COINGATE:RECEIVE_CURRENCY"] ?? "EUR",
             Title = product.Title,
             Description = $"{product.Description} - {coinAmount:N0} coins for user {options.UserEmail ?? user.ExternalId}",
-            CallbackUrl = $"{callbackBaseUrl}/Callback/coingate?userId={Uri.EscapeDataString(user.ExternalId)}&productId={product.Id}&coinAmount={coinAmount}",
+            CallbackUrl = $"{callbackBaseUrl}/callback/coingate?userId={Uri.EscapeDataString(user.ExternalId)}&productId={product.Id}&coinAmount={coinAmount}",
             SuccessUrl = options?.SuccessUrl ?? _config["DEFAULT:SUCCESS_URL"],
             CancelUrl = options?.CancelUrl ?? _config["DEFAULT:CANCEL_URL"],
             Token = callbackToken,
