@@ -72,6 +72,11 @@ namespace Coflnet.Payments.Models
         /// Revenue records from creator code usage
         /// </summary>
         public DbSet<CreatorCodeRevenue> CreatorCodeRevenues { get; set; }
+        /// <summary>
+        /// Authoritative payment records for tax compliance reporting.
+        /// Tracks exact amounts paid, taxes, fees, discounts per transaction.
+        /// </summary>
+        public DbSet<PaymentRecord> PaymentRecords { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -161,6 +166,22 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => e.PurchasedAt);
                 entity.HasIndex(e => e.IsPaidOut);
                 entity.HasIndex(e => new { e.CreatorCodeId, e.PurchasedAt });
+            });
+
+            modelBuilder.Entity<PaymentRecord>(entity =>
+            {
+                // Tax compliance: query by country + date range
+                entity.HasIndex(e => new { e.Country, e.PaidAt });
+                // Query by provider + date range
+                entity.HasIndex(e => new { e.Provider, e.PaidAt });
+                // Query by status + date for refund reports
+                entity.HasIndex(e => new { e.Status, e.PaidAt });
+                // Lookup by external order id (dedup & reconciliation)
+                entity.HasIndex(e => e.ExternalOrderId);
+                // Lookup by user
+                entity.HasIndex(e => e.ExternalUserId);
+                // Full tax query: country + provider + date
+                entity.HasIndex(e => new { e.Country, e.Provider, e.PaidAt });
             });
         }
     }

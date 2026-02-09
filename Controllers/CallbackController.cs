@@ -150,6 +150,38 @@ namespace Payments.Controllers
                         PaymentProviderTransactionId = session.PaymentIntentId,
                         Timestamp = session.Created
                     });
+
+                    // Record for tax compliance
+                    var stripeUser = await db.Users.Where(u => u.ExternalId == session.ClientReferenceId).FirstOrDefaultAsync();
+                    await RecordPayment(new PaymentRecord
+                    {
+                        UserId = stripeUser?.Id ?? 0,
+                        ExternalUserId = session.ClientReferenceId,
+                        Country = session.CustomerDetails?.Address?.Country,
+                        ZipCode = session.CustomerDetails?.Address?.PostalCode,
+                        City = session.CustomerDetails?.Address?.City,
+                        State = session.CustomerDetails?.Address?.State,
+                        GrossAmount = (session.AmountTotal ?? 0) / 100m,
+                        Subtotal = (session.AmountSubtotal ?? session.AmountTotal ?? 0) / 100m,
+                        DiscountAmount = 0, // Stripe handles coupons internally
+                        TaxAmount = 0, // Stripe does not remit tax for us
+                        TaxRemittedByProcessor = false,
+                        NetAmount = (session.AmountTotal ?? 0) / 100m,
+                        ProcessorFee = 0, // Not available in webhook; reconcile from Stripe dashboard
+                        Currency = session.Currency?.ToUpper() ?? "USD",
+                        Provider = "stripe",
+                        PaymentMethod = session.PaymentMethodTypes?.FirstOrDefault() ?? "card",
+                        ExternalOrderId = session.Id,
+                        ExternalTransactionId = session.PaymentIntentId,
+                        ProductSlug = productId.ToString(),
+                        ProductId = productId,
+                        CoinAmount = coinAmount,
+                        PaidAt = session.Created,
+                        Status = PaymentRecordStatus.Confirmed,
+                        BuyerEmail = session.CustomerDetails?.Email,
+                        BuyerName = session.CustomerDetails?.Name,
+                        IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString()
+                    });
                 }
                 else if (stripeEvent.Type == Events.ChargeFailed)
                 {
@@ -194,6 +226,7 @@ namespace Payments.Controllers
                         payment.State = PaymentRequest.Status.REFUNDED;
                         await db.SaveChangesAsync();
                     }
+                    await MarkPaymentRefunded(intentId);
                 }
                 else
                 {
@@ -291,23 +324,108 @@ namespace Payments.Controllers
                 await transactionService.AddTopUp(meta.CustomData.ProductId, meta.CustomData.UserId, data.Attributes.Identifier, meta.CustomData.CoinAmount);
                 await db.SaveChangesAsync();
                 _logger.LogInformation($"lemonsqueezy topup {meta.CustomData.ProductId} {meta.CustomData.UserId} {data.Attributes.Identifier} {meta.CustomData.CoinAmount}");
+
+                // Record for tax compliance — LemonSqueezy is Merchant of Record and remits tax
+                var lsUser = await db.Users.Where(u => u.ExternalId == meta.CustomData.UserId).FirstOrDefaultAsync();
+                var lsCreatorCode = !string.IsNullOrWhiteSpace(meta.CustomData.CreatorCode) ? meta.CustomData.CreatorCode : null;
+                var lsCreatorDiscount = 0m;
+                if (lsCreatorCode != null)
+                {
+                    try
+                    {
+                        var cc = await _creatorCodeService.ValidateCreatorCodeAsync(lsCreatorCode);
+                        if (cc != null)
+                            lsCreatorDiscount = (data.Attributes.Total / 100m) * (cc.DiscountPercent / 100m);
+                    }
+                    catch { /* already logged */ }
+                }
+                await RecordPayment(new PaymentRecord
+                {
+                    UserId = lsUser?.Id ?? 0,
+                    ExternalUserId = meta.CustomData.UserId,
+                    Country = lsUser?.Country,
+                    ZipCode = lsUser?.Zip,
+                    GrossAmount = data.Attributes.Total / 100m,
+                    Subtotal = data.Attributes.Subtotal / 100m,
+                    DiscountAmount = data.Attributes.DiscountTotal / 100m,
+                    TaxAmount = data.Attributes.Tax / 100m,
+                    TaxName = data.Attributes.TaxName,
+                    TaxRate = data.Attributes.TaxRate,
+                    TaxRemittedByProcessor = true, // LS is Merchant of Record
+                    NetAmount = (data.Attributes.Total - data.Attributes.Tax) / 100m,
+                    ProcessorFee = 0, // LS bundles fees into their cut
+                    CreatorCode = lsCreatorCode,
+                    CreatorCodeDiscount = lsCreatorDiscount,
+                    Currency = data.Attributes.Currency?.ToUpper() ?? "USD",
+                    Provider = "lemonsqueezy",
+                    PaymentMethod = data.Attributes.PaymentProcessor ?? "card",
+                    ExternalOrderId = data.Attributes.Identifier,
+                    ExternalTransactionId = data.Id,
+                    ProductSlug = meta.CustomData.ProductId.ToString(),
+                    ProductId = meta.CustomData.ProductId,
+                    CoinAmount = meta.CustomData.CoinAmount,
+                    PaidAt = data.Attributes.CreatedAt,
+                    Status = PaymentRecordStatus.Confirmed,
+                    BuyerEmail = data.Attributes.UserEmail,
+                    BuyerName = data.Attributes.UserName,
+                    Locale = lsUser?.Locale,
+                    IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    IsSubscriptionPayment = false
+                });
             }
             else if (meta.EventName == "order_refunded" && data.Attributes.Status == "refunded")
             {
                 if (meta.CustomData.IsSubscription != null && meta.CustomData.IsSubscription.Equals("true", StringComparison.OrdinalIgnoreCase))
                 {
                     await RevertSubscriptionPayment(webhook);
+                    await MarkPaymentRefunded(data.Attributes.Identifier);
                     return Ok();
                 }
                 await RevertTopUpWithReference(data.Attributes.Identifier);
+                await MarkPaymentRefunded(data.Attributes.Identifier);
             }
             else if (meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
+            {
                 await subscriptionService.PaymentReceived(webhook);
+                // Record subscription renewal payment for tax compliance
+                var subUser = await db.Users.Where(u => u.ExternalId == meta.CustomData.UserId).FirstOrDefaultAsync();
+                await RecordPayment(new PaymentRecord
+                {
+                    UserId = subUser?.Id ?? 0,
+                    ExternalUserId = meta.CustomData.UserId,
+                    Country = subUser?.Country,
+                    ZipCode = subUser?.Zip,
+                    GrossAmount = data.Attributes.Total / 100m,
+                    Subtotal = data.Attributes.Subtotal / 100m,
+                    DiscountAmount = data.Attributes.DiscountTotal / 100m,
+                    TaxAmount = data.Attributes.Tax / 100m,
+                    TaxName = data.Attributes.TaxName,
+                    TaxRate = data.Attributes.TaxRate,
+                    TaxRemittedByProcessor = true,
+                    NetAmount = (data.Attributes.Total - data.Attributes.Tax) / 100m,
+                    Currency = data.Attributes.Currency?.ToUpper() ?? "USD",
+                    Provider = "lemonsqueezy",
+                    PaymentMethod = data.Attributes.PaymentProcessor ?? "card",
+                    ExternalOrderId = data.Attributes.Identifier,
+                    ExternalTransactionId = data.Id,
+                    ProductSlug = meta.CustomData.ProductId.ToString(),
+                    ProductId = meta.CustomData.ProductId,
+                    CoinAmount = meta.CustomData.CoinAmount,
+                    PaidAt = data.Attributes.CreatedAt,
+                    Status = PaymentRecordStatus.Confirmed,
+                    BuyerEmail = data.Attributes.UserEmail,
+                    BuyerName = data.Attributes.UserName,
+                    Locale = subUser?.Locale,
+                    IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    IsSubscriptionPayment = true
+                });
+            }
             else if (meta.EventName == "subscription_updated" || meta.EventName == "subscription_created")
                 await subscriptionService.UpdateSubscription(webhook);
             else if (meta.EventName == "subscription_payment_refunded")
             {
                 await subscriptionService.RefundPayment(webhook);
+                await MarkPaymentRefunded(data.Attributes.Identifier);
             }
             else if (meta.EventName == "subscription_payment_failed")
             {
@@ -443,6 +561,32 @@ namespace Payments.Controllers
 
                             _logger.LogInformation("CoinGate topup processed successfully: {OrderId}, {Amount} coins for user {UserId}", 
                                 callback.OrderId, coinAmount, userId);
+
+                            // Record for tax compliance — CoinGate does NOT remit tax
+                            await RecordPayment(new PaymentRecord
+                            {
+                                UserId = user?.Id ?? 0,
+                                ExternalUserId = userId,
+                                Country = userCountry,
+                                ZipCode = user?.Zip,
+                                GrossAmount = callback.PriceAmount,
+                                Subtotal = callback.PriceAmount,
+                                TaxAmount = 0,
+                                TaxRemittedByProcessor = false,
+                                NetAmount = callback.ReceiveAmount ?? callback.PriceAmount,
+                                ProcessorFee = callback.PriceAmount - (callback.ReceiveAmount ?? callback.PriceAmount),
+                                Currency = callback.PriceCurrency?.ToUpper() ?? "USD",
+                                Provider = "coingate",
+                                PaymentMethod = callback.PayCurrency ?? "crypto",
+                                ExternalOrderId = callback.OrderId,
+                                ExternalTransactionId = callback.Id.ToString(),
+                                ProductSlug = productId.ToString(),
+                                ProductId = productId,
+                                CoinAmount = (long)coinAmount,
+                                PaidAt = callback.CreatedAt,
+                                Status = PaymentRecordStatus.Confirmed,
+                                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString()
+                            });
                         }
                         catch (TransactionService.DupplicateTransactionException)
                         {
@@ -474,6 +618,7 @@ namespace Payments.Controllers
                         {
                             var reference = $"coingate:{callback.Id}";
                             await RevertTopUpWithReference(reference);
+                            await MarkPaymentRefunded(callback.OrderId);
                         }
                         catch (Exception ex)
                         {
@@ -616,6 +761,7 @@ namespace Payments.Controllers
                     var id = webhookResult.Resource.Links.Where(l => l.Rel == "up").First().Href.Split('/').Last();
                     FiniteTransaction transaction = await RevertTopUpWithReference(id);
                     _logger.LogInformation($"refunded payment, reverting topup {id} from {transaction.User.ExternalId} because of refund");
+                    await MarkPaymentRefunded(id);
                     return Ok();
                 }
                 else
@@ -686,6 +832,36 @@ namespace Payments.Controllers
                     PaymentProvider = "paypal",
                     PaymentProviderTransactionId = transactionId,
                     Timestamp = string.IsNullOrEmpty(order.CreateTime) ? DateTime.UtcNow : DateTime.Parse(order.CreateTime)
+                });
+
+                // Record for tax compliance — PayPal does NOT remit tax for us
+                var ppUser = await db.Users.Where(u => u.ExternalId == product.ReferenceId).FirstOrDefaultAsync();
+                await RecordPayment(new PaymentRecord
+                {
+                    UserId = ppUser?.Id ?? 0,
+                    ExternalUserId = product.ReferenceId,
+                    Country = product.ShippingDetail?.AddressPortable?.CountryCode,
+                    ZipCode = product.ShippingDetail?.AddressPortable?.PostalCode,
+                    City = product.ShippingDetail?.AddressPortable?.AdminArea2,
+                    State = product.ShippingDetail?.AddressPortable?.AdminArea1,
+                    GrossAmount = decimal.Parse(amount.Value),
+                    Subtotal = decimal.Parse(amount.Value),
+                    TaxAmount = 0,
+                    TaxRemittedByProcessor = false,
+                    ProcessorFee = 0, // PayPal fee not available in webhook
+                    Currency = amount.CurrencyCode?.ToUpper() ?? "USD",
+                    Provider = "paypal",
+                    PaymentMethod = "paypal",
+                    ExternalOrderId = referenceId,
+                    ExternalTransactionId = transactionId,
+                    ProductSlug = topupInfo[0],
+                    ProductId = int.TryParse(topupInfo[0], out var ppProdId) ? ppProdId : null,
+                    CoinAmount = exactCoinAmount,
+                    PaidAt = string.IsNullOrEmpty(order.CreateTime) ? DateTime.UtcNow : DateTime.Parse(order.CreateTime),
+                    Status = PaymentRecordStatus.Confirmed,
+                    BuyerEmail = order.Payer?.Email,
+                    BuyerName = product.ShippingDetail?.Name?.FullName,
+                    IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString()
                 });
 
             }
@@ -1196,6 +1372,31 @@ namespace Payments.Controllers
 
                 _logger.LogInformation("Successfully processed Google Play product purchase for SKU {Sku}, user {UserId}, orderId {OrderId}",
                     sku, userId, purchase.OrderId);
+
+                // Record for tax compliance — Google Play IS Merchant of Record and remits tax
+                var gpUser = await db.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
+                await RecordPayment(new PaymentRecord
+                {
+                    UserId = gpUser?.Id ?? 0,
+                    ExternalUserId = userId,
+                    Country = gpUser?.Country,
+                    ZipCode = gpUser?.Zip,
+                    GrossAmount = product.Price,
+                    Subtotal = product.Price,
+                    TaxAmount = 0, // Google doesn't break out tax in purchase object
+                    TaxRemittedByProcessor = true, // Google handles tax
+                    ProcessorFee = 0, // Google takes 15-30% but not exposed per-transaction
+                    Currency = product.CurrencyCode?.ToUpper() ?? "USD",
+                    Provider = "googlepay",
+                    PaymentMethod = "googlepay",
+                    ExternalOrderId = purchase.OrderId,
+                    ProductSlug = sku,
+                    ProductId = product.Id,
+                    CoinAmount = customAmount,
+                    PaidAt = DateTime.UtcNow,
+                    Status = PaymentRecordStatus.Confirmed,
+                    Locale = gpUser?.Locale
+                });
             }
             catch (TransactionService.DupplicateTransactionException)
             {
@@ -1270,6 +1471,31 @@ namespace Payments.Controllers
 
                 _logger.LogInformation("Successfully processed Google Play subscription purchase for ID {SubscriptionId}, user {UserId}, orderId {OrderId}",
                     subscriptionId, userId, orderId);
+
+                // Record for tax compliance — Google Play is MoR
+                var gpSubUser = await db.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
+                await RecordPayment(new PaymentRecord
+                {
+                    UserId = gpSubUser?.Id ?? 0,
+                    ExternalUserId = userId,
+                    Country = gpSubUser?.Country ?? subscription.CountryCode,
+                    ZipCode = gpSubUser?.Zip,
+                    GrossAmount = product.Price,
+                    Subtotal = product.Price,
+                    TaxAmount = 0,
+                    TaxRemittedByProcessor = true,
+                    Currency = product.CurrencyCode?.ToUpper() ?? "USD",
+                    Provider = "googlepay",
+                    PaymentMethod = "googlepay",
+                    ExternalOrderId = orderId,
+                    ProductSlug = subscriptionId,
+                    ProductId = product.Id,
+                    CoinAmount = customAmount,
+                    PaidAt = DateTime.UtcNow,
+                    Status = PaymentRecordStatus.Confirmed,
+                    Locale = gpSubUser?.Locale,
+                    IsSubscriptionPayment = true
+                });
             }
             catch (TransactionService.DupplicateTransactionException)
             {
@@ -1278,6 +1504,56 @@ namespace Payments.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to process Google Play subscription purchase for ID {SubscriptionId}, user {UserId}", subscriptionId, userId);
+            }
+        }
+
+        /// <summary>
+        /// Records a payment in the PaymentRecords table for tax compliance.
+        /// Call this from every callback after a payment is confirmed/captured.
+        /// </summary>
+        private async Task RecordPayment(PaymentRecord record)
+        {
+            try
+            {
+                record.RecordedAt = DateTime.UtcNow;
+                if (record.PaidAt == default)
+                    record.PaidAt = DateTime.UtcNow;
+                if (record.NetAmount == 0 && record.GrossAmount > 0)
+                    record.NetAmount = record.GrossAmount - record.TaxAmount - record.ProcessorFee;
+
+                db.PaymentRecords.Add(record);
+                await db.SaveChangesAsync();
+                _logger.LogInformation("PaymentRecord created: {Provider} {ExternalOrderId} {GrossAmount} {Currency} for user {UserId}",
+                    record.Provider, record.ExternalOrderId, record.GrossAmount, record.Currency, record.ExternalUserId);
+            }
+            catch (Exception ex)
+            {
+                // Never let a recording failure break the actual payment flow
+                _logger.LogError(ex, "Failed to record PaymentRecord for {Provider} order {ExternalOrderId}", record.Provider, record.ExternalOrderId);
+            }
+        }
+
+        /// <summary>
+        /// Marks a payment record as refunded by external order ID
+        /// </summary>
+        private async Task MarkPaymentRefunded(string externalOrderId)
+        {
+            try
+            {
+                var record = await db.PaymentRecords
+                    .Where(r => r.ExternalOrderId == externalOrderId || r.ExternalTransactionId == externalOrderId)
+                    .FirstOrDefaultAsync();
+                if (record != null)
+                {
+                    record.Status = PaymentRecordStatus.Refunded;
+                    record.RefundedAt = DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+                    _logger.LogInformation("PaymentRecord marked refunded: {ExternalOrderId}", externalOrderId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to mark PaymentRecord refunded for {ExternalOrderId}", externalOrderId);
             }
         }
 

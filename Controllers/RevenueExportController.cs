@@ -10,7 +10,9 @@ using Microsoft.Extensions.Logging;
 namespace Payments.Controllers
 {
     /// <summary>
-    /// Handles revenue export and compliance reporting
+    /// Handles revenue export and compliance reporting.
+    /// All endpoints query the PaymentRecords table which tracks exact amounts
+    /// paid, taxes, fees, discounts, and creator codes per transaction.
     /// </summary>
     [ApiController]
     [Route("[controller]")]
@@ -29,8 +31,8 @@ namespace Payments.Controllers
         }
 
         /// <summary>
-        /// Export aggregated payment revenue by country, provider, and time range
-        /// Useful for compliance reporting (e.g., quarterly crypto revenue by country)
+        /// Export aggregated payment revenue by country, provider, and time range.
+        /// Now uses PaymentRecords for accurate amounts including discounts, taxes, and fees.
         /// </summary>
         /// <param name="startDate">Start of the time range (UTC)</param>
         /// <param name="endDate">End of the time range (UTC)</param>
@@ -48,53 +50,44 @@ namespace Payments.Controllers
             [FromQuery] string currency = null
         )
         {
-            // Validate date range
             if (startDate > endDate)
-            {
                 return BadRequest("startDate must be before or equal to endDate");
-            }
-
             if (endDate > DateTime.UtcNow)
-            {
                 return BadRequest("endDate cannot be in the future");
-            }
 
             try
             {
-                // Query payment requests with user data
-                var query = _db.PaymentRequests
-                    .Include(pr => pr.User)
-                    .Include(pr => pr.ProductId)
-                    .Where(pr => pr.State == PaymentRequest.Status.CONFIRMED
-                        && pr.UpdatedAt >= startDate
-                        && pr.UpdatedAt <= endDate);
+                var query = _db.PaymentRecords
+                    .Where(r => r.Status == PaymentRecordStatus.Confirmed
+                        && r.PaidAt >= startDate
+                        && r.PaidAt <= endDate);
 
-                // Apply optional filters
                 if (!string.IsNullOrWhiteSpace(provider))
-                {
-                    query = query.Where(pr => pr.Provider == provider);
-                }
-
+                    query = query.Where(r => r.Provider == provider);
                 if (!string.IsNullOrWhiteSpace(country))
-                {
-                    query = query.Where(pr => pr.User.Country == country);
-                }
+                    query = query.Where(r => r.Country == country);
+                if (!string.IsNullOrWhiteSpace(currency))
+                    query = query.Where(r => r.Currency == currency);
 
-                // Build the aggregation
                 var results = await query
-                    .GroupBy(pr => new
+                    .GroupBy(r => new
                     {
-                        pr.User.Country,
-                        pr.Provider,
-                        // Group by approximate currency - if not available, default to requested or "USD"
-                        Currency = currency ?? "USD"
+                        r.Country,
+                        r.Provider,
+                        r.Currency,
+                        r.TaxRemittedByProcessor
                     })
                     .Select(g => new RevenueExport
                     {
                         Country = g.Key.Country ?? "UNKNOWN",
                         Provider = g.Key.Provider,
                         Currency = g.Key.Currency,
-                        TotalAmount = g.Sum(pr => pr.Amount),
+                        TaxRemittedByProcessor = g.Key.TaxRemittedByProcessor,
+                        TotalAmount = g.Sum(r => r.GrossAmount),
+                        TotalTax = g.Sum(r => r.TaxAmount),
+                        TotalNet = g.Sum(r => r.NetAmount),
+                        TotalFees = g.Sum(r => r.ProcessorFee),
+                        TotalDiscount = g.Sum(r => r.DiscountAmount),
                         TransactionCount = g.Count(),
                         PeriodStart = startDate,
                         PeriodEnd = endDate
@@ -104,7 +97,8 @@ namespace Payments.Controllers
                     .ToListAsync();
 
                 _logger.LogInformation(
-                    $"Revenue export generated: {results.Count} groups, period {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
+                    "Revenue export generated: {Count} groups, period {Start:yyyy-MM-dd} to {End:yyyy-MM-dd}",
+                    results.Count, startDate, endDate);
 
                 return Ok(results);
             }
@@ -116,8 +110,8 @@ namespace Payments.Controllers
         }
 
         /// <summary>
-        /// Export aggregated crypto payment revenue by country and quarter
-        /// Specialized endpoint for quarterly compliance reporting
+        /// Export aggregated crypto payment revenue by country and quarter.
+        /// Specialized endpoint for quarterly compliance reporting.
         /// </summary>
         /// <param name="year">Year for the report (e.g., 2026)</param>
         /// <param name="quarter">Quarter number (1-4)</param>
@@ -129,45 +123,36 @@ namespace Payments.Controllers
             [FromQuery] int quarter
         )
         {
-            // Validate quarter
             if (quarter < 1 || quarter > 4)
-            {
                 return BadRequest("Quarter must be between 1 and 4");
-            }
-
             if (year < 2020 || year > DateTime.UtcNow.Year)
-            {
                 return BadRequest("Invalid year");
-            }
 
-            // Calculate start and end dates for the quarter
             var startMonth = (quarter - 1) * 3 + 1;
             var endMonth = startMonth + 2;
             var startDate = new DateTime(year, startMonth, 1, 0, 0, 0, DateTimeKind.Utc);
             var endDate = new DateTime(year, endMonth, DateTime.DaysInMonth(year, endMonth), 23, 59, 59, DateTimeKind.Utc);
 
-            // Filter for crypto providers (CoinGate is the main crypto provider in your system)
             var cryptoProviders = new[] { "coingate", "crypto" };
 
             try
             {
-                var results = await _db.PaymentRequests
-                    .Include(pr => pr.User)
-                    .Include(pr => pr.ProductId)
-                    .Where(pr => pr.State == PaymentRequest.Status.CONFIRMED
-                        && pr.UpdatedAt >= startDate
-                        && pr.UpdatedAt <= endDate
-                        && cryptoProviders.Contains(pr.Provider))
-                    .GroupBy(pr => new
-                    {
-                        pr.User.Country
-                    })
+                var results = await _db.PaymentRecords
+                    .Where(r => r.Status == PaymentRecordStatus.Confirmed
+                        && r.PaidAt >= startDate
+                        && r.PaidAt <= endDate
+                        && cryptoProviders.Contains(r.Provider))
+                    .GroupBy(r => new { r.Country })
                     .Select(g => new RevenueExport
                     {
                         Country = g.Key.Country ?? "UNKNOWN",
                         Provider = "crypto",
-                        Currency = "USD", // Typically crypto is denominated in fiat equivalent
-                        TotalAmount = g.Sum(pr => pr.Amount),
+                        Currency = "USD",
+                        TotalAmount = g.Sum(r => r.GrossAmount),
+                        TotalTax = g.Sum(r => r.TaxAmount),
+                        TotalNet = g.Sum(r => r.NetAmount),
+                        TotalFees = g.Sum(r => r.ProcessorFee),
+                        TotalDiscount = g.Sum(r => r.DiscountAmount),
                         TransactionCount = g.Count(),
                         PeriodStart = startDate,
                         PeriodEnd = endDate
@@ -176,7 +161,8 @@ namespace Payments.Controllers
                     .ToListAsync();
 
                 _logger.LogInformation(
-                    $"Crypto quarterly report generated: Q{quarter} {year}, {results.Count} countries");
+                    "Crypto quarterly report generated: Q{Quarter} {Year}, {Count} countries",
+                    quarter, year, results.Count);
 
                 return Ok(results);
             }
@@ -197,9 +183,9 @@ namespace Payments.Controllers
         {
             try
             {
-                var providers = await _db.PaymentRequests
-                    .Where(pr => pr.Provider != null)
-                    .Select(pr => pr.Provider)
+                var providers = await _db.PaymentRecords
+                    .Where(r => r.Provider != null)
+                    .Select(r => r.Provider)
                     .Distinct()
                     .OrderBy(p => p)
                     .ToListAsync();
@@ -223,10 +209,9 @@ namespace Payments.Controllers
         {
             try
             {
-                var countries = await _db.PaymentRequests
-                    .Include(pr => pr.User)
-                    .Where(pr => pr.User.Country != null)
-                    .Select(pr => pr.User.Country)
+                var countries = await _db.PaymentRecords
+                    .Where(r => r.Country != null)
+                    .Select(r => r.Country)
                     .Distinct()
                     .OrderBy(c => c)
                     .ToListAsync();
@@ -241,9 +226,8 @@ namespace Payments.Controllers
         }
 
         /// <summary>
-        /// Export detailed transaction data with full information per transaction
-        /// Includes: user ID, country, provider, amount, timestamp, product, status
-        /// Useful for compliance audits and detailed transaction reporting
+        /// Export detailed transaction data from PaymentRecords.
+        /// Includes: exact amounts paid, taxes, fees, discounts, creator codes, country, ZIP.
         /// </summary>
         /// <param name="startDate">Start of the time range (UTC)</param>
         /// <param name="endDate">End of the time range (UTC)</param>
@@ -265,77 +249,65 @@ namespace Payments.Controllers
             [FromQuery] int limit = 1000
         )
         {
-            // Validate date range
             if (startDate > endDate)
-            {
                 return BadRequest("startDate must be before or equal to endDate");
-            }
-
             if (endDate > DateTime.UtcNow)
-            {
                 return BadRequest("endDate cannot be in the future");
-            }
 
-            // Validate and cap limit
-            if (limit < 1 || limit > 5000)
-            {
-                limit = Math.Min(Math.Max(limit, 1), 5000);
-            }
-
-            if (offset < 0)
-            {
-                offset = 0;
-            }
+            limit = Math.Min(Math.Max(limit, 1), 5000);
+            if (offset < 0) offset = 0;
 
             try
             {
-                // Query payment requests with all related data
-                var query = _db.PaymentRequests
-                    .Include(pr => pr.User)
-                    .Include(pr => pr.ProductId)
-                    .Where(pr => pr.State == PaymentRequest.Status.CONFIRMED
-                        && pr.UpdatedAt >= startDate
-                        && pr.UpdatedAt <= endDate);
+                var query = _db.PaymentRecords
+                    .Where(r => r.PaidAt >= startDate && r.PaidAt <= endDate);
 
-                // Apply optional filters
                 if (!string.IsNullOrWhiteSpace(provider))
-                {
-                    query = query.Where(pr => pr.Provider == provider);
-                }
-
+                    query = query.Where(r => r.Provider == provider);
                 if (!string.IsNullOrWhiteSpace(country))
-                {
-                    query = query.Where(pr => pr.User.Country == country);
-                }
-
+                    query = query.Where(r => r.Country == country);
                 if (!string.IsNullOrWhiteSpace(userId))
-                {
-                    query = query.Where(pr => pr.User.ExternalId == userId);
-                }
+                    query = query.Where(r => r.ExternalUserId == userId);
 
-                // Execute query with pagination and build result
                 var results = await query
-                    .OrderByDescending(pr => pr.UpdatedAt)
+                    .OrderByDescending(r => r.PaidAt)
                     .Skip(offset)
                     .Take(limit)
-                    .Select(pr => new DetailedTransactionExport
+                    .Select(r => new DetailedTransactionExport
                     {
-                        TransactionId = pr.Id.ToString(),
-                        UserId = pr.User.ExternalId,
-                        UserCountry = pr.User.Country ?? "UNKNOWN",
-                        Provider = pr.Provider,
-                        Amount = pr.Amount,
-                        Currency = "USD", // Default, can be enhanced to track actual currency per provider
-                        ProductId = pr.ProductId.Slug,
-                        Timestamp = pr.UpdatedAt,
-                        Status = pr.State.ToString(),
-                        ExternalReference = pr.SessionId,
-                        Locale = pr.Locale
+                        TransactionId = r.Id.ToString(),
+                        UserId = r.ExternalUserId,
+                        UserCountry = r.Country ?? "UNKNOWN",
+                        ZipCode = r.ZipCode,
+                        State = r.State,
+                        Provider = r.Provider,
+                        Amount = r.GrossAmount,
+                        Subtotal = r.Subtotal,
+                        DiscountAmount = r.DiscountAmount,
+                        TaxAmount = r.TaxAmount,
+                        TaxRate = r.TaxRate,
+                        TaxRemittedByProcessor = r.TaxRemittedByProcessor,
+                        NetAmount = r.NetAmount,
+                        ProcessorFee = r.ProcessorFee,
+                        CreatorCode = r.CreatorCode,
+                        CreatorCodeDiscount = r.CreatorCodeDiscount,
+                        Currency = r.Currency,
+                        ProductId = r.ProductSlug,
+                        CoinAmount = r.CoinAmount,
+                        Timestamp = r.PaidAt,
+                        Status = r.Status.ToString(),
+                        ExternalReference = r.ExternalOrderId,
+                        ExternalTransactionId = r.ExternalTransactionId,
+                        Locale = r.Locale,
+                        PaymentMethod = r.PaymentMethod,
+                        IsSubscriptionPayment = r.IsSubscriptionPayment,
+                        BuyerEmail = r.BuyerEmail
                     })
                     .ToListAsync();
 
                 _logger.LogInformation(
-                    $"Exported {results.Count} detailed transactions, period {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
+                    "Exported {Count} detailed transactions, period {Start:yyyy-MM-dd} to {End:yyyy-MM-dd}",
+                    results.Count, startDate, endDate);
 
                 return Ok(results);
             }
@@ -367,45 +339,52 @@ namespace Payments.Controllers
         {
             try
             {
-                var query = _db.PaymentRequests
-                    .Include(pr => pr.User)
-                    .Include(pr => pr.ProductId)
-                    .Where(pr => pr.State == PaymentRequest.Status.CONFIRMED
-                        && pr.UpdatedAt >= startDate
-                        && pr.UpdatedAt <= endDate);
+                var query = _db.PaymentRecords
+                    .Where(r => r.Status == PaymentRecordStatus.Confirmed
+                        && r.PaidAt >= startDate
+                        && r.PaidAt <= endDate);
 
                 if (!string.IsNullOrWhiteSpace(provider))
-                {
-                    query = query.Where(pr => pr.Provider == provider);
-                }
-
+                    query = query.Where(r => r.Provider == provider);
                 if (!string.IsNullOrWhiteSpace(country))
-                {
-                    query = query.Where(pr => pr.User.Country == country);
-                }
+                    query = query.Where(r => r.Country == country);
 
                 var results = await query
-                    .OrderByDescending(pr => pr.UpdatedAt)
-                    .Select(pr => new DetailedTransactionExport
+                    .OrderByDescending(r => r.PaidAt)
+                    .Select(r => new DetailedTransactionExport
                     {
-                        TransactionId = pr.Id.ToString(),
-                        UserId = pr.User.ExternalId,
-                        UserCountry = pr.User.Country ?? "UNKNOWN",
-                        Provider = pr.Provider,
-                        Amount = pr.Amount,
-                        Currency = "USD",
-                        ProductId = pr.ProductId.Slug,
-                        Timestamp = pr.UpdatedAt,
-                        Status = pr.State.ToString(),
-                        ExternalReference = pr.SessionId,
-                        Locale = pr.Locale
+                        TransactionId = r.Id.ToString(),
+                        UserId = r.ExternalUserId,
+                        UserCountry = r.Country ?? "UNKNOWN",
+                        ZipCode = r.ZipCode,
+                        State = r.State,
+                        Provider = r.Provider,
+                        Amount = r.GrossAmount,
+                        Subtotal = r.Subtotal,
+                        DiscountAmount = r.DiscountAmount,
+                        TaxAmount = r.TaxAmount,
+                        TaxRate = r.TaxRate,
+                        TaxRemittedByProcessor = r.TaxRemittedByProcessor,
+                        NetAmount = r.NetAmount,
+                        ProcessorFee = r.ProcessorFee,
+                        CreatorCode = r.CreatorCode,
+                        CreatorCodeDiscount = r.CreatorCodeDiscount,
+                        Currency = r.Currency,
+                        ProductId = r.ProductSlug,
+                        CoinAmount = r.CoinAmount,
+                        Timestamp = r.PaidAt,
+                        Status = r.Status.ToString(),
+                        ExternalReference = r.ExternalOrderId,
+                        ExternalTransactionId = r.ExternalTransactionId,
+                        Locale = r.Locale,
+                        PaymentMethod = r.PaymentMethod,
+                        IsSubscriptionPayment = r.IsSubscriptionPayment,
+                        BuyerEmail = r.BuyerEmail
                     })
                     .ToListAsync();
 
                 if (format.ToLower() == "csv")
-                {
                     return ExportAsCsv(results);
-                }
 
                 return Ok(results);
             }
@@ -422,30 +401,49 @@ namespace Payments.Controllers
         private IActionResult ExportAsCsv(List<DetailedTransactionExport> transactions)
         {
             var csv = new System.Text.StringBuilder();
-            
-            // Add header
-            csv.AppendLine("TransactionId,UserId,UserCountry,Provider,Amount,Currency,ProductId,Timestamp,Status,ExternalReference,Locale");
-            
-            // Add rows
+
+            csv.AppendLine("TransactionId,UserId,UserCountry,ZipCode,State,Provider,PaymentMethod," +
+                "Amount,Subtotal,DiscountAmount,TaxAmount,TaxRate,TaxRemittedByProcessor," +
+                "NetAmount,ProcessorFee,CreatorCode,CreatorCodeDiscount," +
+                "Currency,ProductId,CoinAmount,Timestamp,Status," +
+                "ExternalReference,ExternalTransactionId,Locale,IsSubscription,BuyerEmail");
+
             foreach (var tx in transactions)
             {
                 var line = $"\"{tx.TransactionId}\"," +
                           $"\"{tx.UserId}\"," +
                           $"\"{tx.UserCountry}\"," +
+                          $"\"{tx.ZipCode}\"," +
+                          $"\"{tx.State}\"," +
                           $"\"{tx.Provider}\"," +
+                          $"\"{tx.PaymentMethod}\"," +
                           $"{tx.Amount}," +
+                          $"{tx.Subtotal}," +
+                          $"{tx.DiscountAmount}," +
+                          $"{tx.TaxAmount}," +
+                          $"{tx.TaxRate}," +
+                          $"{tx.TaxRemittedByProcessor}," +
+                          $"{tx.NetAmount}," +
+                          $"{tx.ProcessorFee}," +
+                          $"\"{tx.CreatorCode}\"," +
+                          $"{tx.CreatorCodeDiscount}," +
                           $"\"{tx.Currency}\"," +
                           $"\"{tx.ProductId}\"," +
+                          $"{tx.CoinAmount}," +
                           $"\"{tx.Timestamp:yyyy-MM-dd HH:mm:ss}\"," +
                           $"\"{tx.Status}\"," +
                           $"\"{tx.ExternalReference}\"," +
-                          $"\"{tx.Locale}\"";
+                          $"\"{tx.ExternalTransactionId}\"," +
+                          $"\"{tx.Locale}\"," +
+                          $"{tx.IsSubscriptionPayment}," +
+                          $"\"{tx.BuyerEmail}\"";
                 csv.AppendLine(line);
             }
 
             var content = csv.ToString();
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
-            
+
             return File(bytes, "text/csv", $"transactions_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv");
-        }    }
+        }
+    }
 }

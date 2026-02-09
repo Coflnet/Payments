@@ -3,7 +3,8 @@ using System;
 namespace Coflnet.Payments.Models
 {
     /// <summary>
-    /// Detailed export view of a single transaction for compliance and reporting
+    /// Detailed export view of a single transaction for compliance and reporting.
+    /// Maps from PaymentRecord for API responses.
     /// </summary>
     public class DetailedTransactionExport
     {
@@ -23,14 +24,69 @@ namespace Coflnet.Payments.Models
         public string UserCountry { get; set; }
 
         /// <summary>
+        /// User's ZIP / postal code
+        /// </summary>
+        public string ZipCode { get; set; }
+
+        /// <summary>
+        /// User's state / province
+        /// </summary>
+        public string State { get; set; }
+
+        /// <summary>
         /// Payment provider slug (e.g., "coingate", "stripe", "googlepay")
         /// </summary>
         public string Provider { get; set; }
 
         /// <summary>
-        /// Amount paid
+        /// Gross amount charged to customer
         /// </summary>
         public decimal Amount { get; set; }
+
+        /// <summary>
+        /// Subtotal before tax
+        /// </summary>
+        public decimal Subtotal { get; set; }
+
+        /// <summary>
+        /// Discount applied by processor
+        /// </summary>
+        public decimal DiscountAmount { get; set; }
+
+        /// <summary>
+        /// Tax collected by processor
+        /// </summary>
+        public decimal TaxAmount { get; set; }
+
+        /// <summary>
+        /// Tax rate percentage
+        /// </summary>
+        public double TaxRate { get; set; }
+
+        /// <summary>
+        /// Whether the processor already remitted tax
+        /// </summary>
+        public bool TaxRemittedByProcessor { get; set; }
+
+        /// <summary>
+        /// Net amount received
+        /// </summary>
+        public decimal NetAmount { get; set; }
+
+        /// <summary>
+        /// Processor fee
+        /// </summary>
+        public decimal ProcessorFee { get; set; }
+
+        /// <summary>
+        /// Creator code used (if any)
+        /// </summary>
+        public string CreatorCode { get; set; }
+
+        /// <summary>
+        /// Creator code discount
+        /// </summary>
+        public decimal CreatorCodeDiscount { get; set; }
 
         /// <summary>
         /// Currency code (ISO 4217)
@@ -43,23 +99,48 @@ namespace Coflnet.Payments.Models
         public string ProductId { get; set; }
 
         /// <summary>
-        /// Date and time of transaction (UTC)
+        /// Virtual currency amount credited
+        /// </summary>
+        public long CoinAmount { get; set; }
+
+        /// <summary>
+        /// Date and time of payment (UTC)
         /// </summary>
         public DateTime Timestamp { get; set; }
 
         /// <summary>
-        /// Payment request status at time of export
+        /// Payment record status
         /// </summary>
         public string Status { get; set; }
 
         /// <summary>
-        /// External reference/session ID from payment provider
+        /// External order ID from payment provider
         /// </summary>
         public string ExternalReference { get; set; }
+
+        /// <summary>
+        /// Secondary external transaction ID
+        /// </summary>
+        public string ExternalTransactionId { get; set; }
 
         /// <summary>
         /// ISO 639-1 locale of the payment session
         /// </summary>
         public string Locale { get; set; }
+
+        /// <summary>
+        /// Payment method (card, paypal, crypto, etc.)
+        /// </summary>
+        public string PaymentMethod { get; set; }
+
+        /// <summary>
+        /// Whether this is a subscription payment
+        /// </summary>
+        public bool IsSubscriptionPayment { get; set; }
+
+        /// <summary>
+        /// Buyer email
+        /// </summary>
+        public string BuyerEmail { get; set; }
     }
 }
