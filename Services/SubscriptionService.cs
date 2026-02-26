@@ -470,6 +470,11 @@ public class SubscriptionService
     private async Task RevertPurchase(string userId, string reference)
     {
         var transactionId = context.FiniteTransactions.Where(t => t.Reference == reference).Select(t => t.Id).FirstOrDefault();
+        if (transactionId == 0)
+        {
+            logger.LogWarning("No transaction found for reference {Reference} for user {UserId}, skipping revert", reference, userId);
+            return;
+        }
         await transactionService.RevertPurchase(userId, transactionId);
     }
 }
