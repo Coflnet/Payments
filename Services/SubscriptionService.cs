@@ -272,6 +272,14 @@ public class SubscriptionService
         
         if (data.Data.Type == "subscription-invoices")
         {
+            // Skip coin credit/service extension for 0$ initial trial invoices, as trial access is already handled by HandleTrialSubscription
+            if (data.Data.Attributes.Total == 0 && data.Data.Attributes.Subtotal == 0 && data.Data.Attributes.BillingReason == "initial")
+            {
+                logger.LogInformation("Subscription invoice is for 0 amount (initial trial), skipping coin credit for user {UserId} product {ProductId}", 
+                    customData.UserId, customData.ProductId);
+                return;
+            }
+
             referenceId = data.Data.Attributes.SubscriptionId + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
             logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId}, crediting");
         }
