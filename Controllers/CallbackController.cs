@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using PayPalCheckoutSdk.Orders;
 using PayPalHttp;
 using Stripe;
+using PaymentRecord = Coflnet.Payments.Models.PaymentRecord;
 using System.Linq;
 using System.Runtime.Serialization;
 using PayPalCheckoutSdk.Core;
@@ -106,7 +107,7 @@ namespace Payments.Controllers
                 _logger.LogInformation("stripe valiadted");
                 _logger.LogInformation(json);
 
-                if (stripeEvent.Type == Events.CheckoutSessionCompleted)
+                if (stripeEvent.Type == EventTypes.CheckoutSessionCompleted)
                 {
                     _logger.LogInformation("stripe checkout completed");
                     var session = stripeEvent.Data.Object as Stripe.Checkout.Session;
@@ -183,7 +184,7 @@ namespace Payments.Controllers
                         IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString()
                     });
                 }
-                else if (stripeEvent.Type == Events.ChargeFailed)
+                else if (stripeEvent.Type == EventTypes.ChargeFailed)
                 {
                     var charge = stripeEvent.Data.Object as Stripe.Charge;
                     var intentId = charge.PaymentIntentId;
@@ -209,7 +210,7 @@ namespace Payments.Controllers
                         await db.SaveChangesAsync();
                     }
                 }
-                else if (stripeEvent.Type == Events.ChargeRefunded)
+                else if (stripeEvent.Type == EventTypes.ChargeRefunded)
                 {
                     var charge = stripeEvent.Data.Object as Stripe.Charge;
                     var intentId = charge.PaymentIntentId;

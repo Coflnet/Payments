@@ -6,10 +6,11 @@ using Coflnet.Payments.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using Stripe;
 using Prometheus;
 using System.Net;
@@ -55,12 +56,14 @@ namespace Coflnet.Payments
                 services.AddDbContext<PaymentContext>(
                     dbContextOptions => dbContextOptions
                         .UseMySql(Configuration["DB_CONNECTION"], serverVersion)
+                        .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
                 );
             }
             else
                 services.AddDbContext<PaymentContext>(
                     dbContextOptions => dbContextOptions
                         .UseNpgsql(Configuration["DB_CONNECTION"])
+                        .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
                         .EnableSensitiveDataLogging() // <-- These two calls are optional but help
                         .EnableDetailedErrors()       // <-- with debugging (remove for production).
                 );
