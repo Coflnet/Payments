@@ -821,6 +821,24 @@ public class LemonSqueezyService
         logger.LogInformation($"Creating lemonsqueezy checkout with: \n{json}");
         var response = await restclient.ExecuteAsync(request);
         logger.LogInformation(response.StatusCode + response.Content);
+
+        if (!response.IsSuccessful)
+        {
+            // Extract error detail from LemonSqueezy response and pass it through
+            try
+            {
+                var errorData = JObject.Parse(response.Content);
+                var errorDetail = (string)errorData["errors"]?[0]?["detail"];
+                if (!string.IsNullOrEmpty(errorDetail))
+                {
+                    throw new ApiException(errorDetail);
+                }
+            }
+            catch (ApiException) { throw; }
+            catch (Exception) { /* fall through to generic error */ }
+            throw new ApiException($"LemonSqueezy checkout failed: {response.StatusCode}");
+        }
+
         var result = JsonConvert.DeserializeObject(response.Content);
         var data = JObject.Parse(result.ToString());
         var checkoutId = (string)data["data"]["id"];
