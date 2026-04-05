@@ -149,14 +149,14 @@ public class LemonSqueezyServiceTests
 
         // Assert - Should select a variant WITHOUT trial (enableTrial=false)
         // Since we want trial disabled, it should filter to variants with HasFreeTrial=false
-        // Available options: 1277636 (3569), 1277645 (3569)
-        // But wait - there's no variant with HasFreeTrial=false and price 1299!
-        // The test should actually verify it falls back to all variants when no exact trial match exists
-        // In that case, it should find 1277646 (BazaarPro, price 1299, but HasFreeTrial=true)
+        // Available non-trial options: 1277636 (3569), 1277645 (3569)
+        // No non-trial variant at price 1299 exists, so it picks the lowest-priced non-trial variant
+        // This is correct: a non-trial checkout must never get a trial variant
         
         Assert.That(result, Is.Not.Null, "GetBestVariant should return a variant");
-        Assert.That(result.VariantId, Is.EqualTo("1277646"), "Should select BazaarPro monthly variant");
-        Assert.That(result.Price, Is.EqualTo(1299), "Should match the target price of 1299 cents");
+        Assert.That(result.HasFreeTrial, Is.False, "Should never select a trial variant when enableTrial=false");
+        Assert.That(result.VariantId, Is.EqualTo("1277636").Or.EqualTo("1277645"), "Should select a non-trial variant");
+        Assert.That(result.Price, Is.EqualTo(3569), "Should use the available non-trial price");
     }
 
     /// <summary>

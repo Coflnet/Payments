@@ -147,79 +147,47 @@ public class VariantCacheService
         logger.LogDebug("Selecting best variant for {IntervalKey} with enableTrial={EnableTrial}, targetPrice={TargetPrice}. Found {Count} variants",
             intervalKey, enableTrial, targetPrice, variants.Count);
 
-        // Step 1: Filter by trial preference
+        // Step 1: Filter by trial preference — strict: never cross trial/non-trial boundary
+        // when matching variants exist. This prevents e.g. a non-trial checkout from getting
+        // a trial variant, which would skip the trial but still look like a paid subscription.
         var matchingTrialVariants = variants.Where(v => v.HasFreeTrial == enableTrial).ToList();
+        var candidateVariants = matchingTrialVariants.Count > 0 ? matchingTrialVariants : null;
         
-        // Step 2: Select best price match, with fallback logic
+        if (candidateVariants == null)
+        {
+            // No variants with the requested trial preference exist at all for this interval.
+            // Fall back to all variants but log a warning — this means the LemonSqueezy product
+            // is misconfigured (missing a trial or non-trial variant).
+            logger.LogWarning("No variants with HasFreeTrial={EnableTrial} found for {IntervalKey}, falling back to all {Count} variants. " +
+                "Consider adding a {TrialType} variant to the LemonSqueezy product.",
+                enableTrial, intervalKey, variants.Count, enableTrial ? "trial" : "non-trial");
+            candidateVariants = variants;
+        }
+        
+        // Step 2: Select best price match from candidate variants
         VariantInfo bestVariant = null;
         
         if (targetPrice.HasValue && targetPrice.Value > 0)
         {
-            // Try to find best match in trial-filtered variants first
-            if (matchingTrialVariants.Count > 0)
-            {
-                var exactMatch = matchingTrialVariants.FirstOrDefault(v => v.Price == targetPrice.Value);
-                if (exactMatch != null)
-                {
-                    bestVariant = exactMatch;
-                }
-                else
-                {
-                    var lowerOrEqual = matchingTrialVariants
-                        .Where(v => v.Price <= targetPrice.Value)
-                        .OrderByDescending(v => v.Price)
-                        .FirstOrDefault();
-                    
-                    if (lowerOrEqual != null)
-                    {
-                        bestVariant = lowerOrEqual;
-                    }
-                }
-            }
-
-            // If no good match in trial-filtered variants, fallback to ALL variants
+            bestVariant = candidateVariants.FirstOrDefault(v => v.Price == targetPrice.Value);
+            
             if (bestVariant == null)
             {
-                logger.LogInformation("No good price match with HasFreeTrial={EnableTrial} for {IntervalKey}, trying all variants", 
-                    enableTrial, intervalKey);
-                
-                var exactMatch = variants.FirstOrDefault(v => v.Price == targetPrice.Value);
-                if (exactMatch != null)
-                {
-                    bestVariant = exactMatch;
-                }
-                else
-                {
-                    var lowerOrEqual = variants
-                        .Where(v => v.Price <= targetPrice.Value)
-                        .OrderByDescending(v => v.Price)
-                        .FirstOrDefault();
-                    
-                    if (lowerOrEqual != null)
-                    {
-                        bestVariant = lowerOrEqual;
-                    }
-                    else
-                    {
-                        // No variants match target price, pick lowest available
-                        bestVariant = variants.OrderBy(v => v.Price).First();
-                    }
-                }
+                bestVariant = candidateVariants
+                    .Where(v => v.Price <= targetPrice.Value)
+                    .OrderByDescending(v => v.Price)
+                    .FirstOrDefault();
+            }
+            
+            if (bestVariant == null)
+            {
+                // No variants at or below target price, pick lowest available
+                bestVariant = candidateVariants.OrderBy(v => v.Price).First();
             }
         }
         else
         {
-            // No target price - prefer trial-matching variants, fallback to all
-            if (matchingTrialVariants.Count > 0)
-            {
-                bestVariant = matchingTrialVariants.OrderBy(v => v.Price).First();
-            }
-            else
-            {
-                logger.LogInformation("No variants with HasFreeTrial={EnableTrial} found for {IntervalKey}, using all variants", 
-                    enableTrial, intervalKey);
-                bestVariant = variants.OrderBy(v => v.Price).First();
-            }
+            bestVariant = candidateVariants.OrderBy(v => v.Price).First();
         }
 
         logger.LogInformation("Selected variant: {VariantName} (ID: {VariantId}) Price: {Price} HasTrial: {HasTrial} for {IntervalKey}",
