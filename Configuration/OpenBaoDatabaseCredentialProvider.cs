@@ -1,0 +1,140 @@
+using System;
+using System.IO;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Npgsql;
+
+namespace Coflnet.Security.OpenBao;
+
+/// <summary>
+/// Supplies the PostgreSQL/CockroachDB password from OpenBao at runtime.
+///
+/// The application keeps a stable username (so the Npgsql connection pool stays
+/// intact) while OpenBao rotates the password. The password is read from a
+/// OpenBao database secrets-engine endpoint (a static role by default) and is
+/// refreshed periodically by Npgsql via <c>UsePeriodicPasswordProvider</c>.
+///
+/// When <c>OPENBAO__DB__ENABLED</c> is not set the whole feature is inert and
+/// the caller keeps using the static <c>DB_CONNECTION</c> string (local dev,
+/// appsettings, plain environment variables).
+/// </summary>
+internal sealed class OpenBaoDatabaseCredentialProvider
+{
+    private readonly OpenBaoDatabaseOptions options;
+
+    private OpenBaoDatabaseCredentialProvider(OpenBaoDatabaseOptions options) => this.options = options;
+
+    /// <summary>
+    /// Builds an <see cref="NpgsqlDataSource"/> that fetches its password from
+    /// OpenBao and refreshes it on the configured interval.
+    /// </summary>
+    /// <param name="baseConnectionString">
+    /// Connection string containing everything except the password (host, port,
+    /// database, username, SSL settings). A password present here is ignored.
+    /// </param>
+    public static NpgsqlDataSource BuildDataSource(string? baseConnectionString, OpenBaoDatabaseOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(baseConnectionString))
+            throw new InvalidOperationException("DB_CONNECTION is required to build the OpenBao-backed data source.");
+
+        options.Validate();
+        var provider = new OpenBaoDatabaseCredentialProvider(options);
+
+        // Strip any password from the base string; OpenBao supplies it.
+        var builder = new NpgsqlConnectionStringBuilder(baseConnectionString) { Password = null };
+        var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.ConnectionString);
+        dataSourceBuilder.UsePeriodicPasswordProvider(
+            (_, ct) => provider.FetchPasswordAsync(ct),
+            options.RefreshInterval,
+            options.FailureRefreshInterval);
+        return dataSourceBuilder.Build();
+    }
+
+    private async ValueTask<string> FetchPasswordAsync(CancellationToken cancellationToken)
+    {
+        var jwt = await File.ReadAllTextAsync(options.TokenPath, cancellationToken).ConfigureAwait(false);
+        using var client = new HttpClient { BaseAddress = new Uri(options.Address.TrimEnd('/') + "/") };
+
+        var loginPayload = JsonSerializer.Serialize(new { role = options.Role, jwt });
+        using var loginRequest = new HttpRequestMessage(HttpMethod.Post, $"v1/auth/{options.AuthPath.Trim('/')}/login")
+        {
+            Content = new StringContent(loginPayload, Encoding.UTF8, "application/json")
+        };
+        using var loginResponse = await client.SendAsync(loginRequest, cancellationToken).ConfigureAwait(false);
+        loginResponse.EnsureSuccessStatusCode();
+
+        using var loginDocument = JsonDocument.Parse(
+            await loginResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        var token = loginDocument.RootElement.GetProperty("auth").GetProperty("client_token").GetString();
+        if (string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException("OpenBao login did not return a client token.");
+
+        // static-creds/<role> (fixed user, rotated password) or creds/<role> (dynamic user).
+        var endpoint = $"v1/{options.Mount.Trim('/')}/{options.CredentialEndpoint}/{options.Role}";
+        using var credsRequest = new HttpRequestMessage(HttpMethod.Get, endpoint);
+        credsRequest.Headers.Add("X-Vault-Token", token);
+        credsRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        using var credsResponse = await client.SendAsync(credsRequest, cancellationToken).ConfigureAwait(false);
+        credsResponse.EnsureSuccessStatusCode();
+
+        using var credsDocument = JsonDocument.Parse(
+            await credsResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        var data = credsDocument.RootElement.GetProperty("data");
+        if (!data.TryGetProperty("password", out var password) || password.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException($"OpenBao response from {endpoint} did not contain a password.");
+
+        return password.GetString()!;
+    }
+}
+
+internal sealed record OpenBaoDatabaseOptions
+{
+    public bool Enabled { get; init; }
+    public string Address { get; init; } = "";
+    public string AuthPath { get; init; } = "kubernetes";
+    public string Mount { get; init; } = "database";
+    public string Role { get; init; } = "";
+    public string TokenPath { get; init; } = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+
+    /// <summary>"static" -&gt; static-creds (fixed user, rotated password); "dynamic" -&gt; creds.</summary>
+    public string CredentialsKind { get; init; } = "static";
+    public TimeSpan RefreshInterval { get; init; } = TimeSpan.FromMinutes(30);
+    public TimeSpan FailureRefreshInterval { get; init; } = TimeSpan.FromSeconds(10);
+
+    public string CredentialEndpoint =>
+        string.Equals(CredentialsKind, "dynamic", StringComparison.OrdinalIgnoreCase) ? "creds" : "static-creds";
+
+    public static OpenBaoDatabaseOptions FromEnvironment()
+    {
+        return new OpenBaoDatabaseOptions
+        {
+            Enabled = Bool("OPENBAO__DB__ENABLED", false),
+            // Reuse the application's existing OpenBao coordinates where a
+            // database-specific override is not provided.
+            Address = Env("OPENBAO__DB__ADDR", Env("OPENBAO__ADDR")),
+            AuthPath = Env("OPENBAO__DB__AUTH_PATH", Env("OPENBAO__AUTH_PATH", "kubernetes")),
+            Mount = Env("OPENBAO__DB__MOUNT", "database"),
+            Role = Env("OPENBAO__DB__ROLE"),
+            TokenPath = Env("OPENBAO__DB__TOKEN_PATH",
+                Env("OPENBAO__TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token")),
+            CredentialsKind = Env("OPENBAO__DB__CREDENTIALS_KIND", "static"),
+            RefreshInterval = TimeSpan.FromSeconds(Int("OPENBAO__DB__REFRESH_SECONDS", 1800)),
+            FailureRefreshInterval = TimeSpan.FromSeconds(Int("OPENBAO__DB__FAILURE_REFRESH_SECONDS", 10))
+        };
+    }
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Address)) throw new InvalidOperationException("OPENBAO__ADDR (or OPENBAO__DB__ADDR) is required for dynamic database credentials.");
+        if (string.IsNullOrWhiteSpace(Role)) throw new InvalidOperationException("OPENBAO__DB__ROLE is required for dynamic database credentials.");
+        if (!File.Exists(TokenPath)) throw new FileNotFoundException("Kubernetes service account token not found.", TokenPath);
+    }
+
+    private static string Env(string key, string fallback = "") => Environment.GetEnvironmentVariable(key) ?? fallback;
+    private static bool Bool(string key, bool fallback) => bool.TryParse(Environment.GetEnvironmentVariable(key), out var value) ? value : fallback;
+    private static int Int(string key, int fallback) => int.TryParse(Environment.GetEnvironmentVariable(key), out var value) ? value : fallback;
+}

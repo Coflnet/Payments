@@ -50,7 +50,21 @@ namespace Coflnet.Payments
                 var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
                 c.IncludeXmlComments(xmlPath);
             });
-            if (Configuration["DB_CONNECTION"].StartsWith("server"))
+            var openBaoDb = Coflnet.Security.OpenBao.OpenBaoDatabaseOptions.FromEnvironment();
+            if (openBaoDb.Enabled)
+            {
+                // Production (CockroachDB): stable username, password rotated by
+                // OpenBao and supplied to Npgsql via a periodic password provider.
+                var dataSource = Coflnet.Security.OpenBao.OpenBaoDatabaseCredentialProvider
+                    .BuildDataSource(Configuration["DB_CONNECTION"], openBaoDb);
+                services.AddSingleton(dataSource);
+                services.AddDbContext<PaymentContext>(
+                    dbContextOptions => dbContextOptions
+                        .UseNpgsql(dataSource)
+                        .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
+                );
+            }
+            else if (Configuration["DB_CONNECTION"].StartsWith("server"))
             {
                 var serverVersion = new MariaDbServerVersion(new Version(Configuration["MARIADB_VERSION"]));
                 services.AddDbContext<PaymentContext>(
