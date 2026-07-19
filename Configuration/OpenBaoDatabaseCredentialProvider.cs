@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -57,7 +58,28 @@ internal sealed class OpenBaoDatabaseCredentialProvider
     private async ValueTask<string> FetchPasswordAsync(CancellationToken cancellationToken)
     {
         var jwt = await File.ReadAllTextAsync(options.TokenPath, cancellationToken).ConfigureAwait(false);
-        using var client = new HttpClient { BaseAddress = new Uri(options.Address.TrimEnd('/') + "/") };
+        var handler = new HttpClientHandler();
+        if (!string.IsNullOrWhiteSpace(options.CACertPath))
+        {
+            if (!File.Exists(options.CACertPath))
+                throw new FileNotFoundException("OpenBao CA certificate not found.", options.CACertPath);
+
+            var caCert = X509CertificateLoader.LoadCertificateFromFile(options.CACertPath);
+            handler.ServerCertificateCustomValidationCallback = (_, cert, chain, errors) =>
+            {
+                if (errors == System.Net.Security.SslPolicyErrors.None)
+                    return true;
+                if (cert is null || chain is null)
+                    return false;
+
+                chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+                chain.ChainPolicy.CustomTrustStore.Add(caCert);
+                chain.ChainPolicy.VerificationFlags = X509VerificationFlags.IgnoreWrongUsage;
+                return chain.Build(new X509Certificate2(cert));
+            };
+        }
+
+        using var client = new HttpClient(handler) { BaseAddress = new Uri(options.Address.TrimEnd('/') + "/") };
 
         var loginPayload = JsonSerializer.Serialize(new { role = options.Role, jwt });
         using var loginRequest = new HttpRequestMessage(HttpMethod.Post, $"v1/auth/{options.AuthPath.Trim('/')}/login")
@@ -99,6 +121,7 @@ internal sealed record OpenBaoDatabaseOptions
     public string Mount { get; init; } = "database";
     public string Role { get; init; } = "";
     public string TokenPath { get; init; } = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+    public string CACertPath { get; init; } = "";
 
     /// <summary>"static" -&gt; static-creds (fixed user, rotated password); "dynamic" -&gt; creds.</summary>
     public string CredentialsKind { get; init; } = "static";
@@ -121,6 +144,7 @@ internal sealed record OpenBaoDatabaseOptions
             Role = Env("OPENBAO__DB__ROLE"),
             TokenPath = Env("OPENBAO__DB__TOKEN_PATH",
                 Env("OPENBAO__TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token")),
+            CACertPath = Env("OPENBAO__DB__CACERT", Env("OPENBAO__CACERT")),
             CredentialsKind = Env("OPENBAO__DB__CREDENTIALS_KIND", "static"),
             RefreshInterval = TimeSpan.FromSeconds(Int("OPENBAO__DB__REFRESH_SECONDS", 1800)),
             FailureRefreshInterval = TimeSpan.FromSeconds(Int("OPENBAO__DB__FAILURE_REFRESH_SECONDS", 10))
