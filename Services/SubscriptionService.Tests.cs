@@ -435,6 +435,40 @@ public class SubscriptionServiceTests
         Assert.That(subscription.Status, Is.EqualTo("active"));
     }
 
+    [Test]
+    public async Task SubscriptionUpdated_WithoutCustomData_UsesStoredSubscriptionMapping()
+    {
+        var user = await userService.GetOrCreate("subscription-update-without-custom-data");
+        var product = await context.TopUpProducts.FirstAsync();
+        var subscriptionId = "2270449";
+        var originalRenewal = DateTime.UtcNow.AddDays(7);
+        context.Subscriptions.Add(new UserSubscription
+        {
+            User = user,
+            Product = product,
+            ExternalId = subscriptionId,
+            ExternalCustomerId = "9059119",
+            Status = "active",
+            CreatedAt = DateTime.UtcNow.AddMonths(-1),
+            UpdatedAt = DateTime.UtcNow.AddDays(-1),
+            RenewsAt = originalRenewal
+        });
+        await context.SaveChangesAsync();
+
+        var attributes = CreateTrialAttributes(DateTime.UtcNow.AddDays(28));
+        attributes.TrialEndsAt = null;
+        attributes.RenewsAt = null;
+        var webhook = new Webhook(
+            new Meta(false, "subscription_updated", null),
+            new Data("subscriptions", subscriptionId, attributes, null, null));
+
+        await subscriptionService.UpdateSubscription(webhook);
+
+        var updated = await context.Subscriptions.SingleAsync(s => s.ExternalId == subscriptionId);
+        Assert.That(updated.Status, Is.EqualTo("on_trial"));
+        Assert.That(updated.RenewsAt, Is.EqualTo(originalRenewal));
+    }
+
     /// <summary>
     /// Test that PayPal subscriptions don't get double-credited when both subscription_created
     /// and subscription_payment_success (with billing_reason "initial") webhooks are received.

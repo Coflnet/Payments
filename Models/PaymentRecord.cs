@@ -212,6 +212,12 @@ public class PaymentRecord
     /// </summary>
     public DateTime? RefundedAt { get; set; }
 
+    /// <summary>
+    /// Cumulative amount refunded in <see cref="Currency"/>. This can be less
+    /// than <see cref="GrossAmount"/> for a partial refund.
+    /// </summary>
+    public decimal RefundedAmount { get; set; }
+
     // ── Buyer identity (for invoicing / audit) ───────────
 
     /// <summary>

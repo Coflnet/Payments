@@ -374,16 +374,64 @@ namespace Payments.Controllers
                     IsSubscriptionPayment = false
                 });
             }
-            else if (meta.EventName == "order_refunded" && data.Attributes.Status == "refunded")
+            else if (meta.EventName == "order_refunded"
+                && (data.Attributes.Status == "refunded"
+                    || data.Attributes.Status == "partial_refund"
+                    || data.Attributes.Refunded
+                    || data.Attributes.RefundedAmount > 0))
             {
-                if (meta.CustomData.IsSubscription != null && meta.CustomData.IsSubscription.Equals("true", StringComparison.OrdinalIgnoreCase))
+                var refundedAmount = data.Attributes.RefundedAmount;
+                var isFullRefund = data.Attributes.Status == "refunded" || data.Attributes.Refunded;
+                if (isFullRefund && refundedAmount <= 0)
+                    refundedAmount = data.Attributes.Total;
+
+                if (refundedAmount <= 0 || data.Attributes.Total <= 0)
                 {
-                    await RevertSubscriptionPayment(webhook);
-                    await MarkPaymentRefunded(data.Attributes.Identifier);
+                    _logger.LogWarning(
+                        "Ignoring Lemon Squeezy refund {OrderId} with invalid amounts: refunded={RefundedAmount}, total={Total}",
+                        data.Attributes.Identifier,
+                        refundedAmount,
+                        data.Attributes.Total);
                     return Ok();
                 }
-                await RevertTopUpWithReference(data.Attributes.Identifier);
-                await MarkPaymentRefunded(data.Attributes.Identifier);
+
+                isFullRefund = isFullRefund || refundedAmount >= data.Attributes.Total;
+                if (meta.CustomData?.IsSubscription?.Equals("true", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    if (isFullRefund)
+                    {
+                        await RevertSubscriptionPayment(webhook);
+                    }
+                    else
+                    {
+                        _logger.LogInformation(
+                            "Recorded partial refund for subscription order {OrderId}; subscription access is unchanged",
+                            data.Attributes.Identifier);
+                    }
+                    await MarkPaymentRefunded(data.Attributes.Identifier, refundedAmount / 100m, isFullRefund);
+                    return Ok();
+                }
+
+                var balanceDeduction = await transactionService.ApplyTopUpRefund(
+                    data.Attributes.Identifier,
+                    data.Attributes.Total,
+                    refundedAmount);
+                if (balanceDeduction.HasValue)
+                {
+                    _logger.LogInformation(
+                        "Applied Lemon Squeezy refund for order {OrderId}: deducted {BalanceAmount} balance (refunded {RefundedAmount}/{TotalAmount} cents)",
+                        data.Attributes.Identifier,
+                        balanceDeduction.Value,
+                        refundedAmount,
+                        data.Attributes.Total);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "No top-up transaction found for Lemon Squeezy refund order {OrderId}; balance was not changed",
+                        data.Attributes.Identifier);
+                }
+                await MarkPaymentRefunded(data.Attributes.Identifier, refundedAmount / 100m, isFullRefund);
             }
             else if (meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
             {
@@ -1540,7 +1588,7 @@ namespace Payments.Controllers
         /// <summary>
         /// Marks a payment record as refunded by external order ID
         /// </summary>
-        private async Task MarkPaymentRefunded(string externalOrderId)
+        private async Task MarkPaymentRefunded(string externalOrderId, decimal? refundedAmount = null, bool isFullRefund = true)
         {
             try
             {
@@ -1549,10 +1597,24 @@ namespace Payments.Controllers
                     .FirstOrDefaultAsync();
                 if (record != null)
                 {
-                    record.Status = PaymentRecordStatus.Refunded;
+                    if (refundedAmount.HasValue)
+                        record.RefundedAmount = Math.Max(record.RefundedAmount, refundedAmount.Value);
+                    else if (isFullRefund)
+                        record.RefundedAmount = record.GrossAmount;
+
+                    var fullyRefunded = isFullRefund
+                        || record.Status == PaymentRecordStatus.Refunded
+                        || (record.GrossAmount > 0 && record.RefundedAmount >= record.GrossAmount);
+                    record.Status = fullyRefunded
+                        ? PaymentRecordStatus.Refunded
+                        : PaymentRecordStatus.PartiallyRefunded;
                     record.RefundedAt = DateTime.UtcNow;
                     await db.SaveChangesAsync();
-                    _logger.LogInformation("PaymentRecord marked refunded: {ExternalOrderId}", externalOrderId);
+                    _logger.LogInformation(
+                        "PaymentRecord refund updated: {ExternalOrderId}, status={Status}, refunded={RefundedAmount}",
+                        externalOrderId,
+                        record.Status,
+                        record.RefundedAmount);
                 }
             }
             catch (Exception ex)

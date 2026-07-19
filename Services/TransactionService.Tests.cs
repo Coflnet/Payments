@@ -42,6 +42,9 @@ public class TransactionServiceTests
         var svc = new PurchaseableProduct { Title = "Service", Slug = "svc-test", Cost = 5, OwnershipSeconds = 60, Type = Product.ProductType.SERVICE };
         context.Products.Add(svc);
 
+        var refund = new PurchaseableProduct { Title = "Refund", Slug = "revert", Cost = 1, Type = Product.ProductType.VARIABLE_PRICE };
+        context.Products.Add(refund);
+
         await context.SaveChangesAsync();
     }
 
@@ -91,7 +94,57 @@ public class TransactionServiceTests
     var ex = NUnit.Framework.Assert.ThrowsAsync<ApiException>(async () => await transactionService.AddTopUp(context.TopUpProducts.First().Id, "nonexistent-user", "ref-bad"));
 
     // after exception there must be no current transaction left open
-    Assert.That(context.Database.CurrentTransaction, Is.Null, "No ambient transaction should remain after rollback/dispose");
+        Assert.That(context.Database.CurrentTransaction, Is.Null, "No ambient transaction should remain after rollback/dispose");
+    }
+
+    [Test]
+    public async Task ApplyTopUpRefund_DeductsProportionalBalance_AndIsIdempotent()
+    {
+        var user = await userService.GetOrCreate("partial-refund-user");
+        var topup = await context.TopUpProducts.FirstAsync();
+        await transactionService.AddTopUp(topup.Id, user.ExternalId, "partial-refund-order", 21600);
+
+        var applied = await transactionService.ApplyTopUpRefund("partial-refund-order", 8656, 3055);
+        var balance = await context.Users
+            .Where(u => u.ExternalId == user.ExternalId)
+            .Select(u => u.Balance)
+            .SingleAsync();
+
+        Assert.That(applied, Is.EqualTo(7623m));
+        Assert.That(balance, Is.EqualTo(13977m));
+
+        var duplicateApplied = await transactionService.ApplyTopUpRefund("partial-refund-order", 8656, 3055);
+        var duplicateBalance = await context.Users
+            .Where(u => u.ExternalId == user.ExternalId)
+            .Select(u => u.Balance)
+            .SingleAsync();
+        var refundTransactions = await context.FiniteTransactions
+            .CountAsync(t => t.Reference.StartsWith("refund transaction "));
+
+        Assert.That(duplicateApplied, Is.Zero);
+        Assert.That(duplicateBalance, Is.EqualTo(13977m));
+        Assert.That(refundTransactions, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task ApplyTopUpRefund_ProgressiveRefundsApplyOnlyDelta_AndFullRefundRemovesRemainder()
+    {
+        var user = await userService.GetOrCreate("progressive-refund-user");
+        var topup = await context.TopUpProducts.FirstAsync();
+        await transactionService.AddTopUp(topup.Id, user.ExternalId, "progressive-refund-order", 21600);
+
+        var firstDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 2500);
+        var secondDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 5000);
+        var finalDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 10000);
+        var balance = await context.Users
+            .Where(u => u.ExternalId == user.ExternalId)
+            .Select(u => u.Balance)
+            .SingleAsync();
+
+        Assert.That(firstDelta, Is.EqualTo(5400m));
+        Assert.That(secondDelta, Is.EqualTo(5400m));
+        Assert.That(finalDelta, Is.EqualTo(10800m));
+        Assert.That(balance, Is.Zero);
     }
 
     public class NullTransationProducer : ITransactionEventProducer

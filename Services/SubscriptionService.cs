@@ -59,9 +59,52 @@ public class SubscriptionService
 
     public async Task UpdateSubscription(Webhook webhook)
     {
-        var userId = webhook.Meta.CustomData.UserId;
-        var product = await context.TopUpProducts.FindAsync(webhook.Meta.CustomData.ProductId);
-        var subscription = await context.Subscriptions.Where(s => s.User.ExternalId == userId && s.Product == product).FirstOrDefaultAsync();
+        if (webhook?.Data?.Attributes == null)
+        {
+            logger.LogWarning("Ignoring malformed Lemon Squeezy subscription webhook without data attributes");
+            return;
+        }
+
+        var customData = webhook.Meta?.CustomData;
+        var userId = customData?.UserId;
+        TopUpProduct product = null;
+        UserSubscription subscription = null;
+
+        if (!string.IsNullOrWhiteSpace(userId) && customData.ProductId != 0)
+        {
+            product = await context.TopUpProducts.FindAsync(customData.ProductId);
+            subscription = await context.Subscriptions
+                .Where(s => s.User.ExternalId == userId && s.Product == product)
+                .FirstOrDefaultAsync();
+        }
+        else
+        {
+            // Lemon Squeezy does not guarantee custom_data on later
+            // subscription_updated events. Resolve it from the record created by
+            // subscription_created instead.
+            subscription = await context.Subscriptions
+                .Include(s => s.User)
+                .Include(s => s.Product)
+                .Where(s => s.ExternalId == webhook.Data.Id)
+                .OrderByDescending(s => s.UpdatedAt)
+                .FirstOrDefaultAsync();
+
+            if (subscription != null)
+            {
+                userId = subscription.User?.ExternalId;
+                product = await context.TopUpProducts.FindAsync(subscription.Product?.Id);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(userId) || product == null)
+        {
+            logger.LogWarning(
+                "Unable to resolve user/product for Lemon Squeezy subscription {SubscriptionId}; ignoring {EventName}",
+                webhook.Data.Id,
+                webhook.Meta?.EventName);
+            return;
+        }
+
         if (subscription == null)
         {
             subscription = new UserSubscription()
@@ -76,7 +119,8 @@ public class SubscriptionService
             context.Update(subscription);
         }
         var attributes = webhook.Data.Attributes;
-        subscription.RenewsAt = attributes.RenewsAt.Value;
+        if (attributes.RenewsAt.HasValue)
+            subscription.RenewsAt = attributes.RenewsAt.Value;
         subscription.UpdatedAt = attributes.UpdatedAt;
         subscription.Status = attributes.Status;
         subscription.CreatedAt = attributes.CreatedAt;
@@ -88,16 +132,17 @@ public class SubscriptionService
         // Handle trial subscription: grant access for trial period but don't credit coins
         if (attributes.Status == "on_trial" && attributes.TrialEndsAt.HasValue)
         {
-            await HandleTrialSubscription(webhook, subscription, product);
+            await HandleTrialSubscription(webhook, subscription, product, userId);
         }
         // Handle PayPal subscriptions: PayPal doesn't send subscription_payment_success webhooks when order is created
         // so we need to treat subscription_created with PayPal payment processor as a payment event
-        else if (webhook.Meta.EventName == "subscription_created" 
+        else if (customData != null
+            && webhook.Meta?.EventName == "subscription_created" 
             && attributes.Status == "active" 
             && attributes.PaymentProcessor?.Equals("paypal", StringComparison.OrdinalIgnoreCase) == true)
         {
             logger.LogInformation("PayPal subscription created for user {UserId} product {ProductId}, treating as payment", 
-                userId, webhook.Meta.CustomData.ProductId);
+                userId, product.Id);
             await TryExtendSubscription(webhook);
         }
         
@@ -115,9 +160,8 @@ public class SubscriptionService
     /// <summary>
     /// Handle trial subscription - grant access for trial period without crediting coins
     /// </summary>
-    private async Task HandleTrialSubscription(Webhook webhook, UserSubscription subscription, TopUpProduct product)
+    private async Task HandleTrialSubscription(Webhook webhook, UserSubscription subscription, TopUpProduct product, string userId)
     {
-        var userId = webhook.Meta.CustomData.UserId;
         var attributes = webhook.Data.Attributes;
         var trialEndDate = attributes.TrialEndsAt.Value;
         

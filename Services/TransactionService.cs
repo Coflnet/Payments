@@ -59,6 +59,81 @@ namespace Coflnet.Payments.Services
             await CreateTransactionInTransaction(product, userId, changeamount, reference);
         }
 
+        /// <summary>
+        /// Applies the cumulative refund reported for a top-up order. Only the
+        /// newly refunded balance is deducted, making repeated and progressive
+        /// partial-refund webhooks idempotent.
+        /// </summary>
+        /// <param name="reference">External order reference used for the original top-up.</param>
+        /// <param name="totalAmount">Original charged amount in the currency's smallest unit.</param>
+        /// <param name="refundedAmount">Cumulative refunded amount in the same unit.</param>
+        /// <returns>
+        /// The positive balance amount deducted by this call, zero when this
+        /// refund was already applied, or <c>null</c> when the original top-up
+        /// could not be found.
+        /// </returns>
+        public async Task<decimal?> ApplyTopUpRefund(string reference, int totalAmount, int refundedAmount)
+        {
+            if (string.IsNullOrWhiteSpace(reference))
+                throw new ArgumentException("A refund reference is required", nameof(reference));
+            if (totalAmount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(totalAmount), "The original charged amount must be positive");
+            if (refundedAmount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(refundedAmount), "The cumulative refunded amount must be positive");
+
+            decimal? appliedAmount = null;
+            await WithTransactionAsync(async (tx, owns) =>
+            {
+                var original = await db.FiniteTransactions
+                    .Include(t => t.User)
+                    .Include(t => t.Product)
+                    .Where(t => t.Reference == reference
+                        && t.Amount > 0
+                        && t.Product.Type.HasFlag(Product.ProductType.TOP_UP))
+                    .OrderBy(t => t.Id)
+                    .FirstOrDefaultAsync();
+
+                if (original == null)
+                    return;
+
+                appliedAmount = 0;
+                var boundedRefundAmount = Math.Min(refundedAmount, totalAmount);
+                var targetRefund = boundedRefundAmount == totalAmount
+                    ? original.Amount
+                    : Math.Round(
+                        original.Amount * boundedRefundAmount / totalAmount,
+                        0,
+                        MidpointRounding.AwayFromZero);
+
+                var refundReferencePrefix = $"refund transaction {original.Id} amount ";
+                var legacyFullRefundReference = $"revert transaction {original.Id}";
+                var previousRefunds = await db.FiniteTransactions
+                    .Where(t => t.User.Id == original.User.Id
+                        && t.Product.Slug == "revert"
+                        && (t.Reference.StartsWith(refundReferencePrefix)
+                            || t.Reference == legacyFullRefundReference))
+                    .ToListAsync();
+                var alreadyRefunded = Math.Min(
+                    original.Amount,
+                    previousRefunds.Where(t => t.Amount < 0).Sum(t => -t.Amount));
+                var refundDelta = targetRefund - alreadyRefunded;
+
+                if (refundDelta <= 0)
+                    return;
+
+                var refundProduct = await GetProduct("revert");
+                var refundEvent = await CreateTransaction(
+                    refundProduct,
+                    original.User,
+                    -refundDelta,
+                    refundReferencePrefix + boundedRefundAmount);
+                await transactionEventProducer.ProduceEvent(refundEvent);
+                appliedAmount = refundDelta;
+            });
+
+            return appliedAmount;
+        }
+
         public async Task<IDbContextTransaction> StartDbTransaction()
         {
             return await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);

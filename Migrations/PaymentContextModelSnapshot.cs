@@ -363,6 +363,9 @@ namespace Payments.Migrations
                     b.Property<DateTime?>("RefundedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<decimal>("RefundedAmount")
+                        .HasColumnType("numeric");
+
                     b.Property<string>("State")
                         .HasMaxLength(10)
                         .HasColumnType("character varying(10)");

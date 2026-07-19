@@ -196,7 +196,8 @@ public class Attributes
         long subscriptionId,
         DateTime? renewsAt,
         DateTime? endsAt,
-        string billingReason = null)
+        string billingReason = null,
+        int refundedAmount = 0)
     {
         this.StoreId = storeId;
         this.CustomerId = customerId;
@@ -233,6 +234,7 @@ public class Attributes
         RenewsAt = renewsAt;
         EndsAt = endsAt;
         BillingReason = billingReason;
+        RefundedAmount = refundedAmount;
     }
 
     [JsonPropertyName("store_id")]
@@ -276,6 +278,13 @@ public class Attributes
 
     [JsonPropertyName("refunded_at")]
     public object RefundedAt { get; }
+
+    /// <summary>
+    /// Cumulative amount refunded by Lemon Squeezy, in the order currency's
+    /// smallest unit (for example cents).
+    /// </summary>
+    [JsonPropertyName("refunded_amount")]
+    public int RefundedAmount { get; }
 
     [JsonPropertyName("subtotal")]
     public int Subtotal { get; }
@@ -673,4 +682,3 @@ public class Urls
     [JsonPropertyName("receipt")]
     public string Receipt { get; }
 }
-
