@@ -50,6 +50,9 @@ namespace Payments.Controllers
             [FromQuery] string currency = null
         )
         {
+            startDate = AsUtc(startDate);
+            endDate = AsUtc(endDate);
+
             if (startDate > endDate)
                 return BadRequest("startDate must be before or equal to endDate");
             if (endDate > DateTime.UtcNow)
@@ -142,12 +145,12 @@ namespace Payments.Controllers
                         && r.PaidAt >= startDate
                         && r.PaidAt <= endDate
                         && cryptoProviders.Contains(r.Provider))
-                    .GroupBy(r => new { r.Country })
+                    .GroupBy(r => new { r.Country, r.Currency })
                     .Select(g => new RevenueExport
                     {
                         Country = g.Key.Country ?? "UNKNOWN",
                         Provider = "crypto",
-                        Currency = "USD",
+                        Currency = g.Key.Currency,
                         TotalAmount = g.Sum(r => r.GrossAmount),
                         TotalTax = g.Sum(r => r.TaxAmount),
                         TotalNet = g.Sum(r => r.NetAmount),
@@ -249,6 +252,9 @@ namespace Payments.Controllers
             [FromQuery] int limit = 1000
         )
         {
+            startDate = AsUtc(startDate);
+            endDate = AsUtc(endDate);
+
             if (startDate > endDate)
                 return BadRequest("startDate must be before or equal to endDate");
             if (endDate > DateTime.UtcNow)
@@ -337,6 +343,12 @@ namespace Payments.Controllers
             [FromQuery] string format = "json"
         )
         {
+            startDate = AsUtc(startDate);
+            endDate = AsUtc(endDate);
+
+            if (startDate > endDate)
+                return BadRequest("startDate must be before or equal to endDate");
+
             try
             {
                 var query = _db.PaymentRecords
@@ -393,6 +405,21 @@ namespace Payments.Controllers
                 _logger.LogError(ex, "Error exporting transactions");
                 return StatusCode(500, new { error = "Failed to export transactions" });
             }
+        }
+
+        /// <summary>
+        /// Dates bound from the query string carry DateTimeKind.Unspecified unless the caller
+        /// spelled out a zone ("2026-05-01" rather than "2026-05-01T00:00:00Z"). Npgsql refuses
+        /// those for timestamptz columns, so read a zone-less date as the UTC date it names.
+        /// </summary>
+        private static DateTime AsUtc(DateTime value)
+        {
+            return value.Kind switch
+            {
+                DateTimeKind.Utc => value,
+                DateTimeKind.Local => value.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+            };
         }
 
         /// <summary>
