@@ -40,7 +40,6 @@ public class MigrationService : BackgroundService
         catch (Exception e)
         {
             logger.LogError(e, $"Migrating failed");
-            Done = true;
         }
     }
 

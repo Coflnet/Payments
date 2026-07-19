@@ -126,6 +126,70 @@ public class TransactionServiceTests
         Assert.That(refundTransactions, Is.EqualTo(1));
     }
 
+    [TestCase(0, 0, 1)]
+    [TestCase(-1, 10, 1)]
+    [TestCase(-10, 5, 2)]
+    public void GetRevertPurchaseCount_NeverReturnsZero(decimal amount, decimal cost, int expected)
+    {
+        Assert.That(TransactionService.GetRevertPurchaseCount(amount, cost), Is.EqualTo(expected));
+    }
+
+    [Test]
+    public async Task RevertPurchase_ZeroCostTransaction_DoesNotDivideByZero()
+    {
+        var user = await userService.GetOrCreate("zero-cost-revert-user");
+        var zeroCostProduct = new PurchaseableProduct
+        {
+            Title = "Free service",
+            Slug = "free-service",
+            Cost = 0,
+            OwnershipSeconds = 60,
+            Type = Product.ProductType.SERVICE
+        };
+        context.Products.Add(zeroCostProduct);
+        await context.SaveChangesAsync();
+
+        var original = new FiniteTransaction
+        {
+            User = user,
+            Product = zeroCostProduct,
+            Amount = 0,
+            Reference = "zero-cost-purchase"
+        };
+        context.FiniteTransactions.Add(original);
+        await context.SaveChangesAsync();
+
+        var reverted = await transactionService.RevertPurchase(user.ExternalId, original.Id);
+
+        Assert.That(reverted.Amount, Is.Zero);
+        Assert.That(
+            await context.FiniteTransactions.AnyAsync(t => t.Reference == $"revert transaction {original.Id}"),
+            Is.True);
+    }
+
+    [Test]
+    public async Task RevertPurchase_DiscountedTransaction_ReversesExactAmount()
+    {
+        var user = await userService.GetOrCreate("discounted-revert-user");
+        var product = await context.Products.SingleAsync(p => p.Slug == "svc-test");
+        product.Cost = 10;
+
+        var original = new FiniteTransaction
+        {
+            User = user,
+            Product = product,
+            Amount = -1,
+            Reference = "discounted-purchase"
+        };
+        context.FiniteTransactions.Add(original);
+        await context.SaveChangesAsync();
+
+        var reverted = await transactionService.RevertPurchase(user.ExternalId, original.Id);
+
+        Assert.That(reverted.Amount, Is.EqualTo(1));
+        Assert.That((await userService.GetOrCreate(user.ExternalId)).Balance, Is.EqualTo(1));
+    }
+
     [Test]
     public async Task ApplyTopUpRefund_ProgressiveRefundsApplyOnlyDelta_AndFullRefundRemovesRemainder()
     {

@@ -20,6 +20,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using hypixel;
 using Newtonsoft.Json.Converters;
+using Coflnet.Payments.Configuration;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace Coflnet.Payments
 {
@@ -61,6 +63,7 @@ namespace Coflnet.Payments
                 services.AddDbContext<PaymentContext>(
                     dbContextOptions => dbContextOptions
                         .UseNpgsql(dataSource)
+                        .ReplaceService<IHistoryRepository, CockroachHistoryRepository>()
                         .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
                 );
             }

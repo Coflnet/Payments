@@ -486,21 +486,45 @@ namespace Coflnet.Payments.Services
 
         internal async Task<TransactionEvent> RevertPurchase(string userId, long transactionId, bool adjustTime = true)
         {
-            var transaction = db.FiniteTransactions.Where(t => t.User == db.Users.Where(u => u.ExternalId == userId).First() && t.Id == transactionId).Include(t => t.Product).FirstOrDefault();
+            var transaction = await db.FiniteTransactions
+                .Where(t => t.User.ExternalId == userId && t.Id == transactionId)
+                .Include(t => t.Product)
+                .FirstOrDefaultAsync();
+            if (transaction == null)
+                throw new ApiException("Transaction not found");
+
             var dbProduct = await GetProduct("revert");
 
             return await WithTransactionAsync(async (tx, owns) =>
             {
                 var user = await userService.GetOrCreate(userId);
                 var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
-                var count = (int)Math.Round(transaction.Amount / transaction.Product.Cost);
-                adjustedProduct.Cost = -transaction.Amount / count;
+                var count = GetRevertPurchaseCount(transaction.Amount, transaction.Product.Cost);
+                adjustedProduct.Cost = transaction.Amount / count;
                 adjustedProduct.OwnershipSeconds = -transaction.Product.OwnershipSeconds;
                 if (!adjustTime)
                     adjustedProduct.OwnershipSeconds = 0;
                 adjustedProduct.Slug = "revert";
-                return await ExecuteServicePurchase(transaction.Product.Slug, userId, -count, $"revert transaction " + transactionId, dbProduct, tx, user, adjustedProduct, owns);
+                return await ExecuteServicePurchase(transaction.Product.Slug, userId, count, $"revert transaction " + transactionId, dbProduct, tx, user, adjustedProduct, owns);
             });
+        }
+
+        internal static int GetRevertPurchaseCount(decimal transactionAmount, decimal productCost)
+        {
+            if (productCost == 0)
+                return 1;
+
+            var roundedCount = decimal.Round(
+                decimal.Abs(transactionAmount / productCost),
+                0,
+                MidpointRounding.AwayFromZero);
+
+            if (roundedCount < 1)
+                return 1;
+            if (roundedCount > int.MaxValue)
+                throw new ApiException("Transaction item count is too large to revert");
+
+            return decimal.ToInt32(roundedCount);
         }
 
         public static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
