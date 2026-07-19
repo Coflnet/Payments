@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  container-ci:
+    uses: Coflnet/.github/.github/workflows/container-ci.yml@main
+    with:
+      # auto = the promote step discovers the chart whose image.repository
+      # matches this repo's image (muehlhansfl/payments) and fails closed if
+      # it can't — no hand-written path to copy-paste wrong.
+      k8s_file: auto
+      repo_url: https://github.com/Coflnet/k8s
+    secrets:
+      ARGO_WEBHOOK_SECRET: ${{ secrets.ARGO_WEBHOOK_SECRET }}
