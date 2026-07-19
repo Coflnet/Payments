@@ -4,7 +4,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -12,16 +11,19 @@ using Microsoft.Extensions.Logging;
 namespace Coflnet.Payments.Services;
 public class MigrationService : BackgroundService
 {
-    private IServiceScopeFactory services;
-    private ILogger<MigrationService> logger;
-    private IConfiguration Configuration;
+    private readonly IServiceScopeFactory services;
+    private readonly ILogger<MigrationService> logger;
+    private readonly IHostEnvironment environment;
     public bool Done { get; private set; }
 
-    public MigrationService(IServiceScopeFactory services, ILogger<MigrationService> logger, IConfiguration configuration)
+    public MigrationService(
+        IServiceScopeFactory services,
+        ILogger<MigrationService> logger,
+        IHostEnvironment environment)
     {
         this.services = services;
         this.logger = logger;
-        Configuration = configuration;
+        this.environment = environment;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -29,8 +31,17 @@ public class MigrationService : BackgroundService
         try
         {
             using var serviceScope = services.CreateScope();
-            using var context = serviceScope.ServiceProvider.GetService<PaymentContext>();
-            await context.Database.MigrateAsync();
+            using var context = serviceScope.ServiceProvider.GetRequiredService<PaymentContext>();
+
+            if (environment.IsDevelopment())
+            {
+                await context.Database.MigrateAsync(stoppingToken);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Skipping automatic database migrations outside Development; production migrations must be applied explicitly");
+            }
 
             await AddTransferProduct(context);
             await AddRefundProduct(context);
