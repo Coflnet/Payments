@@ -25,7 +25,11 @@ namespace Coflnet.Security.OpenBao;
 /// </summary>
 internal sealed class OpenBaoDatabaseCredentialProvider
 {
+    private static readonly TimeSpan MaximumProviderPollInterval = TimeSpan.FromSeconds(5);
     private readonly OpenBaoDatabaseOptions options;
+    private readonly SemaphoreSlim credentialRefreshLock = new(1, 1);
+    private string? cachedPassword;
+    private DateTimeOffset nextCredentialFetchUtc = DateTimeOffset.MinValue;
 
     private OpenBaoDatabaseCredentialProvider(OpenBaoDatabaseOptions options) => this.options = options;
 
@@ -49,13 +53,38 @@ internal sealed class OpenBaoDatabaseCredentialProvider
         var builder = new NpgsqlConnectionStringBuilder(baseConnectionString) { Password = null };
         var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.ConnectionString);
         dataSourceBuilder.UsePeriodicPasswordProvider(
-            (_, ct) => provider.FetchPasswordAsync(ct),
-            options.RefreshInterval,
-            options.FailureRefreshInterval);
+            (_, ct) => provider.GetPasswordAsync(ct),
+            ProviderPollInterval(options.RefreshInterval),
+            ProviderPollInterval(options.FailureRefreshInterval));
         return dataSourceBuilder.Build();
     }
 
-    private async ValueTask<string> FetchPasswordAsync(CancellationToken cancellationToken)
+    // OpenBao returns the remaining static-role TTL with the current password.
+    // Wake Npgsql frequently enough to observe the rotation boundary, but keep
+    // returning the in-memory value until that TTL expires. This avoids both
+    // the former 30-minute stale-password outage and continuous OpenBao logins.
+    private async ValueTask<string> GetPasswordAsync(CancellationToken cancellationToken)
+    {
+        await credentialRefreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (cachedPassword is not null && now < nextCredentialFetchUtc)
+                return cachedPassword;
+
+            var credential = await FetchCredentialAsync(cancellationToken).ConfigureAwait(false);
+            cachedPassword = credential.Password;
+            nextCredentialFetchUtc = DateTimeOffset.UtcNow.Add(credential.RefreshAfter);
+            return cachedPassword;
+        }
+        finally
+        {
+            credentialRefreshLock.Release();
+        }
+    }
+
+    private async ValueTask<(string Password, TimeSpan RefreshAfter)> FetchCredentialAsync(
+        CancellationToken cancellationToken)
     {
         var jwt = await File.ReadAllTextAsync(options.TokenPath, cancellationToken).ConfigureAwait(false);
         var handler = new HttpClientHandler();
@@ -109,7 +138,27 @@ internal sealed class OpenBaoDatabaseCredentialProvider
         if (!data.TryGetProperty("password", out var password) || password.ValueKind != JsonValueKind.String)
             throw new InvalidOperationException($"OpenBao response from {endpoint} did not contain a password.");
 
-        return password.GetString()!;
+        return (password.GetString()!, CredentialRefreshDelay(data, options.RefreshInterval));
+    }
+
+    internal static TimeSpan ProviderPollInterval(TimeSpan configuredInterval) =>
+        configuredInterval <= MaximumProviderPollInterval
+            ? configuredInterval
+            : MaximumProviderPollInterval;
+
+    internal static TimeSpan CredentialRefreshDelay(JsonElement data, TimeSpan fallbackInterval)
+    {
+        if (data.TryGetProperty("ttl", out var ttl) &&
+            ttl.ValueKind == JsonValueKind.Number &&
+            ttl.TryGetInt64(out var ttlSeconds))
+        {
+            // A zero TTL means rotation is due but may still be in progress.
+            // Retry on the next short provider poll instead of falling back to
+            // the long legacy interval with a stale password.
+            return TimeSpan.FromSeconds(Math.Max(1, ttlSeconds));
+        }
+
+        return fallbackInterval;
     }
 }
 
@@ -156,6 +205,8 @@ internal sealed record OpenBaoDatabaseOptions
         if (string.IsNullOrWhiteSpace(Address)) throw new InvalidOperationException("OPENBAO__ADDR (or OPENBAO__DB__ADDR) is required for dynamic database credentials.");
         if (string.IsNullOrWhiteSpace(Role)) throw new InvalidOperationException("OPENBAO__DB__ROLE is required for dynamic database credentials.");
         if (!File.Exists(TokenPath)) throw new FileNotFoundException("Kubernetes service account token not found.", TokenPath);
+        if (RefreshInterval <= TimeSpan.Zero) throw new InvalidOperationException("OPENBAO__DB__REFRESH_SECONDS must be positive.");
+        if (FailureRefreshInterval <= TimeSpan.Zero) throw new InvalidOperationException("OPENBAO__DB__FAILURE_REFRESH_SECONDS must be positive.");
     }
 
     private static string Env(string key, string fallback = "") => Environment.GetEnvironmentVariable(key) ?? fallback;
