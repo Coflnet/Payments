@@ -27,7 +27,7 @@ namespace Coflnet.Payments.Services
             _logger = logger;
             _settings = configuration.GetSection("GOOGLEPAY").Get<GooglePlaySettings>()
                        ?? throw new ArgumentException("Google Pay settings not configured");
-            logger.LogInformation(JsonSerializer.Serialize(_settings));
+            logger.LogInformation(JsonSerializer.Serialize(_settings).Truncate(20));
             try
             {
                 _androidPublisherService = CreateAndroidPublisherService();
