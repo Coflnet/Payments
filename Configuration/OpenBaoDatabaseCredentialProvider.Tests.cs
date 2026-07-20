@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using System.IO;
 using NUnit.Framework;
 
 namespace Coflnet.Security.OpenBao;
@@ -42,5 +43,48 @@ public sealed class OpenBaoDatabaseCredentialProviderTests
                 document.RootElement,
                 TimeSpan.FromMinutes(30)),
             Is.EqualTo(TimeSpan.FromMinutes(30)));
+    }
+
+    [Test]
+    public void MtlsValidationIsInertByDefault()
+    {
+        var options = new OpenBaoDatabaseOptions
+        {
+            Address = "https://openbao.example",
+            Role = "payment-test",
+            TokenPath = Path.GetTempFileName()
+        };
+        try
+        {
+            Assert.DoesNotThrow(options.Validate);
+        }
+        finally
+        {
+            File.Delete(options.TokenPath);
+        }
+    }
+
+    [Test]
+    public void MtlsValidationRequiresAllCertificateFiles()
+    {
+        var token = Path.GetTempFileName();
+        try
+        {
+            var options = new OpenBaoDatabaseOptions
+            {
+                Address = "https://openbao.example",
+                Role = "payment-test",
+                TokenPath = token,
+                MtlsEnabled = true
+            };
+            Assert.That(
+                () => options.Validate(),
+                Throws.TypeOf<InvalidOperationException>()
+                    .With.Message.Contains("OPENBAO__DB__MTLS__CLIENT_CERT_PATH"));
+        }
+        finally
+        {
+            File.Delete(token);
+        }
     }
 }

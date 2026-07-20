@@ -51,7 +51,38 @@ internal sealed class OpenBaoDatabaseCredentialProvider
 
         // Strip any password from the base string; OpenBao supplies it.
         var builder = new NpgsqlConnectionStringBuilder(baseConnectionString) { Password = null };
+        if (options.MtlsEnabled)
+        {
+            // Keep password authentication during enrollment while presenting
+            // a short-lived client certificate. VerifyFull also removes the
+            // legacy Trust Server Certificate escape hatch.
+            builder.SslMode = SslMode.VerifyFull;
+            builder.Remove("Trust Server Certificate");
+            builder.RootCertificate = null;
+            builder.SslCertificate = null;
+            builder.SslKey = null;
+        }
         var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.ConnectionString);
+        if (options.MtlsEnabled)
+        {
+            // Npgsql invokes these callbacks for every new physical connection,
+            // so cert-manager file rotations do not require a process restart.
+            dataSourceBuilder.UseSslClientAuthenticationOptionsCallback(sslOptions =>
+            {
+                sslOptions.ClientCertificates = new X509CertificateCollection
+                {
+                    X509Certificate2.CreateFromPemFile(
+                        options.ClientCertificatePath,
+                        options.ClientKeyPath)
+                };
+            });
+            dataSourceBuilder.UseRootCertificatesCallback(() =>
+            {
+                var certificates = new X509Certificate2Collection();
+                certificates.ImportFromPemFile(options.RootCertificatePath);
+                return certificates;
+            });
+        }
         dataSourceBuilder.UsePeriodicPasswordProvider(
             (_, ct) => provider.GetPasswordAsync(ct),
             ProviderPollInterval(options.RefreshInterval),
@@ -171,6 +202,10 @@ internal sealed record OpenBaoDatabaseOptions
     public string Role { get; init; } = "";
     public string TokenPath { get; init; } = "/var/run/secrets/kubernetes.io/serviceaccount/token";
     public string CACertPath { get; init; } = "";
+    public bool MtlsEnabled { get; init; }
+    public string ClientCertificatePath { get; init; } = "";
+    public string ClientKeyPath { get; init; } = "";
+    public string RootCertificatePath { get; init; } = "";
 
     /// <summary>"static" -&gt; static-creds (fixed user, rotated password); "dynamic" -&gt; creds.</summary>
     public string CredentialsKind { get; init; } = "static";
@@ -194,6 +229,10 @@ internal sealed record OpenBaoDatabaseOptions
             TokenPath = Env("OPENBAO__DB__TOKEN_PATH",
                 Env("OPENBAO__TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token")),
             CACertPath = Env("OPENBAO__DB__CACERT", Env("OPENBAO__CACERT")),
+            MtlsEnabled = Bool("OPENBAO__DB__MTLS__ENABLED", false),
+            ClientCertificatePath = Env("OPENBAO__DB__MTLS__CLIENT_CERT_PATH"),
+            ClientKeyPath = Env("OPENBAO__DB__MTLS__CLIENT_KEY_PATH"),
+            RootCertificatePath = Env("OPENBAO__DB__MTLS__ROOT_CERT_PATH"),
             CredentialsKind = Env("OPENBAO__DB__CREDENTIALS_KIND", "static"),
             RefreshInterval = TimeSpan.FromSeconds(Int("OPENBAO__DB__REFRESH_SECONDS", 1800)),
             FailureRefreshInterval = TimeSpan.FromSeconds(Int("OPENBAO__DB__FAILURE_REFRESH_SECONDS", 10))
@@ -207,6 +246,20 @@ internal sealed record OpenBaoDatabaseOptions
         if (!File.Exists(TokenPath)) throw new FileNotFoundException("Kubernetes service account token not found.", TokenPath);
         if (RefreshInterval <= TimeSpan.Zero) throw new InvalidOperationException("OPENBAO__DB__REFRESH_SECONDS must be positive.");
         if (FailureRefreshInterval <= TimeSpan.Zero) throw new InvalidOperationException("OPENBAO__DB__FAILURE_REFRESH_SECONDS must be positive.");
+        if (MtlsEnabled)
+        {
+            RequireFile(ClientCertificatePath, "OPENBAO__DB__MTLS__CLIENT_CERT_PATH");
+            RequireFile(ClientKeyPath, "OPENBAO__DB__MTLS__CLIENT_KEY_PATH");
+            RequireFile(RootCertificatePath, "OPENBAO__DB__MTLS__ROOT_CERT_PATH");
+        }
+    }
+
+    private static void RequireFile(string path, string variable)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new InvalidOperationException($"{variable} is required when database mTLS is enabled.");
+        if (!File.Exists(path))
+            throw new FileNotFoundException($"{variable} file not found.", path);
     }
 
     private static string Env(string key, string fallback = "") => Environment.GetEnvironmentVariable(key) ?? fallback;
