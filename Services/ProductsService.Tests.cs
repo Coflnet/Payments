@@ -142,6 +142,35 @@ public class ProductsServiceTests
     }
 
     [Test]
+    public async Task GetUsersReturnsDistinctActiveDirectAndGroupOwners()
+    {
+        var groupedProduct = CreateProduct("grouped", Product.ProductType.SERVICE);
+        await service.UpdateOrAddProduct(extendsLowTier);
+        await service.UpdateOrAddProduct(groupedProduct);
+        await groupService.AddProductToGroup(groupedProduct, extendsLowTier.Slug);
+
+        var directOwner = new User { ExternalId = "direct", Owns = new() };
+        var groupOwner = new User { ExternalId = "group", Owns = new() };
+        var expiredOwner = new User { ExternalId = "expired", Owns = new() };
+        context.OwnerShips.AddRange(
+            new OwnerShip { User = directOwner, Product = extendsLowTier, Expires = DateTime.UtcNow.AddMinutes(1) },
+            new OwnerShip { User = directOwner, Product = extendsLowTier, Expires = DateTime.UtcNow.AddMinutes(2) },
+            new OwnerShip { User = groupOwner, Product = groupedProduct, Expires = DateTime.UtcNow.AddMinutes(1) },
+            new OwnerShip { User = expiredOwner, Product = extendsLowTier, Expires = DateTime.UtcNow.AddMinutes(-1) });
+        await context.SaveChangesAsync();
+
+        var controller = new ProductsController(
+            NullLogger<ProductsController>.Instance,
+            context,
+            service,
+            new RuleEngine(NullLogger<RuleEngine>.Instance, context));
+
+        var users = await controller.GetUsers(extendsLowTier.Slug);
+
+        Assert.That(users, Is.EquivalentTo(new[] { "direct", "group" }));
+    }
+
+    [Test]
     public async Task InGroupExtendsBaseService()
     {
         const string highTier = "test";
@@ -202,4 +231,3 @@ public class ProductsServiceTests
         }
     }
 }
-

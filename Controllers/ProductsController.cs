@@ -146,12 +146,16 @@ namespace Payments.Controllers
         [ResponseCache(Duration = 10, Location = ResponseCacheLocation.Any)]
         public async Task<IEnumerable<string>> GetUsers(string serviceSlug)
         {
-            return await UsersOwning(serviceSlug).Select(u => u.ExternalId).ToListAsync();
-        }
+            var productIds = await db.Products
+                .Where(p => serviceSlug == p.Slug || p.Groups.Any(g => serviceSlug == g.Slug))
+                .Select(p => (int?)p.Id)
+                .ToListAsync();
 
-        private IQueryable<User> UsersOwning(string serviceSlug)
-        {
-            return db.Users.Where(u => u.Owns.Any(o => (serviceSlug == o.Product.Slug || o.Product.Groups.Any(g => serviceSlug == g.Slug)) && o.Expires > DateTime.UtcNow));
+            return await db.OwnerShips
+                .Where(o => productIds.Contains(EF.Property<int?>(o, "ProductId")) && o.Expires > DateTime.UtcNow)
+                .Select(o => o.User.ExternalId)
+                .Distinct()
+                .ToListAsync();
         }
 
         /// <summary>
