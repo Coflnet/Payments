@@ -435,13 +435,13 @@ namespace Payments.Controllers
             }
             else if (meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
             {
-                await subscriptionService.PaymentReceived(webhook);
+                var effectiveCustomData = await subscriptionService.PaymentReceived(webhook);
                 // Record subscription renewal payment for tax compliance
-                var subUser = await db.Users.Where(u => u.ExternalId == meta.CustomData.UserId).FirstOrDefaultAsync();
+                var subUser = await db.Users.Where(u => u.ExternalId == effectiveCustomData.UserId).FirstOrDefaultAsync();
                 await RecordPayment(new PaymentRecord
                 {
                     UserId = subUser?.Id ?? 0,
-                    ExternalUserId = meta.CustomData.UserId,
+                    ExternalUserId = effectiveCustomData.UserId,
                     Country = subUser?.Country,
                     ZipCode = subUser?.Zip,
                     GrossAmount = data.Attributes.Total / 100m,
@@ -457,9 +457,9 @@ namespace Payments.Controllers
                     PaymentMethod = data.Attributes.PaymentProcessor ?? "card",
                     ExternalOrderId = data.Attributes.Identifier,
                     ExternalTransactionId = data.Id,
-                    ProductSlug = meta.CustomData.ProductId.ToString(),
-                    ProductId = meta.CustomData.ProductId,
-                    CoinAmount = meta.CustomData.CoinAmount,
+                    ProductSlug = effectiveCustomData.ProductId.ToString(),
+                    ProductId = effectiveCustomData.ProductId,
+                    CoinAmount = effectiveCustomData.CoinAmount,
                     PaidAt = data.Attributes.CreatedAt,
                     Status = PaymentRecordStatus.Confirmed,
                     BuyerEmail = data.Attributes.UserEmail,

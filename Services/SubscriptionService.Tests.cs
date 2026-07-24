@@ -510,6 +510,49 @@ public class SubscriptionServiceTests
             $"Ownership should not be extended again. Original: {expiryAfterCreate}, After payment: {ownershipAfterPayment.Expires}, Diff: {timeDifference} days");
     }
 
+    [Test]
+    public async Task PaymentSuccess_WithoutCustomData_UsesStoredSubscriptionMapping()
+    {
+        var user = await userService.GetOrCreate("payment-without-custom-data");
+        var product = await context.TopUpProducts.FirstAsync();
+        const string subscriptionId = "2368206";
+        context.Subscriptions.Add(new UserSubscription
+        {
+            User = user,
+            Product = product,
+            ExternalId = subscriptionId,
+            CreatedAt = DateTime.UtcNow.AddMonths(-1),
+            UpdatedAt = DateTime.UtcNow.AddDays(-1),
+            RenewsAt = DateTime.UtcNow.AddDays(7),
+            Status = "active"
+        });
+        await context.SaveChangesAsync();
+        var webhookWithCustomData = CreatePaymentWebhook(user.ExternalId, product.Id, subscriptionId);
+        var webhook = new Webhook(
+            new Meta(false, "subscription_payment_success", null),
+            webhookWithCustomData.Data);
+
+        var resolved = await subscriptionService.PaymentReceived(webhook);
+
+        Assert.That(resolved.UserId, Is.EqualTo(user.ExternalId));
+        Assert.That(resolved.ProductId, Is.EqualTo(product.Id));
+        Assert.That(resolved.CoinAmount, Is.EqualTo(decimal.ToInt64(product.Cost)));
+    }
+
+    [Test]
+    public void PaymentSuccess_WithoutCustomData_FailsWhenSubscriptionIsMissing()
+    {
+        var webhookWithCustomData = CreatePaymentWebhook("unknown-user", 1, "2369999");
+        var webhook = new Webhook(
+            new Meta(false, "subscription_payment_success", null),
+            webhookWithCustomData.Data);
+
+        var exception = Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await subscriptionService.PaymentReceived(webhook));
+
+        Assert.That(exception.Message, Does.Contain("subscription 2369999 was not found"));
+    }
+
     #region Helper Methods
 
     private Webhook CreateTrialSubscriptionWebhook(string userId, int productId, DateTime trialEndsAt, string subscriptionId = "test-sub-123")
@@ -557,7 +600,7 @@ public class SubscriptionServiceTests
             createdAt: DateTime.UtcNow,
             updatedAt: DateTime.UtcNow,
             testMode: false,
-            subscriptionId: 123456,
+            subscriptionId: long.Parse(subscriptionId),
             renewsAt: DateTime.UtcNow.AddDays(30),
             endsAt: null
         );

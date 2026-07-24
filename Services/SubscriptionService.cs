@@ -143,7 +143,7 @@ public class SubscriptionService
         {
             logger.LogInformation("PayPal subscription created for user {UserId} product {ProductId}, treating as payment", 
                 userId, product.Id);
-            await TryExtendSubscription(webhook);
+            await TryExtendSubscription(webhook, effectiveCustomData: customData);
         }
         
         await context.SaveChangesAsync();
@@ -246,8 +246,10 @@ public class SubscriptionService
         }
     }
 
-    internal async Task PaymentReceived(Webhook data)
+    internal async Task<CustomData> PaymentReceived(Webhook data)
     {
+        var effectiveCustomData = await ResolvePaymentCustomData(data);
+
         // For PayPal subscriptions with billing_reason "initial", check if we've already credited
         // via subscription_created (PayPal doesn't always send subscription_payment_success reliably,
         // but when it does, we shouldn't double-credit)
@@ -271,12 +273,12 @@ public class SubscriptionService
                 {
                     logger.LogInformation("Initial payment for subscription {SubscriptionId} was already credited via subscription_created, skipping duplicate from subscription_payment_success", 
                         subscriptionId);
-                    return;
+                    return effectiveCustomData;
                 }
             }
         }
         
-        await TryExtendSubscription(data);
+        await TryExtendSubscription(data, effectiveCustomData);
         try
         {
             var subscriptionId = data.Data.Attributes.SubscriptionId.ToString();
@@ -291,6 +293,37 @@ public class SubscriptionService
         {
             logger.LogError(e, "Error updating subscription with amount");
         }
+        return effectiveCustomData;
+    }
+
+    private async Task<CustomData> ResolvePaymentCustomData(Webhook data)
+    {
+        var customData = data.Meta?.CustomData;
+        if (!string.IsNullOrWhiteSpace(customData?.UserId) && customData.ProductId != 0)
+        {
+            return customData;
+        }
+
+        var subscriptionId = data.Data.Attributes.SubscriptionId.ToString();
+        var subscription = await context.Subscriptions
+            .Include(s => s.User)
+            .Include(s => s.Product)
+            .Where(s => s.ExternalId == subscriptionId)
+            .OrderByDescending(s => s.UpdatedAt)
+            .FirstOrDefaultAsync();
+        var product = subscription?.Product == null
+            ? null
+            : await context.TopUpProducts.FindAsync(subscription.Product.Id);
+        if (string.IsNullOrWhiteSpace(subscription?.User?.ExternalId) || product == null)
+        {
+            throw new InvalidOperationException(
+                $"Cannot process Lemon Squeezy invoice {data.Data.Id}: subscription {subscriptionId} was not found with a user and top-up product");
+        }
+
+        logger.LogInformation(
+            "Resolved missing Lemon Squeezy custom_data for subscription {SubscriptionId} to user {UserId} and product {ProductId}",
+            subscriptionId, subscription.User.ExternalId, product.Id);
+        return new CustomData(subscription.User.ExternalId, product.Id, decimal.ToInt64(product.Cost), "True");
     }
 
     /// <summary>
@@ -299,10 +332,9 @@ public class SubscriptionService
     /// </summary>
     /// <param name="data"></param>
     /// <returns></returns>
-    private async Task TryExtendSubscription(Webhook data)
+    private async Task TryExtendSubscription(Webhook data, CustomData effectiveCustomData)
     {
-        var customData = data.Meta.CustomData;
-        var product = context.TopUpProducts.Find(customData.ProductId);
+        var product = context.TopUpProducts.Find(effectiveCustomData.ProductId);
         var referenceId = data.Data.Id + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
         
         // Skip extension for trial subscriptions - they don't pay yet
@@ -310,7 +342,7 @@ public class SubscriptionService
         if (data.Data.Attributes.Status == "on_trial")
         {
             logger.LogInformation("Subscription is on trial for user {UserId} product {ProductId}, skipping coin credit", 
-                customData.UserId, customData.ProductId);
+                effectiveCustomData.UserId, effectiveCustomData.ProductId);
             return;
         }
         
@@ -320,17 +352,17 @@ public class SubscriptionService
             if (data.Data.Attributes.Total == 0 && data.Data.Attributes.Subtotal == 0 && data.Data.Attributes.BillingReason == "initial")
             {
                 logger.LogInformation("Subscription invoice is for 0 amount (initial trial), skipping coin credit for user {UserId} product {ProductId}", 
-                    customData.UserId, customData.ProductId);
+                    effectiveCustomData.UserId, effectiveCustomData.ProductId);
                 return;
             }
 
             referenceId = data.Data.Attributes.SubscriptionId + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
-            logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId}, crediting");
+            logger.LogInformation($"Payment received for user {effectiveCustomData.UserId} for product {effectiveCustomData.ProductId}, crediting");
         }
         else
         {
             // is subscription update, check current expiry and abbort if its more than 1 day in the future already
-            var subscription = await context.OwnerShips.Where(s => s.User.ExternalId == customData.UserId && s.Product.Id == customData.ProductId).FirstOrDefaultAsync();
+            var subscription = await context.OwnerShips.Where(s => s.User.ExternalId == effectiveCustomData.UserId && s.Product.Id == effectiveCustomData.ProductId).FirstOrDefaultAsync();
             if (subscription != null && subscription.Expires > data.Data.Attributes.RenewsAt.Value.AddDays(-2))
             {
                 logger.LogInformation("Subscription already extended, skipping");
@@ -341,17 +373,17 @@ public class SubscriptionService
                 logger.LogInformation("Subscription renew in the past, skipping ({renewTime})", data.Data.Attributes.RenewsAt);
                 return;
             }
-            logger.LogInformation($"Subscription extended for user {customData.UserId} for product {customData.ProductId}, crediting");
+            logger.LogInformation($"Subscription extended for user {effectiveCustomData.UserId} for product {effectiveCustomData.ProductId}, crediting");
         }
 
         await using var transaction = await transactionService.StartDbTransaction();
         try
         {
-            await transactionService.AddTopUp(customData.ProductId, customData.UserId, referenceId + "-topup");
+            await transactionService.AddTopUp(effectiveCustomData.ProductId, effectiveCustomData.UserId, referenceId + "-topup");
             logger.LogInformation("starting purchase");
-            await transactionService.PurchaseService(product.Slug, customData.UserId, 1, referenceId, product);
+            await transactionService.PurchaseService(product.Slug, effectiveCustomData.UserId, 1, referenceId, product);
             await transaction.CommitAsync();
-            logger.LogInformation($"Payment received for user {customData.UserId} for product {customData.ProductId} extended by {product.OwnershipSeconds}");
+            logger.LogInformation($"Payment received for user {effectiveCustomData.UserId} for product {effectiveCustomData.ProductId} extended by {product.OwnershipSeconds}");
         }
         catch (Exception e)
         {
