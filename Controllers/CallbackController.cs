@@ -107,7 +107,8 @@ namespace Payments.Controllers
                 _logger.LogInformation("stripe valiadted");
                 _logger.LogInformation(json);
 
-                if (stripeEvent.Type == EventTypes.CheckoutSessionCompleted)
+                if (stripeEvent.Type == EventTypes.CheckoutSessionCompleted
+                    || stripeEvent.Type == EventTypes.CheckoutSessionAsyncPaymentSucceeded)
                 {
                     _logger.LogInformation("stripe checkout completed");
                     var session = stripeEvent.Data.Object as Stripe.Checkout.Session;
@@ -115,6 +116,64 @@ namespace Payments.Controllers
                     // Fulfill the purchase...
                     var productId = int.Parse(session.Metadata["productId"]);
                     int.TryParse(session.Metadata.GetValueOrDefault("coinAmount", "0"), out int coinAmount);
+                    var paymentIntentService = new PaymentIntentService();
+                    var paymentIntent = await paymentIntentService.GetAsync(
+                        session.PaymentIntentId,
+                        new PaymentIntentGetOptions { Expand = new List<string> { "payment_method" } });
+                    if (paymentIntent.Status == "processing")
+                        return Ok(); // asynchronous payment methods emit a succeeded event later
+
+                    var providerCountry = GetStripePaymentCountry(paymentIntent.PaymentMethod);
+                    var paymentCountry = providerCountry
+                        ?? session.Metadata.GetValueOrDefault("fallbackCountry")?.ToUpperInvariant();
+                    if (paymentCountry == null || !DoWeSellto(paymentCountry, null))
+                    {
+                        if (paymentIntent.Status == "requires_capture")
+                        {
+                            await paymentIntentService.CancelAsync(paymentIntent.Id);
+                            _logger.LogWarning(
+                                "Stripe payment rejected before capture: payment country {Country} is unavailable or not accepted",
+                                paymentCountry ?? "UNKNOWN");
+                            var request = await db.PaymentRequests.FirstOrDefaultAsync(t => t.SessionId == session.Id);
+                            if (request != null)
+                            {
+                                request.State = PaymentRequest.Status.FAILED;
+                                await db.SaveChangesAsync();
+                            }
+                            return Ok();
+                        }
+                        if (paymentIntent.Status == "canceled")
+                            return Ok();
+                        if (paymentIntent.Status != "succeeded")
+                            throw new ApiException($"Stripe payment is not capturable ({paymentIntent.Status})");
+                        if (paymentCountry != null)
+                        {
+                            _logger.LogWarning(
+                                "Stripe payment {PaymentIntentId} from {Country} requires a manual refund",
+                                paymentIntent.Id,
+                                paymentCountry);
+                            var request = await db.PaymentRequests.FirstOrDefaultAsync(
+                                t => t.SessionId == session.Id || t.SessionId == paymentIntent.Id);
+                            if (request != null)
+                            {
+                                request.State = PaymentRequest.Status.REFUND_PENDING;
+                                request.SessionId = paymentIntent.Id;
+                                await db.SaveChangesAsync();
+                            }
+                            else
+                                _logger.LogError(
+                                    "No payment request found for Stripe payment {PaymentIntentId} requiring a manual refund",
+                                    paymentIntent.Id);
+                            return Ok();
+                        }
+                        _logger.LogWarning(
+                            "Legacy Stripe payment has no country and was already captured; fulfilling it to avoid withholding a paid purchase");
+                    }
+                    else if (paymentIntent.Status == "requires_capture")
+                        await paymentIntentService.CaptureAsync(paymentIntent.Id);
+                    else if (paymentIntent.Status != "succeeded")
+                        throw new ApiException($"Stripe payment is not capturable ({paymentIntent.Status})");
+
                     try
                     {
                         await transactionService.AddTopUp(productId, session.ClientReferenceId, session.PaymentIntentId, coinAmount);
@@ -137,7 +196,7 @@ namespace Payments.Controllers
                         UserId = session.ClientReferenceId,
                         Address = new Coflnet.Payments.Models.Address()
                         {
-                            CountryCode = session.CustomerDetails.Address.Country,
+                            CountryCode = paymentCountry,
                             PostalCode = session.CustomerDetails.Address.PostalCode,
                             City = session.CustomerDetails.Address.City,
                             Line1 = session.CustomerDetails.Address.Line1,
@@ -146,7 +205,7 @@ namespace Payments.Controllers
                         FullName = session.CustomerDetails.Name,
                         Email = session.CustomerDetails.Email,
                         Currency = session.Currency,
-                        PaymentMethod = session.PaymentMethodTypes[0],
+                        PaymentMethod = paymentIntent.PaymentMethod?.Type ?? "unknown",
                         PaymentProvider = "stripe",
                         PaymentProviderTransactionId = session.PaymentIntentId,
                         Timestamp = session.Created
@@ -154,11 +213,16 @@ namespace Payments.Controllers
 
                     // Record for tax compliance
                     var stripeUser = await db.Users.Where(u => u.ExternalId == session.ClientReferenceId).FirstOrDefaultAsync();
+                    if (stripeUser != null && stripeUser.Country != paymentCountry)
+                    {
+                        stripeUser.Country = paymentCountry;
+                        await db.SaveChangesAsync();
+                    }
                     await RecordPayment(new PaymentRecord
                     {
                         UserId = stripeUser?.Id ?? 0,
                         ExternalUserId = session.ClientReferenceId,
-                        Country = session.CustomerDetails?.Address?.Country,
+                        Country = paymentCountry,
                         ZipCode = session.CustomerDetails?.Address?.PostalCode,
                         City = session.CustomerDetails?.Address?.City,
                         State = session.CustomerDetails?.Address?.State,
@@ -171,7 +235,7 @@ namespace Payments.Controllers
                         ProcessorFee = 0, // Not available in webhook; reconcile from Stripe dashboard
                         Currency = session.Currency?.ToUpper() ?? "USD",
                         Provider = "stripe",
-                        PaymentMethod = session.PaymentMethodTypes?.FirstOrDefault() ?? "card",
+                        PaymentMethod = paymentIntent.PaymentMethod?.Type ?? "unknown",
                         ExternalOrderId = session.Id,
                         ExternalTransactionId = session.PaymentIntentId,
                         ProductSlug = productId.ToString(),
@@ -238,7 +302,18 @@ namespace Payments.Controllers
             }
             catch (StripeException ex)
             {
-                _logger.LogError($"Ran into exception for stripe callback {ex.Message} \n{ex.StackTrace} {json}");
+                if (StripeErrorClassifier.IsCredentialError(ex.HttpStatusCode))
+                {
+                    PaymentMetrics.StripeCredentialErrors.Inc();
+                    _logger.LogCritical(
+                        ex,
+                        "Stripe callback processing was rejected by Stripe credentials (HTTP {StatusCode}, Stripe code {StripeCode}, request {RequestLogUrl}); returning 500 so Stripe retries",
+                        ex.HttpStatusCode,
+                        ex.StripeError?.Code,
+                        ex.StripeError?.RequestLogUrl);
+                    return StatusCode(500);
+                }
+                _logger.LogError(ex, "Stripe callback failed for payload {Payload}", json);
                 return StatusCode(400);
             }
             catch (Exception ex)
@@ -729,20 +804,23 @@ namespace Payments.Controllers
                 _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(webhookResult));
                 if (webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
                 {
-                    var address = webhookResult.Resource.PurchaseUnits[0].ShippingDetail.AddressPortable;
-                    var country = address.CountryCode;
-                    var postalCode = address.PostalCode;
-                    var state = address.AdminArea2;
+                    var payerAddress = Newtonsoft.Json.Linq.JObject.Parse(json).SelectToken("resource.payer.address");
+                    var country = payerAddress?["country_code"]?.ToObject<string>()?.ToUpperInvariant();
+                    var postalCode = payerAddress?["postal_code"]?.ToObject<string>();
+                    var state = payerAddress?["admin_area_1"]?.ToObject<string>();
                     var userId = webhookResult.Resource.PurchaseUnits[0].CustomId.Split(';')[2];
-                    if (!DoWeSellto(country, postalCode))
+                    var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
+                    if (user != null && user.Country != country)
                     {
-                        var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
-                        if (user != null)
-                            user.Country = country;
-                        else
-                            _logger.LogWarning($"Didn't find user {userId} to update country {country}");
+                        user.Country = country;
                         await db.SaveChangesAsync();
-                        return Ok(); // ignore order
+                    }
+                    if (country == null || !DoWeSellto(country, postalCode))
+                    {
+                        _logger.LogWarning(
+                            "PayPal payment rejected before capture: payer country {Country} is unavailable or not accepted",
+                            country ?? "UNKNOWN");
+                        return Ok();
                     }
                     _logger.LogInformation($"received order from {userId} {country} {postalCode} {state} {json}");
                     var coinAmount = double.Parse(webhookResult.Resource.PurchaseUnits[0].CustomId.Split(';')[1]);
@@ -854,7 +932,7 @@ namespace Payments.Controllers
                     Email = order.Payer.Email,
                     Address = new Coflnet.Payments.Models.Address()
                     {
-                        CountryCode = product.ShippingDetail.AddressPortable.CountryCode,
+                        CountryCode = order.Payer?.AddressPortable?.CountryCode,
                         PostalCode = product.ShippingDetail.AddressPortable.PostalCode,
                         City = product.ShippingDetail.AddressPortable.AdminArea2,
                         Line1 = product.ShippingDetail.AddressPortable.AddressLine1,
@@ -869,14 +947,15 @@ namespace Payments.Controllers
 
                 // Record for tax compliance — PayPal does NOT remit tax for us
                 var ppUser = await db.Users.Where(u => u.ExternalId == product.ReferenceId).FirstOrDefaultAsync();
+                var payerRecordAddress = order.Payer?.AddressPortable;
                 await RecordPayment(new PaymentRecord
                 {
                     UserId = ppUser?.Id ?? 0,
                     ExternalUserId = product.ReferenceId,
-                    Country = product.ShippingDetail?.AddressPortable?.CountryCode,
-                    ZipCode = product.ShippingDetail?.AddressPortable?.PostalCode,
-                    City = product.ShippingDetail?.AddressPortable?.AdminArea2,
-                    State = product.ShippingDetail?.AddressPortable?.AdminArea1,
+                    Country = payerRecordAddress?.CountryCode,
+                    ZipCode = payerRecordAddress?.PostalCode,
+                    City = payerRecordAddress?.AdminArea2,
+                    State = payerRecordAddress?.AdminArea1,
                     GrossAmount = decimal.Parse(amount.Value),
                     Subtotal = decimal.Parse(amount.Value),
                     TaxAmount = 0,
@@ -971,6 +1050,26 @@ namespace Payments.Controllers
                 return true;
 
             return false;
+        }
+
+        private static string GetStripePaymentCountry(Stripe.PaymentMethod paymentMethod)
+        {
+            var country = paymentMethod?.Type switch
+            {
+                "card" => paymentMethod.Card?.Country,
+                "paypal" => paymentMethod.Paypal?.Country,
+                "sepa_debit" => paymentMethod.SepaDebit?.Country,
+                "sofort" => paymentMethod.Sofort?.Country,
+                "au_becs_debit" => "AU",
+                "bacs_debit" => "GB",
+                "bancontact" => "BE",
+                "eps" => "AT",
+                "fpx" => "MY",
+                "ideal" => "NL",
+                "us_bank_account" => "US",
+                _ => null
+            };
+            return country?.ToUpperInvariant();
         }
 
         /// <summary>

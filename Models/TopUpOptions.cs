@@ -24,7 +24,7 @@ public class TopUpOptions
     /// <value></value>
     public long TopUpAmount { get; set; }
     /// <summary>
-    /// The ip of the user
+    /// The user IP supplied by the trusted ingress, not by the browser
     /// </summary>
     [MaxLength(45)]
     public string UserIp { get; set; }
@@ -33,6 +33,11 @@ public class TopUpOptions
     /// </summary>
     [MaxLength(5)]
     public string Locale { get; set; }
+    /// <summary>
+    /// Country explicitly selected by the user, as an ISO 3166-1 alpha-2 code
+    /// </summary>
+    [MaxLength(2)]
+    public string Country { get; set; }
     /// <summary>
     /// Browser fingerprint of the user
     /// </summary>

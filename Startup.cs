@@ -108,6 +108,12 @@ namespace Coflnet.Payments
             services.AddScoped<GroupService>();
             services.AddScoped<CreatorCodeService>();
             services.AddSingleton<CoinGateService>();
+            services.AddHttpClient<IIpCountryLookup, IpCountryLookup>(client =>
+            {
+                client.BaseAddress = new Uri(Configuration["IP_COUNTRY:BASE_URL"] ?? "https://ipapi.co/");
+                client.Timeout = TimeSpan.FromSeconds(5);
+            });
+            services.AddHostedService<PaymentMetricService>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))
             {

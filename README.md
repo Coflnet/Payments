@@ -18,17 +18,28 @@ To configure stripe get your stripe `KEY` and `SIGNING_SECRET` from stripe.com a
 Next create a webhook callback to `/Callback/stripe` that triggers on confirmed purchase.
 
 ### Stripe — Minimal API Key Permissions
-The Stripe API key (`STRIPE__KEY`) is used **only** for Checkout Session operations:
+The Stripe API key (`STRIPE__KEY`) is used for Checkout Sessions and pre-capture country validation:
 
 | Operation | API Call | Permission |
 |-----------|----------|:----------:|
-| Create checkout session | `SessionService.CreateAsync()` | Write |
+| Create checkout session with dynamic payment methods | `SessionService.CreateAsync()` | Write |
 | List sessions by PaymentIntent | `SessionService.ListAsync()` | Read |
 | Expire stale sessions | `SessionService.ExpireAsync()` | Write |
+| Read provider country and capture/cancel supported authorizations | `PaymentIntentService` | Read & Write |
+| Read the expanded payment method country | PaymentIntent `payment_method` expansion | Read |
 
-**No other Stripe resources are accessed.** Webhook verification uses the signing secret, not the API key. Payment intent, charge, and refund details are all read from webhook payloads — no Stripe API calls are made for them.
+Webhook verification uses the signing secret. Card and Link use per-method manual capture without
+disabling other methods. When Stripe supplies a payment-method country it is authoritative; otherwise
+the country or locale supplied at session creation must match the independently looked-up IP country.
+Disallowed automatically captured payments are marked for manual refund and are not credited.
 
-> **Restricted key:** Create a restricted key in the Stripe Dashboard with only **Checkout Sessions → Read & Write**.
+> **Restricted key:** Enable only **Checkout Sessions → Read & Write**, **Payment Intents → Read & Write**, and **Payment Methods → Read**.
+
+### CoinGate country verification
+CoinGate requests must set `TopUpOptions.Country` from an explicit user selection and
+`TopUpOptions.UserIp` from the trusted ingress. The service looks up the IP country using
+`IP_COUNTRY__BASE_URL` (default: `https://ipapi.co/`) and creates the order only when both
+ISO country codes match and the country is eligible.
 
 #### Paypal
 Paypal can be configured with `PAYPAL__SECRET`, `PAYPAL__ID` and `PAYPAL__IS_SANDBOX` 

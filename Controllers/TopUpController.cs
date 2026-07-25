@@ -37,6 +37,7 @@ namespace Payments.Controllers
         private readonly LemonSqueezyService lemonSqueezyService;
         private readonly CreatorCodeService creatorCodeService;
         private readonly CoinGateService coinGateService;
+        private readonly IIpCountryLookup ipCountryLookup;
 
         /// <summary>
         /// Creates a new instance of the <see cref="TopUpController"/> class
@@ -50,7 +51,8 @@ namespace Payments.Controllers
             PayPalHttpClient paypalClient,
             LemonSqueezyService lemonSqueezyService,
             CreatorCodeService creatorCodeService,
-            CoinGateService coinGateService)
+            CoinGateService coinGateService,
+            IIpCountryLookup ipCountryLookup)
         {
             _logger = logger;
             db = context;
@@ -62,6 +64,7 @@ namespace Payments.Controllers
             this.lemonSqueezyService = lemonSqueezyService;
             this.creatorCodeService = creatorCodeService;
             this.coinGateService = coinGateService;
+            this.ipCountryLookup = ipCountryLookup;
         }
 
         /// <summary>
@@ -112,10 +115,10 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreateStripeSession(string userId, string productId, [FromBody] TopUpOptions topupotions = null)
         {
             var user = await userService.GetOrCreate(userId);
-            AssertUserCountry(topupotions);
             var product = await GetTopupProduct(productId, "stripe");
             if (product == null)
                 throw new ApiException("Product not found");
+            var fallbackCountry = await GetMatchingCountry(topupotions, false, "Stripe");
 
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(topupotions, product);
             
@@ -138,13 +141,13 @@ namespace Payments.Controllers
                 {
                     user.Locale = topupotions?.Locale;
                     user.Ip = System.Net.IPAddress.Parse(topupotions.UserIp).ToString();
-                    user.Country = topupotions?.Locale.Split('-').Last();
                     await db.SaveChangesAsync();
                 }
 
             var metadata = new Dictionary<string, string>() {
                 { "productId", product.Id.ToString() },
-                { "coinAmount", coinAmount.ToString() } };
+                { "coinAmount", coinAmount.ToString() },
+                { "fallbackCountry", fallbackCountry } };
             var options = new SessionCreateOptions
             {
                 LineItems = new List<SessionLineItemOptions>
@@ -169,6 +172,11 @@ namespace Payments.Controllers
                 },
                 Metadata = metadata,
                 Mode = "payment",
+                PaymentMethodOptions = new SessionPaymentMethodOptionsOptions
+                {
+                    Card = new SessionPaymentMethodOptionsCardOptions { CaptureMethod = "manual" },
+                    Link = new SessionPaymentMethodOptionsLinkOptions { CaptureMethod = "manual" }
+                },
                 SuccessUrl = topupotions?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"],
                 CancelUrl = topupotions?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
                 ClientReferenceId = user.ExternalId,
@@ -180,22 +188,26 @@ namespace Payments.Controllers
             {
                 session = await service.CreateAsync(options);
             }
+            catch (Stripe.StripeException e) when (StripeErrorClassifier.IsCredentialError(e.HttpStatusCode))
+            {
+                PaymentMetrics.StripeCredentialErrors.Inc();
+                _logger.LogCritical(
+                    e,
+                    "Stripe checkout session creation was rejected by Stripe credentials (HTTP {StatusCode}, Stripe code {StripeCode}, request {RequestLogUrl})",
+                    e.HttpStatusCode,
+                    e.StripeError?.Code,
+                    e.StripeError?.RequestLogUrl);
+                throw new ApiException(StripeErrorClassifier.UserMessage);
+            }
             catch (Exception e)
             {
                 _logger.LogError(e, "Stripe checkout session could not be created");
-                throw new Exception("Payment currently unavailable");
+                throw new ApiException("Stripe payment is temporarily unavailable. Please try again later.");
             }
             instance.SessionId = session.Id;
             await db.SaveChangesAsync();
 
             return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };
-        }
-
-        private static void AssertUserCountry(TopUpOptions topupotions)
-        {
-            var country = topupotions?.Locale?.Split('-').Last().ToUpperInvariant();
-            if (!CallbackController.DoWeSellto(country, null))
-                throw new ApiException($"We are sorry but we can not sell to your country ({country}) at this time");
         }
 
         private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
@@ -254,20 +266,11 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreatePayPal(string userId, string productId, [FromBody] TopUpOptions options = null)
         {
             var user = await userService.GetOrCreate(userId);
-            AssertUserCountry(options);
-            if (user.Country == null && options?.Locale != null)
-            {
-                user.Country = options.Locale.Split('-').Last();
-                await db.SaveChangesAsync();
-            }
             if (user.Ip == null)
             {
                 user.Ip = options.UserIp;
                 await db.SaveChangesAsync();
             }
-            if (user.Country != null && !CallbackController.DoWeSellto(user.Country, null)) // maybe not available the first time but updated from the paypal webhook
-                throw new ApiException($"We are sorry but we can not sell to your country ({user.Country}) at this time, please make sure to select the correct country in the selection and try again with the avilable payment provider");
-            Console.WriteLine("Creating paypal payment for user {0} from {1}", user.Id, user.Country);
             var product = await GetTopupProduct(productId, "paypal");
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product);
             
@@ -418,15 +421,14 @@ namespace Payments.Controllers
         public async Task<TopUpIdResponse> CreateCoinGate(string userId, string productId, [FromBody] TopUpOptions options = null)
         {
             var user = await userService.GetOrCreate(userId);
-            AssertUserCountry(options);
             var product = await GetTopupProduct(productId, "coingate");
             
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product);
 
-            var country = (options?.Locale?.Split('-').Last() ?? user.Country)?.ToUpperInvariant();
+            var country = await GetMatchingCountry(options, true, "Crypto");
             if (!CallbackController.DoWeAcceptCoinGateFrom(country, coinAmount))
-                throw new ApiException($"We are sorry but we can not sell crypto to your country ({country ?? "unknown"}) at this time");
-            if (user.Country == null)
+                throw new ApiException($"We are sorry but we can not sell crypto to your country ({country}) at this time");
+            if (user.Country != country)
             {
                 user.Country = country;
                 await db.SaveChangesAsync();
@@ -451,6 +453,22 @@ namespace Payments.Controllers
                 user.ExternalId, productId, eurPrice);
 
             return await coinGateService.CreateOrder(user, product, eurPrice, coinAmount, options);
+        }
+
+        private async Task<string> GetMatchingCountry(TopUpOptions options, bool requireExplicit, string paymentMethod)
+        {
+            var country = options?.Country?.Trim().ToUpperInvariant();
+            if (!requireExplicit && string.IsNullOrWhiteSpace(country))
+                country = options?.Locale?.Split(',').FirstOrDefault()?.Split('-').LastOrDefault()?.ToUpperInvariant();
+            if (country?.Length != 2)
+                throw new ApiException($"Please select your country before using {paymentMethod.ToLowerInvariant()} payments.");
+
+            var ipCountry = await ipCountryLookup.GetCountry(options?.UserIp);
+            if (ipCountry == null)
+                throw new ApiException($"We could not verify your country from your IP address. {paymentMethod} payments are unavailable.");
+            if (country != ipCountry)
+                throw new ApiException($"Your selected country ({country}) does not match your IP country ({ipCountry}). {paymentMethod} payments require both countries to match.");
+            return country;
         }
 
         private async Task<TopUpProduct> GetTopupProduct(string productId, string provider)

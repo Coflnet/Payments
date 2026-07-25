@@ -59,7 +59,7 @@ public class CoinGateService
     /// <param name="coinAmount">The amount of coins to credit</param>
     /// <param name="options">Additional topup options</param>
     /// <returns>TopUpIdResponse with payment URL</returns>
-    public async Task<TopUpIdResponse> CreateOrder(
+    public virtual async Task<TopUpIdResponse> CreateOrder(
         User user, 
         TopUpProduct product, 
         decimal eurPrice, 

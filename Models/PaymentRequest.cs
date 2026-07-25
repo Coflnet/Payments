@@ -97,5 +97,9 @@ public class PaymentRequest : HasId
         /// The payment request has failed
         /// </summary>
         FAILED,
+        /// <summary>
+        /// The payment was captured but requires a manual refund
+        /// </summary>
+        REFUND_PENDING,
     }
 }
