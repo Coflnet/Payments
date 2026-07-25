@@ -193,7 +193,7 @@ namespace Payments.Controllers
 
         private static void AssertUserCountry(TopUpOptions topupotions)
         {
-            var country = topupotions.Locale?.Split('-')[0];
+            var country = topupotions?.Locale?.Split('-').Last().ToUpperInvariant();
             if (!CallbackController.DoWeSellto(country, null))
                 throw new ApiException($"We are sorry but we can not sell to your country ({country}) at this time");
         }
@@ -422,6 +422,15 @@ namespace Payments.Controllers
             var product = await GetTopupProduct(productId, "coingate");
             
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product);
+
+            var country = (options?.Locale?.Split('-').Last() ?? user.Country)?.ToUpperInvariant();
+            if (!CallbackController.DoWeAcceptCoinGateFrom(country, coinAmount))
+                throw new ApiException($"We are sorry but we can not sell crypto to your country ({country ?? "unknown"}) at this time");
+            if (user.Country == null)
+            {
+                user.Country = country;
+                await db.SaveChangesAsync();
+            }
             
             // Apply discount to the price if provided
             if (validatedDiscount != null && validatedDiscount.IsValid)
@@ -435,7 +444,6 @@ namespace Payments.Controllers
             {
                 user.Locale = options?.Locale;
                 user.Ip = System.Net.IPAddress.Parse(options.UserIp).ToString();
-                user.Country = options?.Locale?.Split('-').Last();
                 await db.SaveChangesAsync();
             }
 

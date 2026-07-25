@@ -166,7 +166,7 @@ public class CoinGateService
     /// <param name="expectedProductId">Expected product ID from callback URL parameters</param>
     /// <param name="expectedCoinAmount">Expected coin amount from callback URL parameters</param>
     /// <returns>True if the callback is valid</returns>
-    public async Task<bool> VerifyCallback(CoinGateCallback callback, string expectedUserId, int expectedProductId, decimal expectedCoinAmount)
+    public virtual async Task<bool> VerifyCallback(CoinGateCallback callback, string expectedUserId, int expectedProductId, decimal expectedCoinAmount)
     {
         try
         {

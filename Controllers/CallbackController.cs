@@ -564,20 +564,8 @@ namespace Payments.Controllers
                     return StatusCode(400, "Callback verification failed");
                 }
 
-                // Validate country restrictions for CoinGate payments (before processing)
                 var user = await db.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
-                var userCountry = user?.Country ?? "UNKNOWN";
-
-                if (!DoWeAcceptCoinGateFrom(userCountry, coinAmount))
-                {
-                    _logger.LogWarning("CoinGate payment rejected: Country {Country} not accepted for CoinGate (amount: {Amount} coins, minimum for US: 3000)",
-                        userCountry, coinAmount);
-
-                    // Do not write back a non-ISO country marker like "UNKNOWN" into the
-                    // User.Country column (it's limited to 2 chars). We don't have a valid
-                    // ISO country from the callback, so skip updating the user record here.
-                    return Ok(); // Return OK to acknowledge callback, but don't process payment
-                }
+                var userCountry = user?.Country;
 
                 // Process based on status
                 switch (callback.Status)
