@@ -38,8 +38,9 @@ Disallowed automatically captured payments are marked for manual refund and are 
 ### CoinGate country verification
 CoinGate requests must set `TopUpOptions.Country` from an explicit user selection and
 `TopUpOptions.UserIp` from the trusted ingress. The service looks up the IP country using
-`IP_COUNTRY__BASE_URL` (default: `https://ipapi.co/`) and creates the order only when both
-ISO country codes match and the country is eligible.
+`IP_COUNTRY__BASE_URL` (default: `https://ipapi.co/`) and falls back to
+`IP_COUNTRY__FALLBACK_BASE_URL` (default: `https://api.country.is/`). It creates the order only
+when both ISO country codes match and the country is eligible.
 
 #### Paypal
 Paypal can be configured with `PAYPAL__SECRET`, `PAYPAL__ID` and `PAYPAL__IS_SANDBOX` 
