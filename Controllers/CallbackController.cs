@@ -398,6 +398,17 @@ namespace Payments.Controllers
                 }
                 
                 await transactionService.AddTopUp(meta.CustomData.ProductId, meta.CustomData.UserId, data.Attributes.Identifier, meta.CustomData.CoinAmount);
+                await paymentEventProducer.ProduceEvent(new PaymentEvent
+                {
+                    PayedAmount = data.Attributes.Total / 100.0,
+                    ProductId = meta.CustomData.ProductId.ToString(),
+                    UserId = meta.CustomData.UserId,
+                    Currency = data.Attributes.Currency,
+                    PaymentMethod = data.Attributes.PaymentProcessor ?? "card",
+                    PaymentProvider = "lemonsqueezy",
+                    PaymentProviderTransactionId = data.Attributes.Identifier,
+                    Timestamp = data.Attributes.CreatedAt
+                });
                 await db.SaveChangesAsync();
                 _logger.LogInformation($"lemonsqueezy topup {meta.CustomData.ProductId} {meta.CustomData.UserId} {data.Attributes.Identifier} {meta.CustomData.CoinAmount}");
 
@@ -511,6 +522,20 @@ namespace Payments.Controllers
             else if (meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
             {
                 var effectiveCustomData = await subscriptionService.PaymentReceived(webhook);
+                if (data.Attributes.Total > 0)
+                {
+                    await paymentEventProducer.ProduceEvent(new PaymentEvent
+                    {
+                        PayedAmount = data.Attributes.Total / 100.0,
+                        ProductId = effectiveCustomData.ProductId.ToString(),
+                        UserId = effectiveCustomData.UserId,
+                        Currency = data.Attributes.Currency,
+                        PaymentMethod = data.Attributes.PaymentProcessor ?? "card",
+                        PaymentProvider = "lemonsqueezy",
+                        PaymentProviderTransactionId = data.Attributes.Identifier,
+                        Timestamp = data.Attributes.CreatedAt
+                    });
+                }
                 // Record subscription renewal payment for tax compliance
                 var subUser = await db.Users.Where(u => u.ExternalId == effectiveCustomData.UserId).FirstOrDefaultAsync();
                 await RecordPayment(new PaymentRecord
