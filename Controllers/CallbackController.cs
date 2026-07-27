@@ -64,7 +64,9 @@ namespace Payments.Controllers
             _logger = logger;
             db = context;
             signingSecret = config["STRIPE:SIGNING_SECRET"];
-            lemonSqueezySecret = config["LEMONSQUEEZY:SECRET"] ?? throw new Exception("Lemon Squeezy Secret not set");
+            lemonSqueezySecret = config["LEMONSQUEEZY:SECRET"];
+            if (string.IsNullOrWhiteSpace(lemonSqueezySecret))
+                throw new InvalidOperationException("Lemon Squeezy webhook secret not set");
             this.transactionService = transactionService;
             this.paypalClient = paypalClient;
             this.paymentEventProducer = paymentEventProducer;
@@ -327,23 +329,38 @@ namespace Payments.Controllers
         [Route("lemonsqueezy")]
         public async Task<IActionResult> LemonSqueezy([FromHeader(Name = "x-signature")] string signature)
         {
-            var syncIOFeature = HttpContext.Features.Get<IHttpBodyControlFeature>();
-            if (syncIOFeature != null)
+            if (string.IsNullOrWhiteSpace(signature))
             {
-                syncIOFeature.AllowSynchronousIO = true;
+                _logger.LogWarning("Rejected Lemon Squeezy callback without a signature");
+                return Unauthorized();
             }
-            var json = new StreamReader(Request.Body).ReadToEnd();
-            // check hex signature hmac
-            var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(lemonSqueezySecret));
-            var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(json));
-            var hashString = BitConverter.ToString(hash).Replace("-", "").ToLower();
-            if (hashString != signature)
+
+            byte[] providedSignature;
+            try
             {
-                _logger.LogWarning($"lemonsqueezy signature mismatch {hashString} != {signature}");
-                //    return StatusCode(400);
+                providedSignature = Convert.FromHexString(signature);
             }
-            _logger.LogInformation("received callback from lemonsqueezy --\n{data}", json);
-            var webhook = System.Text.Json.JsonSerializer.Deserialize<Coflnet.Payments.Models.LemonSqueezy.Webhook>(json, new System.Text.Json.JsonSerializerOptions
+            catch (FormatException)
+            {
+                _logger.LogWarning("Rejected Lemon Squeezy callback with a malformed signature");
+                return Unauthorized();
+            }
+
+            using var body = new MemoryStream();
+            await Request.Body.CopyToAsync(body);
+            var payload = body.ToArray();
+            var expectedSignature = HMACSHA256.HashData(
+                Encoding.UTF8.GetBytes(lemonSqueezySecret),
+                payload);
+            if (providedSignature.Length != expectedSignature.Length
+                || !CryptographicOperations.FixedTimeEquals(expectedSignature, providedSignature))
+            {
+                _logger.LogWarning("Rejected Lemon Squeezy callback with an invalid signature");
+                return Unauthorized();
+            }
+
+            _logger.LogInformation("Received verified callback from Lemon Squeezy");
+            var webhook = System.Text.Json.JsonSerializer.Deserialize<Coflnet.Payments.Models.LemonSqueezy.Webhook>(payload, new System.Text.Json.JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true,
                 NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString

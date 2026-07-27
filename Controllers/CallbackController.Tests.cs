@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -17,6 +18,60 @@ namespace Payments.Controllers;
 
 public class CallbackControllerTests
 {
+    [Test]
+    public void LemonSqueezy_EmptySecret_IsRejected()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            CreateLemonSqueezyController("", Array.Empty<byte>()));
+    }
+
+    [TestCase(null)]
+    [TestCase("")]
+    [TestCase("not-hex")]
+    [TestCase("00")]
+    public async Task LemonSqueezy_InvalidSignature_IsRejected(string signature)
+    {
+        var controller = CreateLemonSqueezyController(
+            "test-secret",
+            Encoding.UTF8.GetBytes("not valid JSON"));
+
+        var result = await controller.LemonSqueezy(signature);
+
+        Assert.That(result, Is.TypeOf<UnauthorizedResult>());
+    }
+
+    [Test]
+    public async Task LemonSqueezy_ValidSignature_IsAccepted()
+    {
+        const string secret = "test-secret";
+        var payload = Encoding.UTF8.GetBytes(
+            """
+            {
+              "meta": {
+                "event_name": "subscription_payment_failed",
+                "custom_data": {
+                  "user_id": "test-user",
+                  "product_id": 136,
+                  "coin_amount": 2100,
+                  "is_subscription": "true"
+                }
+              },
+              "data": {
+                "type": "subscription-invoices",
+                "id": "1",
+                "attributes": {}
+              }
+            }
+            """);
+        var signature = Convert.ToHexString(
+            HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), payload));
+        var controller = CreateLemonSqueezyController(secret, payload);
+
+        var result = await controller.LemonSqueezy(signature);
+
+        Assert.That(result, Is.TypeOf<OkResult>());
+    }
+
     [Test]
     public async Task CoinGate_PaidCallbackWithoutStoredCountry_CreditsUser()
     {
@@ -91,6 +146,32 @@ public class CallbackControllerTests
         Assert.That(
             await context.FiniteTransactions.AnyAsync(t => t.Reference == "coingate:37656726"),
             Is.True);
+    }
+
+    private static CallbackController CreateLemonSqueezyController(string secret, byte[] payload)
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new[]
+            {
+                new KeyValuePair<string, string>("LEMONSQUEEZY:SECRET", secret)
+            })
+            .Build();
+        var controller = new CallbackController(
+            config,
+            NullLogger<CallbackController>.Instance,
+            null,
+            null,
+            null,
+            null,
+            null,
+            NullLogger<GooglePayController>.Instance,
+            null,
+            null,
+            null,
+            null);
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
+        controller.Request.Body = new MemoryStream(payload);
+        return controller;
     }
 
     private sealed class VerifiedCoinGateService : CoinGateService
