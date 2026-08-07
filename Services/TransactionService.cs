@@ -443,6 +443,11 @@ namespace Coflnet.Payments.Services
             {
                 throw new ApiException("already owned for too long");
             }
+            if (await db.FiniteTransactions.AnyAsync(item =>
+                    item.Product == dbProduct
+                    && item.User == user
+                    && item.Reference == reference))
+                throw new DupplicateTransactionException();
             var price = adjustedProduct.Cost * count;
             if (user.AvailableBalance < price && adjustedProduct.Slug != "revert")
             {

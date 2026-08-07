@@ -88,6 +88,33 @@ public class TransactionServiceTests
     }
 
     [Test]
+    public async Task ServicePurchaseReplayIsDetectedBeforeBalanceCheck()
+    {
+        var user = await userService.GetOrCreate("replay-user");
+        user.Balance = 5;
+        await context.SaveChangesAsync();
+        var product = await context.Products.SingleAsync(item => item.Slug == "svc-test");
+
+        await transactionService.PurchaseService(
+            product.Slug,
+            user.ExternalId,
+            1,
+            "stable-reference",
+            product);
+
+        Assert.That(
+            Assert.ThrowsAsync<TransactionService.DupplicateTransactionException>(() =>
+                transactionService.PurchaseService(
+                    product.Slug,
+                    user.ExternalId,
+                    1,
+                    "stable-reference",
+                    product)),
+            Is.Not.Null);
+        Assert.That(user.Balance, Is.Zero);
+    }
+
+    [Test]
     public async Task OwnedTransaction_IsRolledBack_OnException_AndNoAmbientRemains()
     {
         // call AddTopUp with an invalid user id so CreateTransactionInTransaction will throw and the owned transaction should be rolled back and disposed
