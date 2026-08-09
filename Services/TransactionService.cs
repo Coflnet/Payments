@@ -9,6 +9,8 @@ using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using Newtonsoft.Json;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace Coflnet.Payments.Services
 {
@@ -21,6 +23,8 @@ namespace Coflnet.Payments.Services
         private ITransactionEventProducer transactionEventProducer;
         private TransferSettings transferSettings { get; set; }
         private IRuleEngine ruleEngine;
+        private readonly TimeProvider timeProvider;
+        private readonly bool enforceServicePerformanceDeclaration;
 
         public TransactionService(
             ILogger<TransactionService> logger,
@@ -28,7 +32,8 @@ namespace Coflnet.Payments.Services
             UserService userService,
             ITransactionEventProducer transactionEventProducer,
             IConfiguration config,
-            IRuleEngine ruleEngine)
+            IRuleEngine ruleEngine,
+            TimeProvider timeProvider = null)
         {
             this.logger = logger;
             db = context;
@@ -36,6 +41,9 @@ namespace Coflnet.Payments.Services
             this.transactionEventProducer = transactionEventProducer;
             transferSettings = config?.GetSection("TRANSFER").Get<TransferSettings>();
             this.ruleEngine = ruleEngine;
+            this.timeProvider = timeProvider ?? TimeProvider.System;
+            enforceServicePerformanceDeclaration = config?.GetValue<bool>(
+                "LEGAL:ENFORCE_SERVICE_PERFORMANCE_DECLARATION") == true;
         }
 
         /// <summary>
@@ -416,16 +424,228 @@ namespace Coflnet.Payments.Services
 
         public async Task PurchaseService(string productSlug, string userId, int count, string reference, Product dbProduct)
         {
-            if (!dbProduct.Type.HasFlag(PurchaseableProduct.ProductType.SERVICE))
+            await PurchaseServiceWithDeclaration(
+                productSlug,
+                userId,
+                count,
+                reference,
+                dbProduct,
+                null);
+        }
+
+        public async Task PurchaseServiceDeclared(
+            string productSlug,
+            string userId,
+            ServicePurchaseRequest request)
+        {
+            if (request == null)
+                throw new ApiException("service purchase request is required");
+            var product = await GetProduct(productSlug);
+            await PurchaseServiceWithDeclaration(
+                productSlug,
+                userId,
+                request.Count,
+                request.Reference,
+                product,
+                request);
+        }
+
+        private async Task PurchaseServiceWithDeclaration(
+            string productSlug,
+            string userId,
+            int count,
+            string reference,
+            Product dbProduct,
+            ServicePurchaseRequest request)
+        {
+            if (!dbProduct.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
+            if (request != null && (count < 1 || count > 100))
+                throw new ApiException("invalid service purchase count");
+            if (request != null && string.IsNullOrWhiteSpace(reference))
+                throw new ApiException("purchase reference is required");
 
             await WithTransactionAsync(async (tx, owns) =>
             {
                 var user = await userService.GetOrCreate(userId);
-                var adjustedProduct = ruleEngine == null ? dbProduct : (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
-                await ExecuteServicePurchase(productSlug, userId, count, reference, dbProduct, tx, user, adjustedProduct, owns);
+                var locale = NormalizeLocale(request?.Locale);
+                if (request != null)
+                {
+                    if (!Guid.TryParse(request.RequestId, out _))
+                        throw new ApiException(
+                            "invalid_service_performance_declaration");
+                    var existing = await db.ServicePerformanceDeclarations
+                        .SingleOrDefaultAsync(item =>
+                            item.RequestId == request.RequestId);
+                    if (existing != null)
+                    {
+                        if (Matches(
+                                existing,
+                                userId,
+                                dbProduct.Id,
+                                productSlug,
+                                count,
+                                reference,
+                                request,
+                                locale))
+                            return;
+                        throw new ApiException(
+                            "service declaration request id already used");
+                    }
+                }
+
+                var adjustedProduct = ruleEngine == null
+                    ? dbProduct
+                    : (await ruleEngine.GetAdjusted(dbProduct, user))
+                        .ModifiedProduct;
+                var now = timeProvider.GetUtcNow().UtcDateTime;
+                var currentExpiry = await userService.GetLongest(
+                    userId,
+                    new() { productSlug });
+                var startsAt = currentExpiry > now ? currentExpiry : now;
+                var endsAt = startsAt.AddSeconds(
+                    adjustedProduct.OwnershipSeconds * count);
+                var price = adjustedProduct.Cost * count;
+                var declarationRequired = IsPremium(productSlug)
+                    && price > 0
+                    && startsAt < now.AddDays(14);
+                var requested = request?.ImmediatePerformanceRequested == true
+                    && request.WithdrawalConsequenceAcknowledged;
+
+                if (request != null
+                    && request.ImmediatePerformanceRequested
+                        != request.WithdrawalConsequenceAcknowledged)
+                    throw new ApiException(
+                        "invalid_service_performance_declaration");
+                if (declarationRequired && !requested)
+                {
+                    if (enforceServicePerformanceDeclaration)
+                        throw new ApiException(
+                            "service_performance_declaration_required");
+                    logger.LogWarning(
+                        "Early-performance declaration rollout would block paid Premium purchase for user {UserId}",
+                        userId);
+                }
+
+                var legacyRolloutShadow = requested
+                    && !enforceServicePerformanceDeclaration
+                    && string.IsNullOrWhiteSpace(request.AgreementId)
+                    && string.IsNullOrWhiteSpace(request.AgreementHash);
+                if (legacyRolloutShadow)
+                {
+                    logger.LogWarning(
+                        "Legacy declared purchase omitted SkyCofl Agreement Root evidence for user {UserId}",
+                        userId);
+                }
+                else if (requested)
+                {
+                    ValidateDeclaration(request);
+                    db.ServicePerformanceDeclarations.Add(new()
+                    {
+                        RequestId = request.RequestId,
+                        UserId = userId,
+                        ProductId = dbProduct.Id,
+                        ProductSlug = productSlug,
+                        Count = count,
+                        PurchaseReference = reference,
+                        CoinAmount = price,
+                        StartsAtUtc = startsAt,
+                        EndsAtUtc = endsAt,
+                        DeclarationRequired = declarationRequired,
+                        EarlyPerformanceRequested =
+                            request.ImmediatePerformanceRequested,
+                        WithdrawalConsequenceAcknowledged =
+                            request.WithdrawalConsequenceAcknowledged,
+                        Locale = locale,
+                        DeclarationVersion = request.DeclarationVersion,
+                        DeclarationText = request.DeclarationText,
+                        DeclarationSha256 = request.DeclarationSha256,
+                        AgreementId = request.AgreementId,
+                        AgreementHash = request.AgreementHash,
+                        WithdrawalVersion = request.WithdrawalVersion,
+                        WithdrawalSha256 = request.WithdrawalSha256,
+                        CreatedAtUtc = now
+                    });
+                }
+
+                await ExecuteServicePurchase(
+                    productSlug,
+                    userId,
+                    count,
+                    reference,
+                    dbProduct,
+                    tx,
+                    user,
+                    adjustedProduct,
+                    owns,
+                    request == null ? null : now);
             });
         }
+
+        private static string NormalizeLocale(string locale) =>
+            locale?.StartsWith(
+                "de",
+                StringComparison.OrdinalIgnoreCase) == true
+                ? "de"
+                : "en";
+
+        private static bool Matches(
+            ServicePerformanceDeclaration evidence,
+            string userId,
+            int productId,
+            string productSlug,
+            int count,
+            string reference,
+            ServicePurchaseRequest request,
+            string locale) =>
+            evidence.UserId == userId
+            && evidence.ProductId == productId
+            && evidence.ProductSlug == productSlug
+            && evidence.Count == count
+            && evidence.PurchaseReference == reference
+            && evidence.EarlyPerformanceRequested
+                == request.ImmediatePerformanceRequested
+            && evidence.WithdrawalConsequenceAcknowledged
+                == request.WithdrawalConsequenceAcknowledged
+            && evidence.Locale == locale
+            && evidence.DeclarationVersion == request.DeclarationVersion
+            && evidence.DeclarationText == request.DeclarationText
+            && evidence.DeclarationSha256 == request.DeclarationSha256
+            && evidence.AgreementId == request.AgreementId
+            && evidence.AgreementHash == request.AgreementHash
+            && evidence.WithdrawalVersion == request.WithdrawalVersion
+            && evidence.WithdrawalSha256 == request.WithdrawalSha256;
+
+        private static void ValidateDeclaration(ServicePurchaseRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.DeclarationVersion)
+                || string.IsNullOrWhiteSpace(request.DeclarationText)
+                || !IsSha256(request.DeclarationSha256)
+                || !Sha256(request.DeclarationText).Equals(
+                    request.DeclarationSha256,
+                    StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(request.AgreementId)
+                || !IsSha256(request.AgreementHash)
+                || string.IsNullOrWhiteSpace(request.WithdrawalVersion)
+                || !IsSha256(request.WithdrawalSha256))
+                throw new ApiException(
+                    "invalid_service_performance_declaration");
+        }
+
+        private static bool IsSha256(string value) =>
+            value?.Length == 64 && value.All(Uri.IsHexDigit);
+
+        private static string Sha256(string value) =>
+            Convert.ToHexString(SHA256.HashData(
+                Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+
+        private static bool IsPremium(string productSlug) =>
+            productSlug.StartsWith(
+                "premium",
+                StringComparison.OrdinalIgnoreCase)
+            || productSlug.StartsWith(
+                "starter_premium",
+                StringComparison.OrdinalIgnoreCase);
 
         public async Task<RuleResult> GetAdjustedProduct(string productSlug, string userId)
         {
@@ -436,7 +656,17 @@ namespace Coflnet.Payments.Services
             return await ruleEngine.GetAdjusted(product, user);
         }
 
-        private async Task<TransactionEvent> ExecuteServicePurchase(string productSlug, string userId, int count, string reference, Product dbProduct, IDbContextTransaction transaction, User user, Product adjustedProduct, bool commitTransaction)
+        private async Task<TransactionEvent> ExecuteServicePurchase(
+            string productSlug,
+            string userId,
+            int count,
+            string reference,
+            Product dbProduct,
+            IDbContextTransaction transaction,
+            User user,
+            Product adjustedProduct,
+            bool commitTransaction,
+            DateTime? evaluationAtUtc = null)
         {
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
@@ -464,7 +694,10 @@ namespace Coflnet.Payments.Services
             {
                 var existingExpiry = await userService.GetLongest(userId, new() { item.Slug });
                 Console.WriteLine(item.Slug + " exires at " + existingExpiry);
-                var newExpiry = GetNewExpiry(existingExpiry, time);
+                var newExpiry = GetNewExpiry(
+                    existingExpiry,
+                    time,
+                    evaluationAtUtc);
                 logger.LogInformation($"User {user.ExternalId} has {existingExpiry} for {item.Slug} and will be extended to {newExpiry} by {time}");
                 existingOwnerShip = user.Owns?.Where(p => p.Product?.Id == item.Id);
                 if (existingOwnerShip.Any())
@@ -532,10 +765,14 @@ namespace Coflnet.Payments.Services
             return decimal.ToInt32(roundedCount);
         }
 
-        public static DateTime GetNewExpiry(DateTime currentTime, TimeSpan time)
+        public static DateTime GetNewExpiry(
+            DateTime currentTime,
+            TimeSpan time,
+            DateTime? now = null)
         {
-            if (currentTime < DateTime.UtcNow)
-                return DateTime.UtcNow + time;
+            var effectiveNow = now ?? DateTime.UtcNow;
+            if (currentTime < effectiveNow)
+                return effectiveNow + time;
             else
                 return currentTime += time;
         }

@@ -77,6 +77,7 @@ namespace Coflnet.Payments.Models
         /// Tracks exact amounts paid, taxes, fees, discounts per transaction.
         /// </summary>
         public DbSet<PaymentRecord> PaymentRecords { get; set; }
+        public DbSet<ServicePerformanceDeclaration> ServicePerformanceDeclarations { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -182,6 +183,11 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => e.ExternalUserId);
                 // Full tax query: country + provider + date
                 entity.HasIndex(e => new { e.Country, e.Provider, e.PaidAt });
+            });
+            modelBuilder.Entity<ServicePerformanceDeclaration>(entity =>
+            {
+                entity.HasIndex(e => e.RequestId).IsUnique();
+                entity.HasIndex(e => new { e.UserId, e.CreatedAtUtc });
             });
         }
     }

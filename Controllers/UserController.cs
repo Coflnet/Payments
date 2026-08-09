@@ -162,6 +162,23 @@ namespace Payments.Controllers
         }
 
         /// <summary>
+        /// Purchases or extends a service and records the order-specific
+        /// early-performance declaration.
+        /// </summary>
+        [HttpPost]
+        [Route("{userId}/service/purchase-declared/{productSlug}")]
+        public async Task PurchaseServiceDeclared(
+            string userId,
+            string productSlug,
+            [FromBody] ServicePurchaseRequest request)
+        {
+            await transactionService.PurchaseServiceDeclared(
+                productSlug,
+                userId,
+                request);
+        }
+
+        /// <summary>
         /// Returns the price for a product after applying any matching rules
         /// </summary>
         /// <param name="userId"></param>
