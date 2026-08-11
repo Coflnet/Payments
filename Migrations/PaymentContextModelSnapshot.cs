@@ -261,6 +261,67 @@ namespace Payments.Migrations
                     b.ToTable("OwnerShip", (string)null);
                 });
 
+            modelBuilder.Entity("Coflnet.Payments.Models.PaymentConfirmationOutbox", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ConfirmationType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("LeaseUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ProviderTransactionId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTime?>("PublishedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PublishedAt", "NextAttemptAt")
+                        .HasDatabaseName("IX_PaymentConfirmationOutbox_Pending");
+
+                    b.HasIndex("Provider", "ProviderTransactionId", "ConfirmationType")
+                        .IsUnique()
+                        .HasDatabaseName("UX_PaymentConfirmationOutbox_Identity");
+
+                    b.ToTable("PaymentConfirmationOutbox");
+                });
+
             modelBuilder.Entity("Coflnet.Payments.Models.PaymentRecord", b =>
                 {
                     b.Property<long>("Id")

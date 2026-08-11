@@ -11,6 +11,7 @@ using System.Data;
 using Newtonsoft.Json;
 using System.Security.Cryptography;
 using System.Text;
+using System.Globalization;
 
 namespace Coflnet.Payments.Services
 {
@@ -488,7 +489,10 @@ namespace Coflnet.Payments.Services
                                 reference,
                                 request,
                                 locale))
+                        {
+                            await EnsureServicePurchaseConfirmation(existing);
                             return;
+                        }
                         throw new ApiException(
                             "service declaration request id already used");
                     }
@@ -531,6 +535,7 @@ namespace Coflnet.Payments.Services
                     && !enforceServicePerformanceDeclaration
                     && string.IsNullOrWhiteSpace(request.AgreementId)
                     && string.IsNullOrWhiteSpace(request.AgreementHash);
+                ServicePerformanceDeclaration evidence = null;
                 if (legacyRolloutShadow)
                 {
                     logger.LogWarning(
@@ -540,7 +545,7 @@ namespace Coflnet.Payments.Services
                 else if (requested)
                 {
                     ValidateDeclaration(request);
-                    db.ServicePerformanceDeclarations.Add(new()
+                    evidence = new()
                     {
                         RequestId = request.RequestId,
                         UserId = userId,
@@ -565,10 +570,11 @@ namespace Coflnet.Payments.Services
                         WithdrawalVersion = request.WithdrawalVersion,
                         WithdrawalSha256 = request.WithdrawalSha256,
                         CreatedAtUtc = now
-                    });
+                    };
+                    db.ServicePerformanceDeclarations.Add(evidence);
                 }
 
-                await ExecuteServicePurchase(
+                var transactionEvent = await ExecuteServicePurchase(
                     productSlug,
                     userId,
                     count,
@@ -579,6 +585,89 @@ namespace Coflnet.Payments.Services
                     adjustedProduct,
                     owns,
                     request == null ? null : now);
+                if (evidence != null)
+                {
+                    await EnqueueServicePurchaseConfirmation(
+                        transactionEvent,
+                        evidence);
+                    await db.SaveChangesAsync();
+                }
+            });
+        }
+
+        private async Task EnsureServicePurchaseConfirmation(
+            ServicePerformanceDeclaration evidence)
+        {
+            var transactionEvent = await db.FiniteTransactions
+                .AsNoTracking()
+                .Where(item => item.User.ExternalId == evidence.UserId
+                    && item.ProductId == evidence.ProductId
+                    && item.Reference == evidence.PurchaseReference)
+                .OrderByDescending(item => item.Id)
+                .Select(item => new TransactionEvent
+                {
+                    Id = item.Id,
+                    UserId = evidence.UserId,
+                    ProductId = evidence.ProductId,
+                    ProductSlug = evidence.ProductSlug,
+                    Reference = evidence.PurchaseReference,
+                    Timestamp = item.Timestamp
+                })
+                .FirstOrDefaultAsync();
+            if (transactionEvent == null)
+                throw new ApiException("service purchase transaction not found");
+
+            await EnqueueServicePurchaseConfirmation(transactionEvent, evidence);
+            await db.SaveChangesAsync();
+        }
+
+        private async Task EnqueueServicePurchaseConfirmation(
+            TransactionEvent transactionEvent,
+            ServicePerformanceDeclaration evidence)
+        {
+            const string provider = "coflcoins";
+            const string confirmationType = "service_purchase";
+            var providerTransactionId = transactionEvent.Id.ToString(
+                CultureInfo.InvariantCulture);
+            if (db.PaymentConfirmationOutbox.Local.Any(item =>
+                    item.Provider == provider
+                    && item.ProviderTransactionId == providerTransactionId
+                    && item.ConfirmationType == confirmationType)
+                || await db.PaymentConfirmationOutbox.AnyAsync(item =>
+                    item.Provider == provider
+                    && item.ProviderTransactionId == providerTransactionId
+                    && item.ConfirmationType == confirmationType))
+                return;
+
+            var payment = new PaymentEvent
+            {
+                ProductId = evidence.ProductSlug,
+                UserId = evidence.UserId,
+                Currency = "CoflCoins",
+                PaymentMethod = "CoflCoin balance",
+                PaymentProvider = provider,
+                PaymentProviderTransactionId = providerTransactionId,
+                Timestamp = transactionEvent.Timestamp,
+                ConfirmationType = confirmationType,
+                CoinAmount = evidence.CoinAmount,
+                ServiceStartsAtUtc = evidence.StartsAtUtc,
+                ServiceEndsAtUtc = evidence.EndsAtUtc,
+                DeclarationVersion = evidence.DeclarationVersion,
+                DeclarationText = evidence.DeclarationText,
+                LegalLocale = evidence.Locale,
+                AgreementId = evidence.AgreementId,
+                AgreementHash = evidence.AgreementHash,
+                WithdrawalVersion = evidence.WithdrawalVersion,
+                WithdrawalSha256 = evidence.WithdrawalSha256
+            };
+            db.PaymentConfirmationOutbox.Add(new()
+            {
+                Provider = provider,
+                ProviderTransactionId = providerTransactionId,
+                ConfirmationType = confirmationType,
+                Payload = JsonConvert.SerializeObject(payment),
+                CreatedAt = transactionEvent.Timestamp,
+                NextAttemptAt = transactionEvent.Timestamp
             });
         }
 

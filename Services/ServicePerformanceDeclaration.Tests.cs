@@ -10,6 +10,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Newtonsoft.Json;
 using NUnit.Framework;
 
 namespace Coflnet.Payments.Services;
@@ -110,6 +111,21 @@ public class ServicePerformanceDeclarationTests
                 Is.EqualTo("withdrawal-v1"));
         });
         Assert.That(await db.FiniteTransactions.CountAsync(), Is.EqualTo(1));
+        var queued = await db.PaymentConfirmationOutbox.SingleAsync();
+        var confirmation = JsonConvert.DeserializeObject<PaymentEvent>(
+            queued.Payload);
+        Assert.Multiple(() =>
+        {
+            Assert.That(confirmation.ConfirmationType,
+                Is.EqualTo("service_purchase"));
+            Assert.That(confirmation.CoinAmount, Is.EqualTo(5));
+            Assert.That(confirmation.LegalLocale, Is.EqualTo("de"));
+            Assert.That(confirmation.AgreementId, Is.EqualTo("skycofl"));
+            Assert.That(confirmation.AgreementHash,
+                Is.EqualTo(request.AgreementHash));
+            Assert.That(confirmation.WithdrawalSha256,
+                Is.EqualTo(request.WithdrawalSha256));
+        });
     }
 
     [Test]
@@ -245,6 +261,9 @@ public class ServicePerformanceDeclarationTests
             premium.Slug,
             user.ExternalId,
             request));
+
+        Assert.That(await db.PaymentConfirmationOutbox.CountAsync(),
+            Is.EqualTo(1));
 
         foreach (var changed in ChangedRequests(request))
             Assert.That(

@@ -78,6 +78,7 @@ namespace Coflnet.Payments.Models
         /// </summary>
         public DbSet<PaymentRecord> PaymentRecords { get; set; }
         public DbSet<ServicePerformanceDeclaration> ServicePerformanceDeclarations { get; set; }
+        public DbSet<PaymentConfirmationOutbox> PaymentConfirmationOutbox { get; set; }
 
         /// <summary>
         /// Creates a new instance of <see cref="PaymentContext"/>
@@ -188,6 +189,18 @@ namespace Coflnet.Payments.Models
             {
                 entity.HasIndex(e => e.RequestId).IsUnique();
                 entity.HasIndex(e => new { e.UserId, e.CreatedAtUtc });
+            });
+            modelBuilder.Entity<PaymentConfirmationOutbox>(entity =>
+            {
+                entity.HasIndex(e => new
+                {
+                    e.Provider,
+                    e.ProviderTransactionId,
+                    e.ConfirmationType
+                }).IsUnique()
+                    .HasDatabaseName("UX_PaymentConfirmationOutbox_Identity");
+                entity.HasIndex(e => new { e.PublishedAt, e.NextAttemptAt })
+                    .HasDatabaseName("IX_PaymentConfirmationOutbox_Pending");
             });
         }
     }

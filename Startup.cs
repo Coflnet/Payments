@@ -114,6 +114,7 @@ namespace Coflnet.Payments
                 client.Timeout = TimeSpan.FromSeconds(5);
             });
             services.AddHostedService<PaymentMetricService>();
+            services.AddHostedService<PaymentConfirmationOutboxPublisher>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))
             {
