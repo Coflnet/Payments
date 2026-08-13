@@ -115,6 +115,36 @@ public class TransactionServiceTests
     }
 
     [Test]
+    public async Task ServicePurchase_NegativeCountCannotCreditBalance()
+    {
+        var product = new PurchaseableProduct
+        {
+            Title = "Premium Plus 100",
+            Slug = "premium_plus-100",
+            Cost = 100,
+            OwnershipSeconds = 3600,
+            Type = Product.ProductType.SERVICE
+        };
+        context.Products.Add(product);
+        var user = await userService.GetOrCreate("negative-count-user");
+        await context.SaveChangesAsync();
+
+        var error = Assert.ThrowsAsync<ApiException>(() =>
+            transactionService.PurchaseServie(
+                product.Slug,
+                user.ExternalId,
+                -216,
+                "vjUvnaxguCAZ9ANY8RLvlSsDYPDZ3DxUpvZQAOLCA8B9D3fw"));
+
+        Assert.That(error?.Message, Is.EqualTo("invalid service purchase count"));
+        Assert.That(user.Balance, Is.Zero);
+        Assert.That(await context.FiniteTransactions.AnyAsync(t =>
+            t.User == user && t.Product == product), Is.False);
+        Assert.That(await context.OwnerShips.AnyAsync(o =>
+            o.User == user && o.Product == product), Is.False);
+    }
+
+    [Test]
     public async Task OwnedTransaction_IsRolledBack_OnException_AndNoAmbientRemains()
     {
         // call AddTopUp with an invalid user id so CreateTransactionInTransaction will throw and the owned transaction should be rolled back and disposed

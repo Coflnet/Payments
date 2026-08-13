@@ -461,7 +461,7 @@ namespace Coflnet.Payments.Services
         {
             if (!dbProduct.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
-            if (request != null && (count < 1 || count > 100))
+            if (count < 1 || count > 100)
                 throw new ApiException("invalid service purchase count");
             if (request != null && string.IsNullOrWhiteSpace(reference))
                 throw new ApiException("purchase reference is required");
