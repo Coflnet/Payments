@@ -134,7 +134,10 @@ namespace Payments.Controllers
             if(instance.SessionId != null)
             {
                 _logger.LogInformation("Stripe session already exists for user {userId} with id {sessionId}", user.Id, instance.SessionId);
-                return new TopUpIdResponse { Id = instance.SessionId, DirctLink = "https://checkout.stripe.com/c/pay/" + instance.SessionId };
+                var existingSession = await new SessionService().GetAsync(instance.SessionId);
+                if (string.IsNullOrWhiteSpace(existingSession.Url))
+                    throw new ApiException("The existing Stripe checkout session is no longer active. Please try again later.");
+                return new TopUpIdResponse { Id = existingSession.Id, DirectLink = existingSession.Url };
             }
 
             if (user.Locale == null && topupotions?.UserIp != null)
