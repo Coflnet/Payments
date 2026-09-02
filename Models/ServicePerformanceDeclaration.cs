@@ -3,9 +3,8 @@ using System.ComponentModel.DataAnnotations;
 namespace Coflnet.Payments.Models;
 
 /// <summary>
-/// Order-specific evidence for a paid service that may start during the
-/// withdrawal period. The withdrawal right is not treated as expired until
-/// the service has been completely performed.
+/// Order-specific evidence for paid digital content or a service supplied
+/// during the withdrawal period.
 /// </summary>
 public class ServicePerformanceDeclaration
 {
@@ -42,6 +41,12 @@ public class ServicePerformanceDeclaration
     public string WithdrawalVersion { get; set; }
     [Required, MaxLength(64)]
     public string WithdrawalSha256 { get; set; }
+    [MaxLength(2)]
+    public string TaxCountry { get; set; }
+    public int VatRateBasisPoints { get; set; }
+    public long GrossEurCents { get; set; }
+    public long VatEurCents { get; set; }
+    public string OrderDetailsJson { get; set; }
     public DateTime CreatedAtUtc { get; set; }
 }
 
@@ -71,6 +76,24 @@ public sealed class ServicePurchaseRequest
     public string WithdrawalVersion { get; set; }
     [MaxLength(64)]
     public string WithdrawalSha256 { get; set; }
+    [MaxLength(2)]
+    public string TaxCountry { get; set; }
+    [MaxLength(2)]
+    public string ConsumerRightsRegime { get; set; }
+    public int VatRateBasisPoints { get; set; }
+    public long GrossEurCents { get; set; }
+    public long VatEurCents { get; set; }
+    public string OrderDetailsJson { get; set; }
     [Required, MaxLength(64)]
     public string RequestId { get; set; }
+}
+
+public sealed class ServicePurchaseQuote
+{
+    public decimal CoinAmount { get; set; }
+    public string TaxCountry { get; set; }
+    public string ConsumerRightsRegime { get; set; }
+    public int VatRateBasisPoints { get; set; }
+    public long GrossEurCents { get; set; }
+    public long VatEurCents { get; set; }
 }

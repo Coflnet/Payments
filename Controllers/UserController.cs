@@ -178,6 +178,16 @@ namespace Payments.Controllers
                 request);
         }
 
+        [HttpGet]
+        [Route("{userId}/service/quote/{productSlug}")]
+        public Task<ServicePurchaseQuote> GetServicePurchaseQuote(
+            string userId,
+            string productSlug,
+            int count = 1) => transactionService.GetServicePurchaseQuote(
+                productSlug,
+                userId,
+                count);
+
         /// <summary>
         /// Returns the price for a product after applying any matching rules
         /// </summary>
@@ -199,7 +209,7 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpDelete]
         [Route("{userId}/{transactionId}")]
-        public async Task<TransactionEvent> RevertServicePUrchase(string userId, int transactionId)
+        public async Task<TransactionEvent> RevertServicePUrchase(string userId, long transactionId)
         {
             var matched = await licenseService.Revert(userId, transactionId);
             // if a license matched, don't adjust the main account time

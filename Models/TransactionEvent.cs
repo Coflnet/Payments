@@ -20,6 +20,10 @@ namespace Coflnet.Payments.Models
         /// </summary>
         public string ProductSlug { get; set; }
         /// <summary>
+        /// Original product slug when this event reverses another transaction.
+        /// </summary>
+        public string RevertedProductSlug { get; set; }
+        /// <summary>
         /// Unique id of this product settings
         /// </summary>
         public int ProductId { get; set; }

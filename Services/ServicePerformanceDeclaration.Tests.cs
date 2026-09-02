@@ -17,11 +17,15 @@ namespace Coflnet.Payments.Services;
 
 public class ServicePerformanceDeclarationTests
 {
+    private const string ExpertMarketplaceAgreementHash =
+        "9177b208e3226cd0974afdce79d4023520d69d65aaa34a8d86e04dd3e60f2401";
+    private const string CreatorMarketplaceAgreementHash =
+        "652e91d78ec3aa86dd1e7e33c1e1a81dc423c7ecc1b004466cae1733c9c4a280";
     private static readonly DateTime Now = new(
         2026,
-        8,
-        8,
-        8,
+        9,
+        4,
+        10,
         0,
         0,
         DateTimeKind.Utc);
@@ -126,6 +130,279 @@ public class ServicePerformanceDeclarationTests
             Assert.That(confirmation.WithdrawalSha256,
                 Is.EqualTo(request.WithdrawalSha256));
         });
+    }
+
+    [Test]
+    public async Task ExpertConfigUsesBuyerCountryQuoteAndQueuesOrderDetails()
+    {
+        var product = new PurchaseableProduct
+        {
+            Title = "Expert config purchase",
+            Slug = "config-purchase",
+            Cost = 600,
+            OwnershipSeconds = 0,
+            Type = Product.ProductType.SERVICE,
+            Groups = []
+        };
+        var group = new Group { Slug = product.Slug, Products = [product] };
+        product.Groups.Add(group);
+        db.Groups.Add(group);
+        var user = await Fund("7");
+        user.Country = "de";
+        user.Balance = 1000;
+        await db.SaveChangesAsync();
+        var service = CreateService(now: Now.AddTicks(-1));
+        var quote = await service.GetServicePurchaseQuote(
+            product.Slug,
+            user.ExternalId,
+            1);
+        var request = ExpertConfigRequest("config-order", quote);
+
+        await service.PurchaseServiceDeclared(
+            product.Slug,
+            user.ExternalId,
+            request);
+
+        var evidence = await db.ServicePerformanceDeclarations.SingleAsync();
+        var payment = JsonConvert.DeserializeObject<PaymentEvent>(
+            (await db.PaymentConfirmationOutbox.SingleAsync()).Payload);
+        Assert.Multiple(() =>
+        {
+            Assert.That(quote.TaxCountry, Is.EqualTo("DE"));
+            Assert.That(quote.ConsumerRightsRegime, Is.EqualTo("EU"));
+            Assert.That(quote.VatRateBasisPoints, Is.EqualTo(1900));
+            Assert.That(quote.GrossEurCents, Is.EqualTo(223));
+            Assert.That(quote.VatEurCents, Is.EqualTo(36));
+            Assert.That(evidence.OrderDetailsJson,
+                Is.EqualTo(request.OrderDetailsJson));
+            Assert.That(payment.OrderDetailsJson,
+                Is.EqualTo(request.OrderDetailsJson));
+            Assert.That(payment.AgreementId,
+                Is.EqualTo("expertMarketplace"));
+            Assert.That(payment.ConsumerRightsRegime, Is.EqualTo("EU"));
+        });
+    }
+
+    [Test]
+    public async Task ExpertConfigRejectsGenericPurchaseRoute()
+    {
+        var product = AddExpertConfigProduct();
+        var user = await Fund("7");
+
+        Assert.ThrowsAsync<ApiException>(() => CreateService()
+            .PurchaseProduct(product.Slug, user.ExternalId));
+    }
+
+    [Test]
+    public async Task ExpertConfigRolloutAllowsOnlyUserSevenBeforeBoundary()
+    {
+        var product = AddExpertConfigProduct();
+        var earlyUser = await Fund("7");
+        earlyUser.Country = "DE";
+        var blockedUser = await Fund("42");
+        blockedUser.Country = "DE";
+        var similarId = await Fund("07");
+        similarId.Country = "DE";
+        await db.SaveChangesAsync();
+        var before = CreateService(now: Now.AddTicks(-1));
+
+        var earlyQuote = await before.GetServicePurchaseQuote(
+            product.Slug, earlyUser.ExternalId, 1);
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => before
+                .GetServicePurchaseQuote(product.Slug, blockedUser.ExternalId, 1))
+                ?.Message,
+            Is.EqualTo("expert_config_not_available"));
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => before
+                .GetServicePurchaseQuote(product.Slug, similarId.ExternalId, 1))
+                ?.Message,
+            Is.EqualTo("expert_config_not_available"));
+        var blockedRequest = ExpertConfigRequest(
+            "blocked-before-rollout", earlyQuote);
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => before
+                .PurchaseServiceDeclared(
+                    product.Slug, blockedUser.ExternalId, blockedRequest))
+                ?.Message,
+            Is.EqualTo("expert_config_not_available"));
+        Assert.DoesNotThrowAsync(() => CreateService(now: Now)
+            .GetServicePurchaseQuote(product.Slug, blockedUser.ExternalId, 1));
+    }
+
+    [TestCase("agreement")]
+    [TestCase("order-agreement")]
+    [TestCase("creator-agreement")]
+    [TestCase("missing-order-roots")]
+    public async Task ExpertConfigRejectsWrongFinalAgreementEvidenceForEarlyUser(
+        string changedField)
+    {
+        var product = AddExpertConfigProduct();
+        var user = await Fund("7");
+        user.Country = "DE";
+        user.Balance = 1000;
+        await db.SaveChangesAsync();
+        var service = CreateService(now: Now.AddTicks(-1));
+        var quote = await service.GetServicePurchaseQuote(
+            product.Slug, user.ExternalId, 1);
+        var request = ExpertConfigRequest("wrong-root-order", quote);
+        var wrong = new string('a', 64);
+        if (changedField == "agreement")
+            request.AgreementHash = wrong;
+        else if (changedField == "order-agreement")
+            request.OrderDetailsJson = OrderDetails(wrong);
+        else if (changedField == "creator-agreement")
+            request.OrderDetailsJson = OrderDetails(creatorHash: wrong);
+        else
+            request.OrderDetailsJson = "{}";
+
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => service
+                .PurchaseServiceDeclared(product.Slug, user.ExternalId, request))
+                ?.Message,
+            Is.EqualTo("invalid_expert_config_order_evidence"));
+        var transactionCount = await db.FiniteTransactions.CountAsync();
+        var evidenceCount = await db.ServicePerformanceDeclarations.CountAsync();
+        Assert.Multiple(() =>
+        {
+            Assert.That(transactionCount, Is.Zero);
+            Assert.That(evidenceCount, Is.Zero);
+        });
+    }
+
+    [Test]
+    public async Task ExistingExactExpertConfigRetryRemainsResumable()
+    {
+        var product = AddExpertConfigProduct();
+        var user = await Fund("42");
+        user.Country = "DE";
+        user.Balance = 1000;
+        await db.SaveChangesAsync();
+        var service = CreateService(now: Now);
+        var quote = await service.GetServicePurchaseQuote(
+            product.Slug, user.ExternalId, 1);
+        var request = ExpertConfigRequest("resumable-config-order", quote);
+        await service.PurchaseServiceDeclared(
+            product.Slug, user.ExternalId, request);
+        user.Balance = 0;
+        await db.SaveChangesAsync();
+
+        Assert.DoesNotThrowAsync(() => CreateService(now: Now.AddTicks(-1))
+            .PurchaseServiceDeclared(product.Slug, user.ExternalId, request));
+        var transactionCount = await db.FiniteTransactions.CountAsync();
+        var confirmationCount = await db.PaymentConfirmationOutbox.CountAsync();
+        Assert.Multiple(() =>
+        {
+            Assert.That(transactionCount, Is.EqualTo(1));
+            Assert.That(confirmationCount, Is.EqualTo(1));
+        });
+    }
+
+    [TestCase("CA")]
+    [TestCase("NO")]
+    [TestCase(null)]
+    public async Task ExpertConfigRejectsUnsupportedBuyerCountry(string country)
+    {
+        var product = new PurchaseableProduct
+        {
+            Title = "Expert config purchase",
+            Slug = "config-purchase",
+            Cost = 600,
+            OwnershipSeconds = 0,
+            Type = Product.ProductType.SERVICE,
+            Groups = []
+        };
+        var group = new Group { Slug = product.Slug, Products = [product] };
+        product.Groups.Add(group);
+        db.Groups.Add(group);
+        var user = await Fund("unsupported-config-buyer");
+        user.Country = country;
+        await db.SaveChangesAsync();
+
+        Assert.That(
+            Assert.ThrowsAsync<ApiException>(() => CreateService()
+                .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1))
+                ?.Message,
+            Is.EqualTo("expert_config_tax_quote_unavailable"));
+    }
+
+    [TestCase("GB", "UK", 2000)]
+    [TestCase("US", "US", 0)]
+    public async Task ExpertConfigSelectsCountryRightsRegime(
+        string country,
+        string regime,
+        int rate)
+    {
+        var product = new PurchaseableProduct
+        {
+            Title = "Expert config purchase",
+            Slug = "config-purchase",
+            Cost = 600,
+            OwnershipSeconds = 0,
+            Type = Product.ProductType.SERVICE,
+            Groups = []
+        };
+        var group = new Group { Slug = product.Slug, Products = [product] };
+        product.Groups.Add(group);
+        db.Groups.Add(group);
+        var user = await Fund($"{country}-config-buyer");
+        user.Country = country;
+        if (country == "GB")
+            db.PaymentRecords.Add(new PaymentRecord
+            {
+                ExternalUserId = user.ExternalId,
+                UserId = user.Id,
+                Country = country,
+                ZipCode = "SW1A 1AA",
+                Currency = "GBP",
+                Provider = "test",
+                PaidAt = DateTime.UtcNow
+            });
+        await db.SaveChangesAsync();
+
+        var quote = await CreateService().GetServicePurchaseQuote(
+            product.Slug, user.ExternalId, 1);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(quote.ConsumerRightsRegime, Is.EqualTo(regime));
+            Assert.That(quote.VatRateBasisPoints, Is.EqualTo(rate));
+        });
+    }
+
+    [TestCase(null)]
+    [TestCase("BT1 1AA")]
+    public async Task ExpertConfigRejectsNorthernIrelandOrUnknownGbPostcode(
+        string postalCode)
+    {
+        var product = new PurchaseableProduct
+        {
+            Title = "Expert config purchase",
+            Slug = "config-purchase",
+            Cost = 600,
+            OwnershipSeconds = 0,
+            Type = Product.ProductType.SERVICE,
+            Groups = []
+        };
+        var group = new Group { Slug = product.Slug, Products = [product] };
+        product.Groups.Add(group);
+        db.Groups.Add(group);
+        var user = await Fund("unsupported-gb-config-buyer");
+        user.Country = "GB";
+        if (postalCode != null)
+            db.PaymentRecords.Add(new PaymentRecord
+            {
+                ExternalUserId = user.ExternalId,
+                UserId = user.Id,
+                Country = "GB",
+                ZipCode = postalCode,
+                Currency = "GBP",
+                Provider = "test",
+                PaidAt = DateTime.UtcNow
+            });
+        await db.SaveChangesAsync();
+
+        Assert.That(
+            Assert.ThrowsAsync<ApiException>(() => CreateService()
+                .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1))
+                ?.Message,
+            Is.EqualTo("expert_config_tax_quote_unavailable"));
     }
 
     [Test]
@@ -295,7 +572,8 @@ public class ServicePerformanceDeclarationTests
 
     private TransactionService CreateService(
         bool enforce = false,
-        ILogger<TransactionService> logger = null)
+        ILogger<TransactionService> logger = null,
+        DateTime? now = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string>
@@ -303,7 +581,12 @@ public class ServicePerformanceDeclarationTests
                 ["TRANSFER:LIMIT"] = "12",
                 ["TRANSFER:PeriodDays"] = "10",
                 ["LEGAL:ENFORCE_SERVICE_PERFORMANCE_DECLARATION"] =
-                    enforce.ToString()
+                    enforce.ToString(),
+                ["CONVERSION_RATE:Amount"] = "1802",
+                ["CONVERSION_RATE:Eur"] = "6.69",
+                ["EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:DE"] = "1900",
+                ["EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:GB"] = "2000",
+                ["EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:US"] = "0"
             })
             .Build();
         return new(
@@ -313,8 +596,50 @@ public class ServicePerformanceDeclarationTests
             new NoopTransactionProducer(),
             config,
             new RuleEngine(NullLogger<RuleEngine>.Instance, db),
-            new FixedTimeProvider(new DateTimeOffset(Now)));
+            new FixedTimeProvider(new DateTimeOffset(now ?? Now)));
     }
+
+    private PurchaseableProduct AddExpertConfigProduct()
+    {
+        var product = new PurchaseableProduct
+        {
+            Title = "Expert config purchase",
+            Slug = "config-purchase",
+            Cost = 600,
+            OwnershipSeconds = 0,
+            Type = Product.ProductType.SERVICE,
+            Groups = []
+        };
+        var group = new Group { Slug = product.Slug, Products = [product] };
+        product.Groups.Add(group);
+        db.Groups.Add(group);
+        return product;
+    }
+
+    private static ServicePurchaseRequest ExpertConfigRequest(
+        string reference,
+        ServicePurchaseQuote quote)
+    {
+        var request = Request(reference);
+        request.AgreementId = "expertMarketplace";
+        request.AgreementHash = ExpertMarketplaceAgreementHash;
+        request.TaxCountry = quote.TaxCountry;
+        request.ConsumerRightsRegime = quote.ConsumerRightsRegime;
+        request.VatRateBasisPoints = quote.VatRateBasisPoints;
+        request.GrossEurCents = quote.GrossEurCents;
+        request.VatEurCents = quote.VatEurCents;
+        request.OrderDetailsJson = OrderDetails();
+        return request;
+    }
+
+    private static string OrderDetails(
+        string marketplaceHash = ExpertMarketplaceAgreementHash,
+        string creatorHash = CreatorMarketplaceAgreementHash) =>
+        JsonConvert.SerializeObject(new
+        {
+            acceptedAgreement = new { hash = marketplaceHash },
+            creatorAgreementHash = creatorHash
+        });
 
     private static ServicePurchaseRequest Request(string reference) => new()
     {
@@ -349,6 +674,7 @@ public class ServicePerformanceDeclarationTests
         yield return Copy(original, agreementHash: new string('e', 64));
         yield return Copy(original, withdrawalVersion: "changed-withdrawal");
         yield return Copy(original, withdrawalHash: new string('0', 64));
+        yield return Copy(original, consumerRightsRegime: "US");
     }
 
     private static ServicePurchaseRequest Copy(
@@ -364,7 +690,8 @@ public class ServicePerformanceDeclarationTests
         string agreementId = null,
         string agreementHash = null,
         string withdrawalVersion = null,
-        string withdrawalHash = null) => new()
+        string withdrawalHash = null,
+        string consumerRightsRegime = null) => new()
     {
         Reference = reference ?? source.Reference,
         Count = count ?? source.Count,
@@ -383,6 +710,8 @@ public class ServicePerformanceDeclarationTests
             withdrawalVersion ?? source.WithdrawalVersion,
         WithdrawalSha256 =
             withdrawalHash ?? source.WithdrawalSha256,
+        ConsumerRightsRegime =
+            consumerRightsRegime ?? source.ConsumerRightsRegime,
         RequestId = source.RequestId
     };
 

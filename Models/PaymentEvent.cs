@@ -25,4 +25,10 @@ public class PaymentEvent
     public string AgreementHash { get; set; }
     public string WithdrawalVersion { get; set; }
     public string WithdrawalSha256 { get; set; }
+    public string TaxCountry { get; set; }
+    public string ConsumerRightsRegime { get; set; }
+    public int VatRateBasisPoints { get; set; }
+    public long GrossEurCents { get; set; }
+    public long VatEurCents { get; set; }
+    public string OrderDetailsJson { get; set; }
 }

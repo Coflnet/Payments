@@ -12,12 +12,19 @@ using Newtonsoft.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Globalization;
+using Newtonsoft.Json.Linq;
 
 namespace Coflnet.Payments.Services
 {
 
     public class TransactionService
     {
+        private const string ExpertMarketplaceAgreementHash =
+            "9177b208e3226cd0974afdce79d4023520d69d65aaa34a8d86e04dd3e60f2401";
+        private const string CreatorMarketplaceAgreementHash =
+            "652e91d78ec3aa86dd1e7e33c1e1a81dc423c7ecc1b004466cae1733c9c4a280";
+        private static readonly DateTimeOffset ExpertConfigRolloutAt = new(
+            2026, 9, 4, 10, 0, 0, TimeSpan.Zero);
         private ILogger<TransactionService> logger;
         private PaymentContext db;
         private UserService userService;
@@ -26,6 +33,7 @@ namespace Coflnet.Payments.Services
         private IRuleEngine ruleEngine;
         private readonly TimeProvider timeProvider;
         private readonly bool enforceServicePerformanceDeclaration;
+        private readonly IConfiguration configuration;
 
         public TransactionService(
             ILogger<TransactionService> logger,
@@ -43,6 +51,7 @@ namespace Coflnet.Payments.Services
             transferSettings = config?.GetSection("TRANSFER").Get<TransferSettings>();
             this.ruleEngine = ruleEngine;
             this.timeProvider = timeProvider ?? TimeProvider.System;
+            configuration = config;
             enforceServicePerformanceDeclaration = config?.GetValue<bool>(
                 "LEGAL:ENFORCE_SERVICE_PERFORMANCE_DECLARATION") == true;
         }
@@ -388,6 +397,9 @@ namespace Coflnet.Payments.Services
         /// <returns></returns>
         public async Task PurchaseProduct(string productSlug, string userId, decimal price = 0)
         {
+            if (productSlug == "config-purchase")
+                throw new ApiException(
+                    "Expert Configs require the declared service-purchase checkout");
             PurchaseableProduct product = await GetProduct(productSlug);
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
@@ -451,6 +463,26 @@ namespace Coflnet.Payments.Services
                 request);
         }
 
+        public async Task<ServicePurchaseQuote> GetServicePurchaseQuote(
+            string productSlug,
+            string userId,
+            int count)
+        {
+            if (productSlug != "config-purchase")
+                throw new ApiException("service purchase quote is not supported");
+            RequireExpertConfigRollout(userId);
+            if (count < 1 || count > 100)
+                throw new ApiException("invalid service purchase count");
+            var product = await GetProduct(productSlug);
+            if (!product.Type.HasFlag(Product.ProductType.SERVICE))
+                throw new ApiException("product is not a service");
+            var user = await userService.GetOrCreate(userId);
+            var adjusted = ruleEngine == null
+                ? product
+                : (await ruleEngine.GetAdjusted(product, user)).ModifiedProduct;
+            return await Quote(user, adjusted.Cost * count);
+        }
+
         private async Task PurchaseServiceWithDeclaration(
             string productSlug,
             string userId,
@@ -497,6 +529,8 @@ namespace Coflnet.Payments.Services
                             "service declaration request id already used");
                     }
                 }
+                if (productSlug == "config-purchase")
+                    RequireExpertConfigRollout(userId);
 
                 var adjustedProduct = ruleEngine == null
                     ? dbProduct
@@ -510,7 +544,13 @@ namespace Coflnet.Payments.Services
                 var endsAt = startsAt.AddSeconds(
                     adjustedProduct.OwnershipSeconds * count);
                 var price = adjustedProduct.Cost * count;
-                var declarationRequired = IsPremium(productSlug)
+                var quote = request != null && productSlug == "config-purchase"
+                    ? await Quote(user, price)
+                    : null;
+                if (quote != null)
+                    ValidateOrderEvidence(request, quote);
+                var declarationRequired = (IsPremium(productSlug)
+                        || productSlug == "config-purchase")
                     && price > 0
                     && startsAt < now.AddDays(14);
                 var requested = request?.ImmediatePerformanceRequested == true
@@ -523,7 +563,8 @@ namespace Coflnet.Payments.Services
                         "invalid_service_performance_declaration");
                 if (declarationRequired && !requested)
                 {
-                    if (enforceServicePerformanceDeclaration)
+                    if (enforceServicePerformanceDeclaration
+                        || productSlug == "config-purchase")
                         throw new ApiException(
                             "service_performance_declaration_required");
                     logger.LogWarning(
@@ -531,7 +572,8 @@ namespace Coflnet.Payments.Services
                         userId);
                 }
 
-                var legacyRolloutShadow = requested
+                var legacyRolloutShadow = productSlug != "config-purchase"
+                    && requested
                     && !enforceServicePerformanceDeclaration
                     && string.IsNullOrWhiteSpace(request.AgreementId)
                     && string.IsNullOrWhiteSpace(request.AgreementHash);
@@ -569,6 +611,11 @@ namespace Coflnet.Payments.Services
                         AgreementHash = request.AgreementHash,
                         WithdrawalVersion = request.WithdrawalVersion,
                         WithdrawalSha256 = request.WithdrawalSha256,
+                        TaxCountry = request.TaxCountry,
+                        VatRateBasisPoints = request.VatRateBasisPoints,
+                        GrossEurCents = request.GrossEurCents,
+                        VatEurCents = request.VatEurCents,
+                        OrderDetailsJson = request.OrderDetailsJson,
                         CreatedAtUtc = now
                     };
                     db.ServicePerformanceDeclarations.Add(evidence);
@@ -658,7 +705,13 @@ namespace Coflnet.Payments.Services
                 AgreementId = evidence.AgreementId,
                 AgreementHash = evidence.AgreementHash,
                 WithdrawalVersion = evidence.WithdrawalVersion,
-                WithdrawalSha256 = evidence.WithdrawalSha256
+                WithdrawalSha256 = evidence.WithdrawalSha256,
+                TaxCountry = evidence.TaxCountry,
+                ConsumerRightsRegime = ConsumerRightsRegime(evidence.TaxCountry),
+                VatRateBasisPoints = evidence.VatRateBasisPoints,
+                GrossEurCents = evidence.GrossEurCents,
+                VatEurCents = evidence.VatEurCents,
+                OrderDetailsJson = evidence.OrderDetailsJson
             };
             db.PaymentConfirmationOutbox.Add(new()
             {
@@ -703,7 +756,123 @@ namespace Coflnet.Payments.Services
             && evidence.AgreementId == request.AgreementId
             && evidence.AgreementHash == request.AgreementHash
             && evidence.WithdrawalVersion == request.WithdrawalVersion
-            && evidence.WithdrawalSha256 == request.WithdrawalSha256;
+            && evidence.WithdrawalSha256 == request.WithdrawalSha256
+            && evidence.TaxCountry == request.TaxCountry
+            && ConsumerRightsRegime(evidence.TaxCountry)
+                == request.ConsumerRightsRegime
+            && evidence.VatRateBasisPoints == request.VatRateBasisPoints
+            && evidence.GrossEurCents == request.GrossEurCents
+            && evidence.VatEurCents == request.VatEurCents
+            && evidence.OrderDetailsJson == request.OrderDetailsJson;
+
+        private static string ConsumerRightsRegime(string country) =>
+            country switch
+            {
+                "GB" => "UK",
+                "US" => "US",
+                _ when EuCountries.Contains(country) => "EU",
+                _ => null
+            };
+
+        private async Task<ServicePurchaseQuote> Quote(
+            User user,
+            decimal coinAmount)
+        {
+            var country = user.Country?.Trim().ToUpperInvariant();
+            if (country == "GB")
+            {
+                var postalCode = await db.PaymentRecords.AsNoTracking()
+                    .Where(record => record.ExternalUserId == user.ExternalId
+                        && record.Country == "GB")
+                    .OrderByDescending(record => record.PaidAt)
+                    .Select(record => record.ZipCode)
+                    .FirstOrDefaultAsync();
+                if (string.IsNullOrWhiteSpace(postalCode)
+                    || postalCode.Trim().StartsWith(
+                        "BT", StringComparison.OrdinalIgnoreCase))
+                    throw new ApiException(
+                        "expert_config_tax_quote_unavailable");
+            }
+            var consumerRightsRegime = country switch
+            {
+                "GB" => "UK",
+                "US" => "US",
+                _ when EuCountries.Contains(country) => "EU",
+                _ => null
+            };
+            var valuationCoins = configuration?.GetValue<decimal>(
+                "CONVERSION_RATE:Amount") ?? 0;
+            var valuationEur = configuration?.GetValue<decimal>(
+                "CONVERSION_RATE:Eur") ?? 0;
+            var vatRate = country?.Length == 2
+                ? configuration?.GetValue<int?>(
+                    $"EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:{country}")
+                : null;
+            if (consumerRightsRegime == null
+                || valuationCoins <= 0 || valuationEur <= 0 || !vatRate.HasValue
+                || vatRate is < 0 or > 10_000)
+                throw new ApiException(
+                    "expert_config_tax_quote_unavailable");
+
+            var gross = (long)Math.Round(
+                coinAmount * valuationEur * 100m / valuationCoins,
+                MidpointRounding.AwayFromZero);
+            var net = (long)Math.Round(
+                gross * 10_000m / (10_000 + vatRate.Value),
+                MidpointRounding.AwayFromZero);
+            return new()
+            {
+                CoinAmount = coinAmount,
+                TaxCountry = country,
+                ConsumerRightsRegime = consumerRightsRegime,
+                VatRateBasisPoints = vatRate.Value,
+                GrossEurCents = gross,
+                VatEurCents = gross - net,
+            };
+        }
+
+        private static void ValidateOrderEvidence(
+            ServicePurchaseRequest request,
+            ServicePurchaseQuote quote)
+        {
+            if (!string.Equals(request.AgreementId, "expertMarketplace",
+                    StringComparison.Ordinal)
+                || !string.Equals(request.AgreementHash,
+                    ExpertMarketplaceAgreementHash, StringComparison.Ordinal)
+                || request.TaxCountry != quote.TaxCountry
+                || request.ConsumerRightsRegime
+                    != quote.ConsumerRightsRegime
+                || request.VatRateBasisPoints != quote.VatRateBasisPoints
+                || request.GrossEurCents != quote.GrossEurCents
+                || request.VatEurCents != quote.VatEurCents
+                || string.IsNullOrWhiteSpace(request.OrderDetailsJson)
+                || request.OrderDetailsJson.Length > 524_288)
+                throw new ApiException("invalid_expert_config_order_evidence");
+            try
+            {
+                var details = JObject.Parse(request.OrderDetailsJson);
+                if (!string.Equals(
+                        (string)details["acceptedAgreement"]?["hash"],
+                        ExpertMarketplaceAgreementHash,
+                        StringComparison.Ordinal)
+                    || !string.Equals(
+                        (string)details["creatorAgreementHash"],
+                        CreatorMarketplaceAgreementHash,
+                        StringComparison.Ordinal))
+                    throw new JsonException();
+            }
+            catch (JsonException)
+            {
+                throw new ApiException("invalid_expert_config_order_evidence");
+            }
+        }
+
+        private void RequireExpertConfigRollout(string userId)
+        {
+            if (!string.Equals(userId, "7", StringComparison.Ordinal)
+                && timeProvider.GetUtcNow() < ExpertConfigRolloutAt)
+                throw new ApiException("expert_config_not_available");
+        }
 
         private static void ValidateDeclaration(ServicePurchaseRequest request)
         {
@@ -736,6 +905,13 @@ namespace Coflnet.Payments.Services
                 "starter_premium",
                 StringComparison.OrdinalIgnoreCase);
 
+        private static readonly HashSet<string> EuCountries =
+        [
+            "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+            "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+            "PL", "PT", "RO", "SK", "SI", "ES", "SE"
+        ];
+
         public async Task<RuleResult> GetAdjustedProduct(string productSlug, string userId)
         {
             var product = await GetProduct(productSlug);
@@ -755,7 +931,8 @@ namespace Coflnet.Payments.Services
             User user,
             Product adjustedProduct,
             bool commitTransaction,
-            DateTime? evaluationAtUtc = null)
+            DateTime? evaluationAtUtc = null,
+            bool publishEvent = true)
         {
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
@@ -778,6 +955,8 @@ namespace Coflnet.Payments.Services
             allProductsToExtend.AddRange(await GetProducts(productSlug, db.TopUpProducts));
 
             var transactionEvent = await CreateTransaction(dbProduct, user, price * -1, reference, adjustedProduct.OwnershipSeconds);
+            if (adjustedProduct.Slug == "revert")
+                transactionEvent.RevertedProductSlug = productSlug;
             var time = TimeSpan.FromSeconds(adjustedProduct.OwnershipSeconds * count);
             foreach (var item in allProductsToExtend)
             {
@@ -802,7 +981,8 @@ namespace Coflnet.Payments.Services
             db.Update(user);
             await db.SaveChangesAsync();
             // commit is handled by the transaction wrapper (WithTransactionAsync) when this method owns the transaction
-            await transactionEventProducer.ProduceEvent(transactionEvent);
+            if (publishEvent)
+                await transactionEventProducer.ProduceEvent(transactionEvent);
             return transactionEvent;
         }
 
@@ -821,9 +1001,27 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("Transaction not found");
 
             var dbProduct = await GetProduct("revert");
-
-            return await WithTransactionAsync(async (tx, owns) =>
+            var reference = $"revert transaction {transactionId}";
+            var result = await WithTransactionAsync(async (tx, owns) =>
             {
+                var existing = await db.FiniteTransactions.AsNoTracking()
+                    .Where(item => item.User.ExternalId == userId
+                        && item.Product == dbProduct
+                        && item.Reference == reference)
+                    .Select(item => new TransactionEvent
+                    {
+                        Amount = Decimal.ToDouble(item.Amount),
+                        Id = item.Id,
+                        ProductId = item.ProductId,
+                        ProductSlug = "revert",
+                        RevertedProductSlug = transaction.Product.Slug,
+                        Reference = item.Reference,
+                        UserId = userId,
+                        Timestamp = item.Timestamp
+                    })
+                    .SingleOrDefaultAsync();
+                if (existing != null)
+                    return existing;
                 var user = await userService.GetOrCreate(userId);
                 var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
                 var count = GetRevertPurchaseCount(transaction.Amount, transaction.Product.Cost);
@@ -832,8 +1030,13 @@ namespace Coflnet.Payments.Services
                 if (!adjustTime)
                     adjustedProduct.OwnershipSeconds = 0;
                 adjustedProduct.Slug = "revert";
-                return await ExecuteServicePurchase(transaction.Product.Slug, userId, count, $"revert transaction " + transactionId, dbProduct, tx, user, adjustedProduct, owns);
+                return await ExecuteServicePurchase(
+                    transaction.Product.Slug, userId, count, reference,
+                    dbProduct, tx, user, adjustedProduct, owns,
+                    publishEvent: false);
             });
+            await transactionEventProducer.ProduceEvent(result);
+            return result;
         }
 
         internal static int GetRevertPurchaseCount(decimal transactionAmount, decimal productCost)

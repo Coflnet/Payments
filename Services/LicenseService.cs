@@ -73,7 +73,7 @@ namespace Coflnet.Payments.Services
             return await db.Licenses.Where(l => l.TargetId == targetId && l.UserId == db.Users.Where(u => u.ExternalId == userId).First().Id).Include(l => l.group).ToArrayAsync();
         }
 
-        internal async Task<bool> Revert(string userId, int transactionId)
+        internal async Task<bool> Revert(string userId, long transactionId)
         {
             var transaction = await db.FiniteTransactions.Where(t => t.Id == transactionId).Include(t => t.Product).FirstOrDefaultAsync();
             var target = transaction.Reference.Split('.')[0];
