@@ -75,10 +75,10 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpGet]
         [Route("{userId}/owns/{productSlug}/until")]
-        public async Task<DateTime> Get(string userId, string productSlug)
+        public async Task<DateTime> Get(string userId, string productSlug, string minecraftUuid = null)
         {
-            return await db.OwnerShips.Where(o => o.User.ExternalId == userId && o.Product.Slug == productSlug)
-                .Select(o => o.Expires).FirstOrDefaultAsync();
+            return (await userService.GetAccessUntil(userId, new() { productSlug }, minecraftUuid))
+                .GetValueOrDefault(productSlug);
         }
 
         /// <summary>
@@ -89,9 +89,9 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("{userId}/owns/longest")]
-        public async Task<DateTime> GetLongest(string userId, [FromBody] HashSet<string> slugs)
+        public async Task<DateTime> GetLongest(string userId, [FromBody] HashSet<string> slugs, string minecraftUuid = null)
         {
-            return await userService.GetLongest(userId, slugs);
+            return (await userService.GetAccessUntil(userId, slugs, minecraftUuid)).Values.DefaultIfEmpty().Max();
         }
         /// <summary>
         /// Returns all ownership data for an user out of a list of interested 
@@ -102,13 +102,20 @@ namespace Payments.Controllers
         [HttpPost]
         [Route("{userId}/owns")]
         [Obsolete("lookup with {userId}/owns/until")]
-        public async Task<IEnumerable<OwnerShip>> GetAllOwnerships(string userId, [FromBody] HashSet<string> slugs)
+        public async Task<IEnumerable<OwnerShip>> GetAllOwnerships(string userId, [FromBody] HashSet<string> slugs, string minecraftUuid = null)
         {
             var select = db.Users.Where(u => u.ExternalId == userId)
                     .AsSplitQuery()
                     .Include(p => p.Owns).ThenInclude(o => o.Product)
                     .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))));
-            return await select.ToListAsync();
+            var owned = await select.ToListAsync();
+            var delegated = (await userService.GetAccessDetails(userId, slugs, minecraftUuid))
+                .Values.Where(a => a.SlotId != null).Select(a => new OwnerShip
+                {
+                    Product = new Product { Slug = a.ProductSlug }, Expires = a.ExpiresAt,
+                    OwnerId = a.OwnerId, SlotId = a.SlotId, CanManage = a.CanManage
+                });
+            return owned.Concat(delegated);
         }
 
         /// <summary>
@@ -119,18 +126,22 @@ namespace Payments.Controllers
         /// <returns></returns>
         [HttpPost]
         [Route("{userId}/owns/until")]
-        public async Task<Dictionary<string, DateTime>> GetAllOwnershipsLookup(string userId, [FromBody] HashSet<string> slugs)
+        public Task<Dictionary<string, DateTime>> GetAllOwnershipsLookup(string userId, [FromBody] HashSet<string> slugs, string minecraftUuid = null)
         {
-            var select = db.OwnerShips.Where(o => o.User.ExternalId == userId
-                && (slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))))
-                    .SelectMany(p => p.Product.Groups, (o, group) => new { o.Expires, group.Slug })
-                .AsNoTracking();
-            var result = await select.ToListAsync();
-            return result.GroupBy(r => r.Slug)
-                .Select(g => g.OrderByDescending(r => r.Expires).First())
-                .Where(r => slugs.Contains(r.Slug))
-                .ToDictionary(r => r.Slug, r => r.Expires);
+            return userService.GetAccessUntil(userId, slugs, minecraftUuid);
         }
+
+        /// <summary>Effective access with billing ownership metadata, in one database read.</summary>
+        [HttpPost("{userId}/owns/details")]
+        public Task<Dictionary<string, OwnershipAccess>> GetOwnershipDetails(string userId,
+            [FromBody] HashSet<string> slugs, string minecraftUuid = null)
+            => userService.GetAccessDetails(userId, slugs, minecraftUuid);
+
+        /// <summary>Access sources for clients selecting between account-wide and Minecraft-specific tiers.</summary>
+        [HttpPost("{userId}/owns/entries")]
+        public Task<List<OwnershipAccess>> GetOwnershipEntries(string userId,
+            [FromBody] HashSet<string> slugs, string minecraftUuid = null)
+            => userService.QueryAccess(userId, slugs, minecraftUuid).ToListAsync();
 
         /// <summary>
         /// Purchase a new product if enough funds are available

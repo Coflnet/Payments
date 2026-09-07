@@ -401,6 +401,8 @@ namespace Coflnet.Payments.Services
                 throw new ApiException(
                     "Expert Configs require the declared service-purchase checkout");
             PurchaseableProduct product = await GetProduct(productSlug);
+            if (product.SlotCount > 0)
+                throw new ApiException("slot packages must be purchased as services");
             if (!product.Type.HasFlag(PurchaseableProduct.ProductType.VARIABLE_PRICE))
                 price = product.Cost;
             await WithTransactionAsync(async (tx, owns) =>
@@ -497,6 +499,8 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("invalid service purchase count");
             if (request != null && string.IsNullOrWhiteSpace(reference))
                 throw new ApiException("purchase reference is required");
+            if (request?.SlotIds != null && dbProduct.SlotCount == 0)
+                throw new ApiException("only slot products can extend slots");
 
             await WithTransactionAsync(async (tx, owns) =>
             {
@@ -522,6 +526,15 @@ namespace Coflnet.Payments.Services
                                 request,
                                 locale))
                         {
+                            if (request.SlotIds != null)
+                            {
+                                var grantedSlots = await db.TierSlotGrants
+                                    .Where(g => g.Transaction.User.ExternalId == userId
+                                        && g.Transaction.Reference == reference && g.Transaction.ProductId == dbProduct.Id)
+                                    .Select(g => g.TierSlotId).ToArrayAsync();
+                                if (!grantedSlots.Order().SequenceEqual(request.SlotIds.Order()))
+                                    throw new ApiException("purchase reference already used for different slots");
+                            }
                             await EnsureServicePurchaseConfirmation(existing);
                             return;
                         }
@@ -542,7 +555,18 @@ namespace Coflnet.Payments.Services
                     new() { productSlug });
                 var startsAt = currentExpiry > now ? currentExpiry : now;
                 var endsAt = startsAt.AddSeconds(
-                    adjustedProduct.OwnershipSeconds * count);
+                    adjustedProduct.OwnershipSeconds * (dbProduct.SlotCount > 0 ? 1 : count));
+                if (request?.SlotIds != null)
+                {
+                    var expiries = await db.TierSlots.Where(s => request.SlotIds.Contains(s.Id)
+                        && s.UserId == user.Id).Select(s => s.Expires).ToArrayAsync();
+                    if (expiries.Length > 0)
+                    {
+                        startsAt = expiries.Min() > now ? expiries.Min() : now;
+                        endsAt = (expiries.Max() > now ? expiries.Max() : now)
+                            .AddSeconds(adjustedProduct.OwnershipSeconds);
+                    }
+                }
                 var price = adjustedProduct.Cost * count;
                 var quote = request != null && productSlug == "config-purchase"
                     ? await Quote(user, price)
@@ -631,7 +655,8 @@ namespace Coflnet.Payments.Services
                     user,
                     adjustedProduct,
                     owns,
-                    request == null ? null : now);
+                    request == null ? null : now,
+                    slotIds: request?.SlotIds);
                 if (evidence != null)
                 {
                     await EnqueueServicePurchaseConfirmation(
@@ -932,7 +957,8 @@ namespace Coflnet.Payments.Services
             Product adjustedProduct,
             bool commitTransaction,
             DateTime? evaluationAtUtc = null,
-            bool publishEvent = true)
+            bool publishEvent = true,
+            long[] slotIds = null)
         {
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
@@ -950,14 +976,20 @@ namespace Coflnet.Payments.Services
                 logger.LogError($"User {user.ExternalId} doesn't have the required {price} amount to purchase {productSlug} (only {user.AvailableBalance} available)");
                 throw new ApiException("insuficcient balance");
             }
-            var productA = db.Products;
-            List<Product> allProductsToExtend = await GetProducts(productSlug, db.Products);
-            allProductsToExtend.AddRange(await GetProducts(productSlug, db.TopUpProducts));
+            List<Product> allProductsToExtend = [];
+            if (dbProduct.SlotCount == 0)
+            {
+                allProductsToExtend = await GetProducts(productSlug, db.Products);
+                allProductsToExtend.AddRange(await GetProducts(productSlug, db.TopUpProducts));
+            }
 
             var transactionEvent = await CreateTransaction(dbProduct, user, price * -1, reference, adjustedProduct.OwnershipSeconds);
             if (adjustedProduct.Slug == "revert")
                 transactionEvent.RevertedProductSlug = productSlug;
             var time = TimeSpan.FromSeconds(adjustedProduct.OwnershipSeconds * count);
+            if (dbProduct.SlotCount > 0)
+                await new TierSlotService(db).ApplyPurchase(user, dbProduct, transactionEvent.Id,
+                    count, adjustedProduct.OwnershipSeconds, slotIds);
             foreach (var item in allProductsToExtend)
             {
                 var existingExpiry = await userService.GetLongest(userId, new() { item.Slug });
@@ -1023,6 +1055,12 @@ namespace Coflnet.Payments.Services
                 if (existing != null)
                     return existing;
                 var user = await userService.GetOrCreate(userId);
+                if (await new TierSlotService(db).Revert(transactionId))
+                {
+                    var refund = await CreateTransaction(dbProduct, user, -transaction.Amount, reference);
+                    refund.RevertedProductSlug = transaction.Product.Slug;
+                    return refund;
+                }
                 var adjustedProduct = (await ruleEngine.GetAdjusted(dbProduct, user)).ModifiedProduct;
                 var count = GetRevertPurchaseCount(transaction.Amount, transaction.Product.Cost);
                 adjustedProduct.Cost = transaction.Amount / count;

@@ -58,6 +58,8 @@ public sealed class ServicePurchaseRequest
     [Required, MaxLength(80)]
     public string Reference { get; set; }
     public int Count { get; set; } = 1;
+    /// <summary>Existing slots to extend, or null to purchase new slots.</summary>
+    public long[] SlotIds { get; set; }
     public bool ImmediatePerformanceRequested { get; set; }
     public bool WithdrawalConsequenceAcknowledged { get; set; }
     [Required, MaxLength(5)]

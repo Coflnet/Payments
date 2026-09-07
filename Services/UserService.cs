@@ -90,5 +90,52 @@ namespace Coflnet.Payments.Services
                     .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug)))
                     .Select(p => p.Expires)).OrderByDescending(p => p).FirstOrDefaultAsync();
         }
+
+        // Keep GetLongest owner-only: purchase/refund calculations must not use a friend's time.
+        internal IQueryable<OwnershipAccess> QueryAccess(string userId, HashSet<string> slugs, string minecraftUuid = null)
+        {
+            var owned = db.OwnerShips.Where(o => o.User.ExternalId == userId);
+            var query = owned.Where(o => slugs.Contains(o.Product.Slug)).Select(o => new OwnershipAccess
+            {
+                ProductSlug = o.Product.Slug, ExpiresAt = o.Expires, OwnerId = userId, SlotId = null, MinecraftUuid = null, CanManage = true
+            }).Concat(owned.SelectMany(o => o.Product.Groups.Where(g => slugs.Contains(g.Slug)),
+                (o, g) => new OwnershipAccess
+                { ProductSlug = g.Slug, ExpiresAt = o.Expires, OwnerId = userId, SlotId = null, MinecraftUuid = null, CanManage = true }));
+            minecraftUuid = TierSlotService.NormalizeUuid(minecraftUuid);
+            var slots = db.TierSlots.Where(s => s.Expires > DateTime.UtcNow
+                && ((s.AssignedUserId == userId && s.MinecraftUuid == null)
+                    || (minecraftUuid != null && s.MinecraftUuid == minecraftUuid
+                        && (s.AssignedUserId == null || s.AssignedUserId == userId))));
+            query = query.Concat(slots.Where(s => slugs.Contains(s.Tier)).Select(s => new OwnershipAccess
+            {
+                ProductSlug = s.Tier, ExpiresAt = s.Expires, OwnerId = s.User.ExternalId,
+                SlotId = s.Id, MinecraftUuid = s.MinecraftUuid, CanManage = s.User.ExternalId == userId
+            }));
+            if (slugs.Contains("premium"))
+                query = query.Concat(slots.Where(s => s.Tier == "premium_plus").Select(s => new OwnershipAccess
+                {
+                    ProductSlug = "premium", ExpiresAt = s.Expires, OwnerId = s.User.ExternalId,
+                    SlotId = s.Id, MinecraftUuid = s.MinecraftUuid, CanManage = s.User.ExternalId == userId
+                }));
+            if (slugs.Contains("starter_premium"))
+                query = query.Concat(slots.Where(s => s.Tier == "premium" || s.Tier == "premium_plus").Select(s => new OwnershipAccess
+                {
+                    ProductSlug = "starter_premium", ExpiresAt = s.Expires, OwnerId = s.User.ExternalId,
+                    SlotId = s.Id, MinecraftUuid = s.MinecraftUuid, CanManage = s.User.ExternalId == userId
+                }));
+            return query.AsNoTracking();
+        }
+
+        public Task<Dictionary<string, DateTime>> GetAccessUntil(string userId, HashSet<string> slugs, string minecraftUuid = null)
+            => QueryAccess(userId, slugs, minecraftUuid).GroupBy(a => a.ProductSlug)
+                .Select(g => new { Slug = g.Key, Expires = g.Max(a => a.ExpiresAt) })
+                .ToDictionaryAsync(a => a.Slug, a => a.Expires);
+
+        public async Task<Dictionary<string, OwnershipAccess>> GetAccessDetails(string userId, HashSet<string> slugs, string minecraftUuid = null)
+        {
+            var access = await QueryAccess(userId, slugs, minecraftUuid).ToListAsync();
+            return access.GroupBy(a => a.ProductSlug).ToDictionary(g => g.Key,
+                g => g.OrderByDescending(a => a.ExpiresAt).ThenBy(a => a.SlotId).First());
+        }
     }
 }

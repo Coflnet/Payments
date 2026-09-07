@@ -105,6 +105,7 @@ namespace Coflnet.Payments
             services.AddScoped<IRuleEngine, RuleEngine>();
             services.AddScoped<Services.ProductService>();
             services.AddScoped<LicenseService>();
+            services.AddScoped<TierSlotService>();
             services.AddScoped<GroupService>();
             services.AddScoped<CreatorCodeService>();
             services.AddSingleton<CoinGateService>();
@@ -196,6 +197,7 @@ namespace Coflnet.Payments
             });
 
             app.UseRouting();
+            app.UseHttpMetrics();
 
             app.UseAuthorization();
 

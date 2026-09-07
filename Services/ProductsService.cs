@@ -138,6 +138,8 @@ public class ProductService
                 && (!(product is TopUpProduct topup) || topup.Price == (existing as TopUpProduct)?.Price)
                 && product.Description == existing?.Description
                 && product.Type == existing?.Type
+                && product.SlotCount == existing?.SlotCount
+                && product.SlotTier == existing?.SlotTier
                 && product.OwnershipSeconds == existing?.OwnershipSeconds)
                 continue; // nothing changed
             InvalidateProduct(existing);
@@ -168,4 +170,3 @@ public class ProductService
         logger.LogInformation($"Disabling old product {oldProduct.Slug}");
     }
 }
-

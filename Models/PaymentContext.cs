@@ -56,6 +56,8 @@ namespace Coflnet.Payments.Models
         /// Licenses owned by one user
         /// </summary>
         public DbSet<License> Licenses { get; set; }
+        public DbSet<TierSlot> TierSlots { get; set; }
+        public DbSet<TierSlotGrant> TierSlotGrants { get; set; }
         /// <summary>
         /// User subscriptions
         /// </summary>
@@ -142,6 +144,16 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => new { e.UserId, e.TargetId, e.Expires });
                 entity.HasIndex(e => new { e.TargetId, e.Expires });
                 entity.HasIndex(e => new { e.UserId, e.TargetId, e.ProductId }).IsUnique();
+            });
+
+            modelBuilder.Entity<TierSlot>(entity =>
+            {
+                entity.HasIndex(e => new { e.AssignedUserId, e.MinecraftUuid, e.Expires });
+                entity.HasIndex(e => new { e.MinecraftUuid, e.Expires });
+            });
+            modelBuilder.Entity<TierSlotGrant>(entity =>
+            {
+                entity.HasKey(e => new { e.TransactionId, e.TierSlotId });
             });
 
             modelBuilder.Entity<UserSubscription>(entity =>

@@ -27,6 +27,8 @@ namespace Coflnet.Payments.Services
         public async Task PurchaseLicense(string userId, string productSlug, string targetId, string reference)
         {
             var product = await db.Products.Where(p => p.Slug == productSlug).FirstOrDefaultAsync();
+            if (product == null || product.Type.HasFlag(Product.ProductType.DISABLED) || product.SlotCount > 0)
+                throw new ApiException("invalid legacy license product");
             var group = await db.Groups.Where(g => g.Slug == productSlug).FirstOrDefaultAsync();
 
             await transactionService.WithTransactionAsync(async (tx, owns) =>
@@ -75,7 +77,9 @@ namespace Coflnet.Payments.Services
 
         internal async Task<bool> Revert(string userId, long transactionId)
         {
-            var transaction = await db.FiniteTransactions.Where(t => t.Id == transactionId).Include(t => t.Product).FirstOrDefaultAsync();
+            var transaction = await db.FiniteTransactions.Where(t => t.Id == transactionId && t.User.ExternalId == userId).Include(t => t.Product).FirstOrDefaultAsync();
+            if (transaction == null || transaction.Product.SlotCount > 0)
+                return false;
             var target = transaction.Reference.Split('.')[0];
             var license = await db.Licenses.Where(l => l.Product == transaction.Product && l.UserId == db.Users.Where(u => u.ExternalId == userId).First().Id && l.TargetId == target).FirstOrDefaultAsync();
             if (license == null)

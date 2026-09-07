@@ -41,6 +41,11 @@ namespace Coflnet.Payments.Models
         /// </summary>
         /// <value></value>
         public long OwnershipSeconds { get; set; }
+        /// <summary>Number of independently assignable slots in this package; zero for ordinary products.</summary>
+        public int SlotCount { get; set; }
+        /// <summary>Access group granted by each slot.</summary>
+        [MaxLength(32)]
+        public string SlotTier { get; set; }
         /// <summary>
         /// The type of this product <see cref="ProductType"/>
         /// </summary>
@@ -102,6 +107,8 @@ namespace Coflnet.Payments.Models
             Description = other.Description;
             Cost = other.Cost;
             OwnershipSeconds = other.OwnershipSeconds;
+            SlotCount = other.SlotCount;
+            SlotTier = other.SlotTier;
             Type = other.Type;
             Groups = other.Groups;
         }
