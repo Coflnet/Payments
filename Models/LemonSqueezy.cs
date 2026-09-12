@@ -160,6 +160,11 @@ public class PageMetaInfo
 // Root myDeserializedClass = JsonSerializer.Deserialize<Root>(myJsonResponse);
 public class Attributes
 {
+    [JsonPropertyName("first_subscription_item")]
+    public SubscriptionItem FirstSubscriptionItem { get; set; }
+
+    [JsonPropertyName("variant_id")]
+    public long VariantId { get; set; }
     [JsonConstructor]
     public Attributes(
         int storeId,
@@ -671,6 +676,8 @@ public class Subscriptions
 
 public class Urls
 {
+    [JsonPropertyName("customer_portal_update_subscription")]
+    public string CustomerPortalUpdateSubscription { get; set; }
     [JsonConstructor]
     public Urls(
         string receipt
@@ -681,4 +688,12 @@ public class Urls
 
     [JsonPropertyName("receipt")]
     public string Receipt { get; }
+}
+
+public class SubscriptionItem
+{
+    [JsonPropertyName("price_id")]
+    public long PriceId { get; set; }
+    [JsonPropertyName("quantity")]
+    public int Quantity { get; set; }
 }

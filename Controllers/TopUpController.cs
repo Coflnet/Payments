@@ -395,7 +395,13 @@ namespace Payments.Controllers
             var bestVariant = lemonSqueezyService.GetBestVariant((int)product.OwnershipSeconds, enableTrial, targetPriceCents);
             
             string variantId;
-            if (bestVariant != null)
+            if (lemonSqueezyService.SubscriptionVariants.TryGetValue(product.Slug, out var dedicatedVariant))
+            {
+                await lemonSqueezyService.ValidateSubscriptionVariant(product, dedicatedVariant);
+                variantId = dedicatedVariant.ToString();
+                enableTrial = false;
+            }
+            else if (bestVariant != null)
             {
                 variantId = bestVariant.VariantId;
                 _logger.LogInformation("Using best matching variant: {VariantName} (ID: {VariantId}) HasTrial: {HasTrial} Price: {Price}",

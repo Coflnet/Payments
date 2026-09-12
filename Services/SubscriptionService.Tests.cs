@@ -13,7 +13,7 @@ using System.Collections.Generic;
 
 namespace Coflnet.Payments.Services;
 
-public class SubscriptionServiceTests
+public partial class SubscriptionServiceTests
 {
     private SqliteConnection _connection;
     private DbContextOptions<PaymentContext> _contextOptions;
@@ -691,7 +691,7 @@ public class SubscriptionServiceTests
             renewsAt: DateTime.UtcNow.AddDays(30),
             endsAt: null
         );
-        var data = new Data("subscription-invoices", "invoice-123", attributes, null, null);
+        var data = new Data("subscription-invoices", $"invoice-{subscriptionId}-{paymentTime:yyyyMMdd}", attributes, null, null);
         return new Webhook(meta, data);
     }
 

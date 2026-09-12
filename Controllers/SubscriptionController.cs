@@ -33,6 +33,14 @@ public class SubscriptionController : ControllerBase
         await subscriptionService.CancelSubscription(userId, subscriptionId);
     }
 
+    [HttpGet("{subscriptionId}/plans")]
+    public Task<List<SubscriptionPlan>> GetPlans(string userId, string subscriptionId) =>
+        subscriptionService.GetAvailablePlans(userId, subscriptionId);
+
+    [HttpPut("{subscriptionId}/switch")]
+    public Task<SubscriptionChangeResult> ChangePlan(string userId, string subscriptionId, string targetProductSlug) =>
+        subscriptionService.ChangePlan(userId, subscriptionId, targetProductSlug);
+
     /// <summary>
     /// Resume a cancelled subscription that is still in grace period.
     /// A subscription can only be resumed if it was cancelled but hasn't reached its ends_at date yet.

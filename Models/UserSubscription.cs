@@ -3,6 +3,8 @@ namespace Coflnet.Payments.Models;
 public class UserSubscription
 {
     public int Id { get; set; }
+    public long? ProviderVariantId { get; set; }
+    public DateTime? ChangeLockUntil { get; set; }
     public User User { get; set; }
     public Product Product { get; set; }
     public string ProviderSlug { get; set; }

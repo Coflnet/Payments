@@ -87,11 +87,11 @@ namespace Coflnet.Payments.Services
         internal async Task<DateTime> GetLongest(string userId, HashSet<string> slugs)
         {
             return await db.Users.Where(u => u.ExternalId == userId)
-                    .SelectMany(u => u.Owns.Where(o => slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug)))
+                    .SelectMany(u => u.Owns.Where(o => o.SubscriptionId == null && (slugs.Contains(o.Product.Slug) || o.Product.Groups.Any(g => slugs.Contains(g.Slug))))
                     .Select(p => p.Expires)).OrderByDescending(p => p).FirstOrDefaultAsync();
         }
 
-        // Keep GetLongest owner-only: purchase/refund calculations must not use a friend's time.
+        // Purchase/refund calculations use independently bought time; subscriptions and delegated slots have their own grants.
         internal IQueryable<OwnershipAccess> QueryAccess(string userId, HashSet<string> slugs, string minecraftUuid = null)
         {
             var owned = db.OwnerShips.Where(o => o.User.ExternalId == userId);

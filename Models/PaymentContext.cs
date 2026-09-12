@@ -62,6 +62,8 @@ namespace Coflnet.Payments.Models
         /// User subscriptions
         /// </summary>
         public DbSet<UserSubscription> Subscriptions { get; set; }
+        public DbSet<SubscriptionPlanChange> SubscriptionPlanChanges { get; set; }
+        public DbSet<RefundedSubscriptionInvoice> RefundedSubscriptionInvoices { get; set; }
         /// <summary>
         /// Trial usage records to prevent multiple trials per user/product
         /// </summary>
@@ -137,6 +139,7 @@ namespace Coflnet.Payments.Models
             {
                 entity.ToTable("OwnerShip");
                 entity.HasIndex(e => e.Expires);
+                entity.HasIndex(e => new { e.UserId, e.SubscriptionId }).IsUnique();
             });
             modelBuilder.Entity<License>(entity =>
             {
@@ -159,6 +162,12 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<UserSubscription>(entity =>
             {
                 entity.HasIndex(e => e.ExternalId);
+            });
+
+            modelBuilder.Entity<SubscriptionPlanChange>(entity =>
+            {
+                entity.HasIndex(e => e.InvoiceId).IsUnique();
+                entity.HasIndex(e => new { e.SubscriptionId, e.ChangedAt });
             });
 
             modelBuilder.Entity<TrialUsage>(entity =>

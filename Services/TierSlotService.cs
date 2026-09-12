@@ -80,7 +80,7 @@ public class TierSlotService(PaymentContext db)
             if (slotIds.Length != capacity || slotIds.Distinct().Count() != capacity)
                 throw new ApiException("select one distinct owned slot per package slot");
             slots = await db.TierSlots.Where(s => slotIds.Contains(s.Id)
-                && s.UserId == owner.Id && s.Tier == product.SlotTier).ToListAsync();
+                && s.UserId == owner.Id && (subscriptionId != null || s.Tier == product.SlotTier)).ToListAsync();
             if (slots.Count != capacity)
                 throw new ApiException("slots must belong to the purchaser and have the package tier");
         }
@@ -92,6 +92,7 @@ public class TierSlotService(PaymentContext db)
         }
         foreach (var slot in slots)
         {
+            slot.Tier = product.SlotTier;
             slot.Expires = TransactionService.GetNewExpiry(slot.Expires, TimeSpan.FromSeconds(seconds));
             slot.Version++;
             db.TierSlotGrants.Add(new TierSlotGrant

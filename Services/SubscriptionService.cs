@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Coflnet.Payments.Services;
 
-public class SubscriptionService
+public partial class SubscriptionService
 {
     private TransactionService transactionService;
     private UserService userService;
@@ -57,7 +57,13 @@ public class SubscriptionService
         return all.OrderByDescending(s => s.UpdatedAt);
     }
 
-    public async Task UpdateSubscription(Webhook webhook)
+    public Task UpdateSubscription(Webhook webhook) => WithSubscriptionLock(webhook.Data.Id, async () =>
+    {
+        await UpdateSubscriptionLocked(webhook);
+        return true;
+    });
+
+    private async Task UpdateSubscriptionLocked(Webhook webhook)
     {
         if (webhook?.Data?.Attributes == null)
         {
@@ -67,34 +73,26 @@ public class SubscriptionService
 
         var customData = webhook.Meta?.CustomData;
         var userId = customData?.UserId;
+        var subscription = await context.Subscriptions
+            .Include(s => s.User).Include(s => s.Product).ThenInclude(p => p.Groups)
+            .Where(s => s.ExternalId == webhook.Data.Id)
+            .OrderByDescending(s => s.UpdatedAt).FirstOrDefaultAsync();
         TopUpProduct product = null;
-        UserSubscription subscription = null;
-
-        if (!string.IsNullOrWhiteSpace(userId) && customData.ProductId != 0)
+        if (subscription != null)
         {
-            product = await context.TopUpProducts.FindAsync(customData.ProductId);
-            subscription = await context.Subscriptions
-                .Where(s => s.User.ExternalId == userId && s.ExternalId == webhook.Data.Id)
-                .FirstOrDefaultAsync();
-        }
-        else
-        {
-            // Lemon Squeezy does not guarantee custom_data on later
-            // subscription_updated events. Resolve it from the record created by
-            // subscription_created instead.
-            subscription = await context.Subscriptions
-                .Include(s => s.User)
-                .Include(s => s.Product)
-                .Where(s => s.ExternalId == webhook.Data.Id)
-                .OrderByDescending(s => s.UpdatedAt)
-                .FirstOrDefaultAsync();
-
-            if (subscription != null)
+            if (userId != null && userId != subscription.User.ExternalId)
+                throw new ApiException("Subscription owner does not match the webhook.");
+            userId = subscription.User.ExternalId;
+            if (webhook.Data.Attributes.VariantId > 0 && lemonSqueezyService.SubscriptionVariants.Count > 0)
             {
-                userId = subscription.User?.ExternalId;
-                product = await context.TopUpProducts.FindAsync(subscription.Product?.Id);
+                var remote = await lemonSqueezyService.GetSubscription(subscription.ExternalId);
+                await SynchronizePlan(subscription, remote);
+                webhook = new Webhook(webhook.Meta, remote);
             }
+            product = await context.TopUpProducts.FindAsync(subscription.Product.Id);
         }
+        else if (!string.IsNullOrWhiteSpace(userId) && customData.ProductId != 0)
+            product = await context.TopUpProducts.FindAsync(customData.ProductId);
 
         if (string.IsNullOrWhiteSpace(userId) || product == null)
         {
@@ -114,11 +112,9 @@ public class SubscriptionService
             };
             context.Subscriptions.Add(subscription);
         }
-        else
-        {
-            context.Update(subscription);
-        }
         var attributes = webhook.Data.Attributes;
+        if (subscription.ProviderVariantId == null && attributes.VariantId > 0)
+            subscription.ProviderVariantId = attributes.VariantId;
         if (attributes.RenewsAt.HasValue)
             subscription.RenewsAt = attributes.RenewsAt.Value;
         subscription.UpdatedAt = attributes.UpdatedAt;
@@ -143,18 +139,11 @@ public class SubscriptionService
         {
             logger.LogInformation("PayPal subscription created for user {UserId} product {ProductId}, treating as payment", 
                 userId, product.Id);
-            await TryExtendSubscription(webhook, effectiveCustomData: customData);
+            await TryExtendSubscription(webhook, new CustomData(userId, product.Id, decimal.ToInt64(product.Cost), "True"));
         }
         
         await context.SaveChangesAsync();
-        if(subscription.Status == "expired")
-        {
-            var referenceId = webhook.Data.Id + webhook.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
-            logger.LogInformation("Subscription expired, reverting purchase {referenceId}", referenceId);
-            await RevertPurchase(userId, referenceId + "-topup");
-            await RevertPurchase(userId, referenceId);
-            return;
-        }
+
     }
 
     /// <summary>
@@ -246,9 +235,15 @@ public class SubscriptionService
         }
     }
 
-    internal async Task<CustomData> PaymentReceived(Webhook data)
+    internal Task<CustomData> PaymentReceived(Webhook data) =>
+        WithSubscriptionLock(data.Data.Attributes.SubscriptionId.ToString(), () => PaymentReceivedLocked(data));
+
+    private async Task<CustomData> PaymentReceivedLocked(Webhook data)
     {
         var effectiveCustomData = await ResolvePaymentCustomData(data);
+        if (await context.RefundedSubscriptionInvoices.AnyAsync(i => i.InvoiceId == data.Data.Id))
+            return new CustomData(effectiveCustomData.UserId, effectiveCustomData.ProductId, 0,
+                effectiveCustomData.IsSubscription, effectiveCustomData.CreatorCode);
 
         // For PayPal subscriptions with billing_reason "initial", check if we've already credited
         // via subscription_created (PayPal doesn't always send subscription_payment_success reliably,
@@ -278,7 +273,21 @@ public class SubscriptionService
             }
         }
         
-        await TryExtendSubscription(data, effectiveCustomData);
+        if (!string.Equals(billingReason, "updated", StringComparison.OrdinalIgnoreCase))
+            await TryExtendSubscription(data, effectiveCustomData);
+        else
+        {
+            // Prorations are separate invoices, not another full service purchase.
+            // Keep a zero-coin receipt so duplicate paid/recovered events are idempotent.
+            await transactionService.WithTransactionAsync(async (_, _) =>
+            {
+                var marker = await productService.GetProduct("revert");
+                await transactionService.CreateTransaction(marker, await userService.GetOrCreate(effectiveCustomData.UserId),
+                    0, "ls-invoice-" + data.Data.Id);
+            });
+            effectiveCustomData = new CustomData(effectiveCustomData.UserId, effectiveCustomData.ProductId,
+                0, effectiveCustomData.IsSubscription, effectiveCustomData.CreatorCode);
+        }
         try
         {
             var subscriptionId = data.Data.Attributes.SubscriptionId.ToString();
@@ -299,18 +308,33 @@ public class SubscriptionService
     private async Task<CustomData> ResolvePaymentCustomData(Webhook data)
     {
         var customData = data.Meta?.CustomData;
-        if (!string.IsNullOrWhiteSpace(customData?.UserId) && customData.ProductId != 0)
-        {
-            return customData;
-        }
-
         var subscriptionId = data.Data.Attributes.SubscriptionId.ToString();
         var subscription = await context.Subscriptions
-            .Include(s => s.User)
-            .Include(s => s.Product)
+            .Include(s => s.User).Include(s => s.Product).ThenInclude(p => p.Groups)
             .Where(s => s.ExternalId == subscriptionId)
-            .OrderByDescending(s => s.UpdatedAt)
-            .FirstOrDefaultAsync();
+            .OrderByDescending(s => s.UpdatedAt).FirstOrDefaultAsync();
+        if (subscription == null && !string.IsNullOrWhiteSpace(customData?.UserId) && customData.ProductId != 0)
+            return customData;
+        if (subscription != null && !string.IsNullOrWhiteSpace(customData?.UserId)
+            && customData.UserId != subscription.User.ExternalId)
+            throw new ApiException("Subscription owner does not match the invoice.");
+        if (subscription != null && lemonSqueezyService.SubscriptionVariants.Count > 0)
+        {
+            var remote = await lemonSqueezyService.GetSubscription(subscriptionId);
+            if (data.Data.Attributes.BillingReason == "renewal" && remote.Attributes.Status == "active")
+            {
+                var slug = lemonSqueezyService.SubscriptionVariants.FirstOrDefault(p => p.Value == remote.Attributes.VariantId).Key;
+                var target = slug == null ? null : await context.TopUpProducts.Include(p => p.Groups).SingleOrDefaultAsync(p => p.Slug == slug);
+                if (target != null && CanChangePlan(subscription.Product, target))
+                {
+                    await PrepareOwnership(subscription);
+                    if (!await ApplyPlan(subscription, target, remote, null))
+                        throw new ApiException("The provider subscription price is still updating. Please retry.");
+                }
+            }
+            await SynchronizePlan(subscription, remote);
+            await context.SaveChangesAsync();
+        }
         var product = subscription?.Product == null
             ? null
             : await context.TopUpProducts.FindAsync(subscription.Product.Id);
@@ -337,7 +361,7 @@ public class SubscriptionService
         var product = context.TopUpProducts.Find(effectiveCustomData.ProductId);
         var subscriptionId = data.Data.Type == "subscription-invoices"
             ? data.Data.Attributes.SubscriptionId.ToString() : data.Data.Id;
-        var referenceId = data.Data.Id + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
+        var referenceId = data.Data.Id + data.Data.Attributes.CreatedAt.Date.ToString("yyyy-MM-dd");
         
         // Skip extension for trial subscriptions - they don't pay yet
         // Trial access is handled separately in HandleTrialSubscription
@@ -348,6 +372,9 @@ public class SubscriptionService
             return;
         }
         
+        if (data.Data.Type != "subscription-invoices" && await context.RefundedSubscriptionInvoices
+            .AnyAsync(i => i.SubscriptionId == subscriptionId && i.BillingReason == "initial"))
+            return;
         if (data.Data.Type == "subscription-invoices")
         {
             // Skip coin credit/service extension for 0$ initial trial invoices, as trial access is already handled by HandleTrialSubscription
@@ -358,11 +385,22 @@ public class SubscriptionService
                 return;
             }
 
-            referenceId = data.Data.Attributes.SubscriptionId + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
+            // Respect historical date-based references when an old invoice is redelivered after rollout.
+            var legacy = subscriptionId + data.Data.Attributes.CreatedAt.Date.ToString("yyyy-MM-dd");
+            if (await context.FiniteTransactions.AnyAsync(t => t.User.ExternalId == effectiveCustomData.UserId
+                && (t.Reference == legacy || t.Reference == legacy + "-topup")))
+                return;
+            referenceId = "ls-invoice-" + data.Data.Id;
+            if (await context.FiniteTransactions.AnyAsync(t => t.User.ExternalId == effectiveCustomData.UserId
+                && (t.Reference == referenceId || t.Reference == referenceId + "-topup")))
+                throw new TransactionService.DupplicateTransactionException();
             logger.LogInformation($"Payment received for user {effectiveCustomData.UserId} for product {effectiveCustomData.ProductId}, crediting");
         }
         else
         {
+            if (await context.FiniteTransactions.AnyAsync(t => t.User.ExternalId == effectiveCustomData.UserId
+                && (t.Reference == referenceId || t.Reference == referenceId + "-topup")))
+                return;
             // is subscription update, check current expiry and abbort if its more than 1 day in the future already
             var expires = product.SlotCount > 0
                 ? await context.TierSlots.Where(s => s.User.ExternalId == effectiveCustomData.UserId && s.SubscriptionId == subscriptionId)
@@ -400,14 +438,26 @@ public class SubscriptionService
         }
     }
 
-    public async Task CancelSubscription(string userId, string subscriptionId)
+    public Task CancelSubscription(string userId, string subscriptionId) => WithSubscriptionLock(subscriptionId, async () =>
+    {
+        await CancelSubscriptionLocked(userId, subscriptionId);
+        return true;
+    });
+
+    private async Task CancelSubscriptionLocked(string userId, string subscriptionId)
     {
         var subscription = await context.Subscriptions.Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId).FirstOrDefaultAsync();
         if (subscription == null)
         {
             throw new ApiException("Subscription not found");
         }
-        await lemonSqueezyService.CancelSubscription(subscription.ExternalId);
+        var remote = await lemonSqueezyService.CancelSubscription(subscription.ExternalId);
+        if (remote.Attributes.Status != "cancelled" || remote.Attributes.EndsAt == null)
+            throw new ApiException("Lemon Squeezy did not confirm the cancellation.");
+        subscription.Status = remote.Attributes.Status;
+        subscription.EndsAt = remote.Attributes.EndsAt;
+        subscription.UpdatedAt = remote.Attributes.UpdatedAt;
+        await context.SaveChangesAsync();
     }
 
     /// <summary>
@@ -416,7 +466,10 @@ public class SubscriptionService
     /// <param name="userId">The user ID</param>
     /// <param name="subscriptionId">The external subscription ID</param>
     /// <returns>True if successfully resumed</returns>
-    public async Task<bool> ResumeSubscription(string userId, string subscriptionId)
+    public Task<bool> ResumeSubscription(string userId, string subscriptionId) =>
+        WithSubscriptionLock(subscriptionId, () => ResumeSubscriptionLocked(userId, subscriptionId));
+
+    private async Task<bool> ResumeSubscriptionLocked(string userId, string subscriptionId)
     {
         var subscription = await context.Subscriptions
             .Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId)
@@ -437,9 +490,12 @@ public class SubscriptionService
             throw new ApiException("Subscription grace period has expired and cannot be resumed");
         }
         
-        await lemonSqueezyService.ResumeSubscription(subscription.ExternalId);
-        
-        subscription.Status = "active";
+        var remote = await lemonSqueezyService.ResumeSubscription(subscription.ExternalId);
+        if (remote.Attributes.Status != "active" || remote.Attributes.EndsAt != null)
+            throw new ApiException("Lemon Squeezy did not confirm reactivation.");
+        subscription.Status = remote.Attributes.Status;
+        subscription.EndsAt = null;
+        subscription.UpdatedAt = remote.Attributes.UpdatedAt;
         await context.SaveChangesAsync();
         
         return true;
@@ -508,26 +564,29 @@ public class SubscriptionService
     /// <param name="invoiceId">The subscription invoice ID</param>
     /// <param name="request">Optional refund amount in cents. If not specified, a full refund will be issued.</param>
     /// <returns>RefundResponse containing the updated invoice details</returns>
-    public async Task<RefundResponse> RefundSubscriptionPayment(string userId, string subscriptionId, string invoiceId, RefundRequest request)
+    public Task<RefundResponse> RefundSubscriptionPayment(string userId, string subscriptionId, string invoiceId, RefundRequest request) =>
+        WithSubscriptionLock(subscriptionId, () => RefundSubscriptionPaymentLocked(userId, subscriptionId, invoiceId, request));
+
+    private async Task<RefundResponse> RefundSubscriptionPaymentLocked(string userId, string subscriptionId, string invoiceId, RefundRequest request)
     {
         // Validate user subscription
-        var subscription = await context.Subscriptions
-            .Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId)
-            .FirstOrDefaultAsync();
-        
-        if (subscription == null)
-        {
-            throw new ApiException("Subscription not found");
-        }
-        
+        var subscription = await OwnedSubscription(userId, subscriptionId)
+            ?? throw new ApiException("Subscription not found");
+
         // Get the invoice details to check the age
         var invoices = await lemonSqueezyService.GetSubscriptionInvoicesAsync(subscriptionId);
         var invoice = invoices?.FirstOrDefault(i => i.Id == invoiceId);
         
-        if (invoice == null)
-        {
+        if (invoice == null || invoice.SubscriptionId.ToString() != subscriptionId)
             throw new ApiException("Invoice not found");
+        if (invoice.Refunded || invoice.Status == "refunded")
+        {
+            await ApplyInvoiceRefund(subscription, invoice.Id, invoice.BillingReason, invoice.CreatedAt, true);
+            return new RefundResponse { Id = invoice.Id, Refunded = true, RefundedAmount = invoice.RefundedAmount, Status = invoice.Status };
         }
+        if (invoice.Status is not ("paid" or "partial_refund") || invoice.Total <= 0
+            || request?.Amount <= 0 || request?.Amount > invoice.Total - invoice.RefundedAmount)
+            throw new ApiException("Invalid invoice refund amount or status.");
         
         // Check if invoice is within the 3-day refund window
         var daysSinceCreation = (DateTime.UtcNow - invoice.CreatedAt).TotalDays;
@@ -536,6 +595,8 @@ public class SubscriptionService
             throw new ApiException($"Refund window has expired. Invoices can only be refunded within 3 days of creation. This invoice was created {daysSinceCreation:F1} days ago.");
         }
         
+        if (invoice.BillingReason == "updated")
+            await SynchronizePlan(subscription, await lemonSqueezyService.GetSubscription(subscriptionId));
         // Issue the refund
         var refundResponse = await lemonSqueezyService.RefundInvoiceAsync(invoiceId, request?.Amount);
         
@@ -544,28 +605,77 @@ public class SubscriptionService
             throw new ApiException("Failed to process refund. Please try again later.");
         }
         
+        await ApplyInvoiceRefund(subscription, invoice.Id, invoice.BillingReason, invoice.CreatedAt,
+            refundResponse.Refunded || refundResponse.Status == "refunded" || refundResponse.RefundedAmount >= invoice.Total);
         logger.LogInformation("Subscription payment refunded for user {UserId}, subscription {SubscriptionId}, invoice {InvoiceId}: amount={Amount}", 
             userId, subscriptionId, invoiceId, refundResponse.RefundedAmount);
         
         return refundResponse;
     }
 
-    internal async Task RefundPayment(Webhook webhook)
+    internal Task RefundPayment(Webhook webhook) => WithSubscriptionLock(webhook.Data.Attributes.SubscriptionId.ToString(), async () =>
     {
-        var userId = webhook.Meta.CustomData.UserId;
-        var reference = webhook.Data.Id;
-        await RevertPurchase(userId, reference);
-        await RevertPurchase(userId, reference + "-topup");
+        var attrs = webhook.Data.Attributes;
+        var subscription = await context.Subscriptions.Include(s => s.User).Include(s => s.Product).ThenInclude(p => p.Groups)
+            .FirstOrDefaultAsync(s => s.ExternalId == attrs.SubscriptionId.ToString());
+        if (subscription == null)
+        {
+            var custom = webhook.Meta?.CustomData;
+            if (string.IsNullOrWhiteSpace(custom?.UserId))
+                throw new ApiException("Subscription refund owner could not be resolved.");
+            subscription = new UserSubscription { User = await userService.GetOrCreate(custom.UserId),
+                Product = await context.TopUpProducts.FindAsync(custom.ProductId), ExternalId = attrs.SubscriptionId.ToString() };
+        }
+        await ApplyInvoiceRefund(subscription, webhook.Data.Id, attrs.BillingReason, attrs.CreatedAt,
+            attrs.Refunded || attrs.Status == "refunded" || (attrs.Total > 0 && attrs.RefundedAmount >= attrs.Total));
+        return true;
+    });
+
+    private async Task ApplyInvoiceRefund(UserSubscription subscription, string invoiceId, string reason, DateTime createdAt, bool fullRefund)
+    {
+        // Partial refunds are price adjustments; they do not revoke the paid service.
+        if (!fullRefund || await context.RefundedSubscriptionInvoices.AnyAsync(i => i.InvoiceId == invoiceId))
+            return;
+        await transactionService.WithTransactionAsync(async (_, _) =>
+        {
+            context.RefundedSubscriptionInvoices.Add(new RefundedSubscriptionInvoice
+                { InvoiceId = invoiceId, SubscriptionId = subscription.ExternalId, BillingReason = reason });
+            if (reason == "updated")
+            {
+                var change = await context.SubscriptionPlanChanges.Include(c => c.PreviousProduct).Include(c => c.Product)
+                    .SingleOrDefaultAsync(c => c.InvoiceId == invoiceId && c.SubscriptionId == subscription.ExternalId);
+                if (change != null)
+                {
+                    change.Refunded = true;
+                    var changes = await context.SubscriptionPlanChanges.Include(c => c.PreviousProduct).Include(c => c.Product)
+                        .Where(c => c.SubscriptionId == subscription.ExternalId && c.PeriodEnd == change.PeriodEnd)
+                        .OrderBy(c => c.ChangedAt).ThenBy(c => c.Id).ToListAsync();
+                    var expiry = await AccessExpiry(subscription);
+                    // A refund for an earlier period must not undo a later paid renewal.
+                    if (expiry <= change.PeriodEnd.AddSeconds(5))
+                        await SetAccessProduct(subscription, changes.LastOrDefault(c => !c.Refunded)?.Product ?? changes[0].PreviousProduct);
+                }
+            }
+            else
+            {
+                var reference = "ls-invoice-" + invoiceId;
+                if (!await context.FiniteTransactions.AnyAsync(t => t.User.Id == subscription.User.Id && t.Reference == reference))
+                    reference = subscription.ExternalId + createdAt.Date.ToString("yyyy-MM-dd");
+                await RevertPurchase(subscription.User.ExternalId, reference);
+                await RevertPurchase(subscription.User.ExternalId, reference + "-topup", adjustTime: false);
+            }
+            await context.SaveChangesAsync();
+        });
     }
 
-    private async Task RevertPurchase(string userId, string reference)
+    private async Task RevertPurchase(string userId, string reference, bool adjustTime = true)
     {
-        var transactionId = context.FiniteTransactions.Where(t => t.Reference == reference).Select(t => t.Id).FirstOrDefault();
+        var transactionId = context.FiniteTransactions.Where(t => t.Reference == reference && t.User.ExternalId == userId).Select(t => t.Id).FirstOrDefault();
         if (transactionId == 0)
         {
             logger.LogWarning("No transaction found for reference {Reference} for user {UserId}, skipping revert", reference, userId);
             return;
         }
-        await transactionService.RevertPurchase(userId, transactionId);
+        await transactionService.RevertPurchase(userId, transactionId, adjustTime);
     }
 }

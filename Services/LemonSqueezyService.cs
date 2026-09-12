@@ -16,6 +16,81 @@ namespace Coflnet.Payments.Services;
 
 public class LemonSqueezyService
 {
+    public IReadOnlyDictionary<string, long> SubscriptionVariants => config["LEMONSQUEEZY:SUBSCRIPTION_VARIANTS"] is string mappings
+        ? System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, long>>(mappings)
+        : config
+        .GetSection("LEMONSQUEEZY:SUBSCRIPTION_VARIANTS")?.GetChildren()
+        .ToDictionary(c => c.Key, c => long.Parse(c.Value), StringComparer.Ordinal) ?? new Dictionary<string, long>();
+
+    public virtual Task<Data> GetSubscription(string subscriptionId) =>
+        SendSubscriptionRequest(subscriptionId, Method.Get);
+
+    public virtual Task<Data> ChangeSubscription(string subscriptionId, long variantId, bool invoiceImmediately) =>
+        SendSubscriptionRequest(subscriptionId, Method.Patch, new
+        {
+            data = new
+            {
+                type = "subscriptions", id = subscriptionId,
+                attributes = new { variant_id = variantId, invoice_immediately = invoiceImmediately, disable_prorations = !invoiceImmediately }
+            }
+        });
+
+    private async Task<Data> SendSubscriptionRequest(string subscriptionId, Method method, object body = null)
+    {
+        using var client = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
+        var request = CreateRequest(method);
+        request.Resource = $"/v1/subscriptions/{Uri.EscapeDataString(subscriptionId)}";
+        if (body != null)
+            request.AddJsonBody(body);
+        var response = await client.ExecuteAsync(request);
+        if (!response.IsSuccessful)
+            throw new ApiException("Lemon Squeezy could not update or load the subscription. Please try again.");
+        return System.Text.Json.JsonSerializer.Deserialize<Webhook>(response.Content)?.Data
+            ?? throw new ApiException("Lemon Squeezy returned an invalid subscription.");
+    }
+
+    public virtual async Task ValidateSubscriptionVariant(TopUpProduct product, long variantId)
+    {
+        using var client = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
+        var variant = await ReadProviderAttributes(client, $"/v1/variants/{variantId}");
+        var providerProduct = await ReadProviderAttributes(client, $"/v1/products/{variant.GetProperty("product_id").GetInt64()}");
+        var storeId = providerProduct.GetProperty("store_id").GetInt64().ToString();
+        if (storeId != config["LEMONSQUEEZY:STORE_ID"] || providerProduct.GetProperty("status").GetString() != "published")
+            throw new ApiException("The subscription variant is not a published plan in this store.");
+        var store = await ReadProviderAttributes(client, $"/v1/stores/{storeId}");
+        var interval = SubscriptionService.SubscriptionInterval(product.OwnershipSeconds);
+        if (!variant.GetProperty("is_subscription").GetBoolean()
+            || variant.GetProperty("price").GetDecimal() != product.Price * 100m
+            || variant.GetProperty("interval").GetString() + "_" + variant.GetProperty("interval_count").GetInt32() != interval
+            || variant.GetProperty("has_free_trial").GetBoolean()
+            || !string.Equals(store.GetProperty("currency").GetString(), product.CurrencyCode, StringComparison.OrdinalIgnoreCase))
+            throw new ApiException("The subscription variant does not match this plan's price and billing period.");
+    }
+
+    public virtual async Task<bool> ValidateSubscriptionPrice(Data subscription, TopUpProduct product)
+    {
+        if (subscription.Attributes.FirstSubscriptionItem?.PriceId is not > 0)
+            throw new ApiException("Lemon Squeezy did not return the subscription price.");
+        using var client = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
+        var price = await ReadProviderAttributes(client, $"/v1/prices/{subscription.Attributes.FirstSubscriptionItem.PriceId}");
+        // Plan-change responses can expose the new variant before the subscription item's price catches up.
+        if (price.GetProperty("variant_id").GetInt64() != subscription.Attributes.VariantId)
+            return false;
+        if (price.GetProperty("unit_price").GetDecimal() != product.Price * 100m)
+            throw new ApiException("The provider has not applied this plan's recurring price. Please contact support.");
+        return true;
+    }
+
+    private async Task<JsonElement> ReadProviderAttributes(RestClient client, string path)
+    {
+        var request = CreateRequest(Method.Get);
+        request.Resource = path;
+        var response = await client.ExecuteAsync(request);
+        if (!response.IsSuccessful)
+            throw new ApiException("The subscription plan could not be verified. Please try again.");
+        using var json = JsonDocument.Parse(response.Content);
+        return json.RootElement.GetProperty("data").GetProperty("attributes").Clone();
+    }
     private IConfiguration config;
     private ILogger<LemonSqueezyService> logger;
     private PaymentContext context;
@@ -41,7 +116,7 @@ public class LemonSqueezyService
         try
         {
             var storeId = config["LEMONSQUEEZY:STORE_ID"];
-            var restclient = new RestClient("https://api.lemonsqueezy.com");
+            var restclient = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
 
             logger.LogInformation("Starting variant discovery for store {StoreId}", storeId);
 
@@ -265,7 +340,7 @@ public class LemonSqueezyService
         try
         {
             var storeId = config["LEMONSQUEEZY:STORE_ID"];
-            var restclient = new RestClient("https://api.lemonsqueezy.com");
+            var restclient = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
 
             // Paginate through all discounts to find the one with matching code
             int page = 1;
@@ -440,63 +515,23 @@ public class LemonSqueezyService
         }
     }
 
-    public async Task CancelSubscription(string subscriptionId)
-    {
-        var restclient = new RestClient($"https://api.lemonsqueezy.com/v1/subscriptions/{subscriptionId}");
-        var request = CreateRequest(Method.Delete);
-        var response = await restclient.ExecuteAsync(request);
-        logger.LogInformation(response.Content);
-    }
+    public virtual Task<Data> CancelSubscription(string subscriptionId) =>
+        SendSubscriptionRequest(subscriptionId, Method.Delete);
 
-    /// <summary>
-    /// Resume a cancelled subscription that is still in grace period.
-    /// A subscription can be resumed if it was cancelled but hasn't reached its ends_at date yet.
-    /// </summary>
-    /// <param name="subscriptionId">The LemonSqueezy subscription ID</param>
-    /// <returns>True if successfully resumed, false otherwise</returns>
-    public async Task<bool> ResumeSubscription(string subscriptionId)
-    {
-        var restclient = new RestClient("https://api.lemonsqueezy.com");
-        var request = new RestRequest($"/v1/subscriptions/{subscriptionId}", Method.Patch);
-        request.AddHeader("Accept", "application/vnd.api+json");
-        request.AddHeader("Content-Type", "application/vnd.api+json");
-        request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
-
-        var body = new
+    public virtual Task<Data> ResumeSubscription(string subscriptionId) =>
+        SendSubscriptionRequest(subscriptionId, Method.Patch, new
         {
-            data = new
-            {
-                type = "subscriptions",
-                id = subscriptionId,
-                attributes = new
-                {
-                    cancelled = false
-                }
-            }
-        };
-
-        request.AddJsonBody(body);
-        var response = await restclient.ExecuteAsync(request);
-
-        if (!response.IsSuccessful)
-        {
-            logger.LogWarning("Failed to resume subscription {SubscriptionId}: {StatusCode} {Content}",
-                subscriptionId, response.StatusCode, response.Content);
-            throw new ApiException($"Failed to resume subscription {subscriptionId}: {response.StatusCode} {response.Content}");
-        }
-
-        logger.LogInformation("Successfully resumed subscription {SubscriptionId}", subscriptionId);
-        return true;
-    }
+            data = new { type = "subscriptions", id = subscriptionId, attributes = new { cancelled = false } }
+        });
 
     /// <summary>
     /// Get all invoices for a subscription
     /// </summary>
     /// <param name="subscriptionId">The LemonSqueezy subscription ID</param>
     /// <returns>List of subscription invoices</returns>
-    public async Task<List<SubscriptionInvoice>> GetSubscriptionInvoicesAsync(string subscriptionId)
+    public virtual async Task<List<SubscriptionInvoice>> GetSubscriptionInvoicesAsync(string subscriptionId)
     {
-        var restclient = new RestClient("https://api.lemonsqueezy.com");
+        var restclient = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
         var invoices = new List<SubscriptionInvoice>();
         int page = 1;
         const int maxPages = 10;
@@ -512,9 +547,7 @@ public class LemonSqueezyService
 
             if (!response.IsSuccessful)
             {
-                logger.LogWarning("Failed to fetch subscription invoices: {StatusCode} {Content}",
-                    response.StatusCode, response.Content);
-                break;
+                throw new ApiException("Lemon Squeezy could not load the subscription invoices. Please try again.");
             }
 
             var json = System.Text.Json.JsonDocument.Parse(response.Content);
@@ -540,6 +573,7 @@ public class LemonSqueezyService
                     Status = attrs.TryGetProperty("status", out var status) ? status.GetString() : null,
                     StatusFormatted = attrs.TryGetProperty("status_formatted", out var statusFormatted) ? statusFormatted.GetString() : null,
                     Refunded = attrs.TryGetProperty("refunded", out var refunded) && refunded.GetBoolean(),
+                    RefundedAmount = attrs.TryGetProperty("refunded_amount", out var refundAmount) ? refundAmount.GetInt32() : 0,
                     Subtotal = attrs.TryGetProperty("subtotal", out var subtotal) ? subtotal.GetInt32() : 0,
                     DiscountTotal = attrs.TryGetProperty("discount_total", out var discountTotal) ? discountTotal.GetInt32() : 0,
                     Tax = attrs.TryGetProperty("tax", out var tax) ? tax.GetInt32() : 0,
@@ -586,7 +620,7 @@ public class LemonSqueezyService
     /// <returns>The download URL or null if failed</returns>
     public async Task<string> GenerateInvoiceDownloadLinkAsync(string invoiceId, GenerateInvoiceRequest request)
     {
-        var restclient = new RestClient("https://api.lemonsqueezy.com");
+        var restclient = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
 
         // Build query parameters
         var queryParams = new List<string>
@@ -639,11 +673,11 @@ public class LemonSqueezyService
     /// <param name="invoiceId">The subscription invoice ID</param>
     /// <param name="amountInCents">Optional refund amount in cents. If not specified, a full refund will be issued.</param>
     /// <returns>RefundResponse containing the updated invoice details, or null if refund failed</returns>
-    public async Task<RefundResponse> RefundInvoiceAsync(string invoiceId, int? amountInCents = null)
+    public virtual async Task<RefundResponse> RefundInvoiceAsync(string invoiceId, int? amountInCents = null)
     {
         try
         {
-            var restclient = new RestClient("https://api.lemonsqueezy.com");
+            var restclient = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
             var request = new RestRequest($"/v1/subscription-invoices/{invoiceId}/refund", Method.Post);
             request.AddHeader("Accept", "application/vnd.api+json");
             request.AddHeader("Content-Type", "application/vnd.api+json");
@@ -856,7 +890,6 @@ public class LemonSqueezyService
         request.AddHeader("Accept", "application/vnd.api+json");
         request.AddHeader("Content-Type", "application/vnd.api+json");
         request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
-        Console.WriteLine("Using API Key: " + config["LEMONSQUEEZY:API_KEY"]);
         return request;
     }
 }

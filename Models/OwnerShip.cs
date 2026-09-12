@@ -33,6 +33,8 @@ namespace Coflnet.Payments.Models
         /// <value></value>
         public DateTime Expires { get; set; }
         public int? UserId { get; set; }
+        [System.ComponentModel.DataAnnotations.MaxLength(64)]
+        public string SubscriptionId { get; set; }
         [NotMapped]
         public string OwnerId { get; set; }
         [NotMapped]

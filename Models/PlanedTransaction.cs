@@ -14,6 +14,8 @@ namespace Coflnet.Payments.Models
     /// </summary>
     public class FiniteTransaction : Transaction
     {
+        [System.ComponentModel.DataAnnotations.MaxLength(64)]
+        public string SubscriptionId { get; set; }
 
     }
 }

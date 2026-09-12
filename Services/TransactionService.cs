@@ -982,7 +982,7 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("insuficcient balance");
             }
             List<Product> allProductsToExtend = [];
-            if (dbProduct.SlotCount == 0)
+            if (dbProduct.SlotCount == 0 && subscriptionId == null)
             {
                 allProductsToExtend = await GetProducts(productSlug, db.Products);
                 allProductsToExtend.AddRange(await GetProducts(productSlug, db.TopUpProducts));
@@ -995,6 +995,21 @@ namespace Coflnet.Payments.Services
             if (dbProduct.SlotCount > 0)
                 await new TierSlotService(db).ApplyPurchase(user, dbProduct, transactionEvent.Id,
                     count, adjustedProduct.OwnershipSeconds, slotIds, subscriptionId);
+            if (subscriptionId != null)
+            {
+                (await db.FiniteTransactions.FindAsync(transactionEvent.Id)).SubscriptionId = subscriptionId;
+                if (dbProduct.SlotCount == 0)
+                {
+                    var ownership = await db.OwnerShips.SingleOrDefaultAsync(o => o.UserId == user.Id && o.SubscriptionId == subscriptionId);
+                    if (ownership == null)
+                    {
+                        ownership = new OwnerShip { User = user, Product = dbProduct, SubscriptionId = subscriptionId };
+                        db.OwnerShips.Add(ownership);
+                    }
+                    ownership.Product = dbProduct;
+                    ownership.Expires = GetNewExpiry(ownership.Expires, time, evaluationAtUtc);
+                }
+            }
             foreach (var item in allProductsToExtend)
             {
                 var existingExpiry = await userService.GetLongest(userId, new() { item.Slug });
@@ -1004,7 +1019,7 @@ namespace Coflnet.Payments.Services
                     time,
                     evaluationAtUtc);
                 logger.LogInformation($"User {user.ExternalId} has {existingExpiry} for {item.Slug} and will be extended to {newExpiry} by {time}");
-                existingOwnerShip = user.Owns?.Where(p => p.Product?.Id == item.Id);
+                existingOwnerShip = user.Owns?.Where(p => p.Product?.Id == item.Id && p.SubscriptionId == null);
                 if (existingOwnerShip.Any())
                 {
                     existingOwnerShip.First().Expires = newExpiry;
@@ -1060,8 +1075,23 @@ namespace Coflnet.Payments.Services
                 if (existing != null)
                     return existing;
                 var user = await userService.GetOrCreate(userId);
+                if (!adjustTime)
+                {
+                    var refund = await CreateTransaction(dbProduct, user, -transaction.Amount, reference);
+                    refund.RevertedProductSlug = transaction.Product.Slug;
+                    return refund;
+                }
                 if (await new TierSlotService(db).Revert(transactionId))
                 {
+                    var refund = await CreateTransaction(dbProduct, user, -transaction.Amount, reference);
+                    refund.RevertedProductSlug = transaction.Product.Slug;
+                    return refund;
+                }
+                if (transaction.SubscriptionId != null)
+                {
+                    var ownership = await db.OwnerShips.SingleOrDefaultAsync(o => o.UserId == user.Id && o.SubscriptionId == transaction.SubscriptionId);
+                    if (ownership != null)
+                        ownership.Expires = ownership.Expires.AddSeconds(-transaction.Product.OwnershipSeconds);
                     var refund = await CreateTransaction(dbProduct, user, -transaction.Amount, reference);
                     refund.RevertedProductSlug = transaction.Product.Slug;
                     return refund;
@@ -1070,8 +1100,6 @@ namespace Coflnet.Payments.Services
                 var count = GetRevertPurchaseCount(transaction.Amount, transaction.Product.Cost);
                 adjustedProduct.Cost = transaction.Amount / count;
                 adjustedProduct.OwnershipSeconds = -transaction.Product.OwnershipSeconds;
-                if (!adjustTime)
-                    adjustedProduct.OwnershipSeconds = 0;
                 adjustedProduct.Slug = "revert";
                 return await ExecuteServicePurchase(
                     transaction.Product.Slug, userId, count, reference,

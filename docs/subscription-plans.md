@@ -1,0 +1,40 @@
+# Lemon Squeezy subscription plans
+
+The SkyApi account page can switch between Premium and Premium+ with the same slot count and billing interval. Existing single-account plans retain their three-hour access grace period. One-account plans remain one-account plans; four-slot plans retain their slot IDs and assignments.
+
+| Internal product | Variant | Price / four weeks |
+| --- | --- | --- |
+| `l_premium` | `502893` | EUR 9.69 |
+| `l_prem_plus` | `1277645` | EUR 35.69 |
+| `l_premium-slots-4` | `2118396` | EUR 29.69 |
+| `l_prem_plus-slots-4` | `1278931` | EUR 99.69 |
+
+`LEMONSQUEEZY__SUBSCRIPTION_VARIANTS` accepts a JSON object mapping product slugs to numeric variant IDs; an appsettings `LEMONSQUEEZY:SUBSCRIPTION_VARIANTS` object also works. The Sky payments Helm values contain the four mappings. Checkout uses these exact variants. A plan change verifies the provider's store, published product, currency, price, billing interval, and lack of a trial before charging. Quarterly/yearly variants need their own explicit mappings before switches are offered for those intervals.
+
+Upgrades request `invoice_immediately=true` and grant the higher tier only after a paid proration invoice is confirmed. If the provider returns a new variant before its subscription item price updates, the API returns `pending`; reconciliation completes the change without another charge once the price matches. Downgrades request `disable_prorations=true`: the provider's next-bill product changes now, while local access keeps the already-paid tier until renewal. Reversing a scheduled downgrade before renewal does not charge again for the already-paid tier. PayPal requires the signed Lemon Squeezy portal link; access changes follow provider confirmation and payment, not the redirect alone. The portal's billing confirmation must be checked in a test-mode store before live rollout.
+
+Cancellation stops renewal and keeps paid access until expiry. Reactivation clears `ends_at` only after provider confirmation. Failed provider calls cannot report success. Partial refunds preserve access. A full renewal refund removes that invoice's service period; a full proration refund restores the previous paid tier for that period and cannot undo a later renewal. Refunds do not automatically cancel the subscription's future billing. Repeated/full-refund-before-payment webhooks cannot grant the refunded period again.
+
+## Migration and rollout
+
+Enable `subscription_created`, `subscription_updated`, `subscription_plan_changed`, `subscription_payment_success`, `subscription_payment_failed`, `subscription_payment_refunded`, `order_created`, and `order_refunded` for the callback. Both subscription update events reconcile the provider's current subscription and invoices; a plan-change notification alone never grants an unpaid upgrade. Recovered payments are also accepted and deduplicated with payment-success events.
+
+Test credentials are stored separately at `kv/payment/sky-payments` under `LEMONSQUEEZY__TEST__API_KEY`, `LEMONSQUEEZY__TEST__SECRET`, and `LEMONSQUEEZY__TEST__STORE_ID`. `LEMONSQUEEZY__TEST__SUBSCRIPTION_VARIANTS` maps single-account `l_premium` to `508393` and `l_prem_plus` to `2118570`; `LEMONSQUEEZY__TEST__ALLOWED_USER_IDS` is `7`. These are configuration reserved for sandbox routing: the current application still needs explicit test checkout selection, persistent test/live subscription routing, test signature verification, and exclusion of test payments from revenue reporting before a production sandbox purchase. Do not replace the live credentials with these values. Test bundle variants have not been supplied.
+
+Apply `20260912131418_SubscriptionPlanLifecycle` after `SubscriptionTierSlots`, before deploying Payments. A Cockroach statement-by-statement script is included beside the EF migration. It adds subscription-specific ownership/transaction provenance, provider variant tracking, a short database operation lease, plan-change history, and full-refund receipts. No live migration or deployment is performed by this change.
+
+The Cockroach script explicitly grants `sky_payments` SELECT/INSERT/UPDATE on `SubscriptionPlanChanges` and SELECT/INSERT on `RefundedSubscriptionInvoices`, then verifies both grants. Existing table privileges cover the added columns; `unique_rowid()` requires no sequence privilege. The script tolerates reruns after interrupted column/table/index creation and duplicate migration-history insertion. In the Cockroach SQL shell, run `\set errexit` before reading or pasting it so any failure stops execution before the history insert. The replacement ownership index is created first. The script sets `sql_safe_updates = false` on the current connection for the old index drop, then immediately sets it back to `true`; it changes no cluster or application setting. If interrupted between those statements, reconnect or run `SET sql_safe_updates = true`. All DDL must run outside an explicit transaction; Cockroach’s automatic commit before DDL would discard a transaction-local override. If only grants are missing, running the two GRANT statements and SHOW GRANTS checks is also sufficient.
+
+Legacy custom-priced checkouts may share a variant. Their first provider reconciliation records the existing variant without inferring a different product. Before the first change, the latest recognizable legacy subscription purchase is separated from shared ownership, preserving independently purchased time. Ambiguous/missing legacy purchase evidence stops the change before any provider charge and requires reconciliation. New payments create subscription-specific ownership directly.
+
+Deploy the updated product-provisioner catalog and Payments mappings with the backend, then SkyApi and the frontend. Check all four dedicated variants in the intended Lemon Squeezy store, and test a card upgrade, scheduled downgrade, PayPal confirmation, cancellation/reactivation, and partial/full invoice refunds in test mode. Live variant prices were supplied by the operator; no live billing calls were made while implementing this change.
+
+Provider references: [update subscription](https://docs.lemonsqueezy.com/api/subscriptions/update-subscription), [subscription management](https://docs.lemonsqueezy.com/guides/developer-guide/managing-subscriptions), [invoice fields](https://docs.lemonsqueezy.com/api/subscription-invoices/the-subscription-invoice-object).
+
+## Sandbox API verification — 12 September 2026
+
+A separate Payments pod with a disposable CockroachDB database, test credentials, no Kafka producer, and a remapped callback exercised one card purchase for user `7` (single-account variants `508393` and `2118570`). All 11 lifecycle checks passed: initial grant, one paid €26.00 upgrade, scheduled downgrade and undo without another invoice, cancellation/resumption preserving paid access, partial refund preserving Premium+, full proration refund restoring Premium, repeat-refund idempotence, full initial-payment refund removing access without coin credit, and final cancellation. The application-user grants were tested with rolled-back writes. The price-reconciliation fix passed 52 focused tests. Both test invoices were fully refunded, the test subscription was cancelled, the original test webhook URL/events were restored, and the temporary namespace and port-forward were removed.
+
+The smoke test found that a plan-change response can contain the new variant with the old subscription-item price; the API now reports `pending` until reconciliation sees the matching price. Lemon Squeezy also returned `refunded_amount=2601` for a €26.00 invoice while reporting a full refund, formatted €26.00, and matching paid/refunded USD totals. Refund verification uses the provider's full-refund state; raw converted cents need not equal the original EUR cents exactly.
+
+This does not verify a real four-week renewal, PayPal confirmation, four-slot provider variants, the account-page UI, or the historical production migration chain. Production deployment and migration remain separate rollout steps.

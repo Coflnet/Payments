@@ -536,9 +536,13 @@ namespace Payments.Controllers
                 }
                 await MarkPaymentRefunded(data.Attributes.Identifier, refundedAmount / 100m, isFullRefund);
             }
-            else if (meta.EventName == "subscription_payment_success" && data.Attributes.Status == "paid")
+            else if ((meta.EventName is "subscription_payment_success" or "subscription_payment_recovered") && data.Attributes.Status == "paid")
             {
+                if (await db.PaymentRecords.AnyAsync(p => p.Provider == "lemonsqueezy"
+                    && p.IsSubscriptionPayment && p.ExternalTransactionId == data.Id))
+                    return Ok();
                 var effectiveCustomData = await subscriptionService.PaymentReceived(webhook);
+                var fullyRefunded = await db.RefundedSubscriptionInvoices.AnyAsync(i => i.InvoiceId == data.Id);
                 if (data.Attributes.Total > 0)
                 {
                     await paymentEventProducer.ProduceEvent(new PaymentEvent
@@ -549,7 +553,7 @@ namespace Payments.Controllers
                         Currency = data.Attributes.Currency,
                         PaymentMethod = data.Attributes.PaymentProcessor ?? "card",
                         PaymentProvider = "lemonsqueezy",
-                        PaymentProviderTransactionId = data.Attributes.Identifier,
+                        PaymentProviderTransactionId = data.Attributes.Identifier ?? "ls-invoice-" + data.Id,
                         Timestamp = data.Attributes.CreatedAt
                     });
                 }
@@ -572,13 +576,14 @@ namespace Payments.Controllers
                     Currency = data.Attributes.Currency?.ToUpper() ?? "USD",
                     Provider = "lemonsqueezy",
                     PaymentMethod = data.Attributes.PaymentProcessor ?? "card",
-                    ExternalOrderId = data.Attributes.Identifier,
+                    ExternalOrderId = data.Attributes.Identifier ?? "ls-invoice-" + data.Id,
                     ExternalTransactionId = data.Id,
                     ProductSlug = effectiveCustomData.ProductId.ToString(),
                     ProductId = effectiveCustomData.ProductId,
                     CoinAmount = effectiveCustomData.CoinAmount,
                     PaidAt = data.Attributes.CreatedAt,
-                    Status = PaymentRecordStatus.Confirmed,
+                    Status = fullyRefunded ? PaymentRecordStatus.Refunded : PaymentRecordStatus.Confirmed,
+                    RefundedAmount = fullyRefunded ? data.Attributes.Total / 100m : 0,
                     BuyerEmail = data.Attributes.UserEmail,
                     BuyerName = data.Attributes.UserName,
                     Locale = subUser?.Locale,
@@ -586,16 +591,19 @@ namespace Payments.Controllers
                     IsSubscriptionPayment = true
                 });
             }
-            else if (meta.EventName == "subscription_updated" || meta.EventName == "subscription_created")
+            else if (meta.EventName is "subscription_updated" or "subscription_plan_changed" or "subscription_created" or "subscription_cancelled"
+                or "subscription_resumed" or "subscription_expired" or "subscription_paused" or "subscription_unpaused")
                 await subscriptionService.UpdateSubscription(webhook);
             else if (meta.EventName == "subscription_payment_refunded")
             {
                 await subscriptionService.RefundPayment(webhook);
-                await MarkPaymentRefunded(data.Attributes.Identifier);
+                await MarkPaymentRefunded(data.Attributes.Identifier ?? "ls-invoice-" + data.Id,
+                    data.Attributes.RefundedAmount / 100m, data.Attributes.Refunded || data.Attributes.Status == "refunded"
+                        || (data.Attributes.Total > 0 && data.Attributes.RefundedAmount >= data.Attributes.Total));
             }
             else if (meta.EventName == "subscription_payment_failed")
             {
-                _logger.LogInformation("Subscription payment failed for {userId} {productId}", meta.CustomData.UserId, meta.CustomData.ProductId);
+                _logger.LogInformation("Subscription payment failed for {userId} {productId}", meta.CustomData?.UserId, meta.CustomData?.ProductId);
             }
             else
             {

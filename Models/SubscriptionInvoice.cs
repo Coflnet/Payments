@@ -62,6 +62,7 @@ public class SubscriptionInvoice
     /// Whether the invoice was refunded
     /// </summary>
     public bool Refunded { get; set; }
+    public int RefundedAmount { get; set; }
     
     /// <summary>
     /// Subtotal in cents
