@@ -17,6 +17,9 @@ public class TierSlot
     public string AssignedUserId { get; set; }
     [MaxLength(32)]
     public string MinecraftUuid { get; set; }
+    /// <summary>Lemon Squeezy subscription renewing this slot; null for coin purchases.</summary>
+    [MaxLength(64)]
+    public string SubscriptionId { get; set; }
     [ConcurrencyCheck]
     public long Version { get; set; }
 }

@@ -83,6 +83,20 @@ public class TierSlotServiceTests
     }
 
     [Test]
+    public async Task FourSlotBundleCosts27000AndCanBeAssignedToPurchaser()
+    {
+        bundle.SlotCount = 4;
+        bundle.Cost = 27000;
+        await db.SaveChangesAsync();
+        await Buy();
+        var owned = await slots.GetOwned("owner");
+        Assert.That(owned, Has.Length.EqualTo(4));
+        Assert.That((await users.GetOrCreate("owner")).Balance, Is.EqualTo(73000));
+        await slots.Assign("owner", owned[0].Id, new() { UserId = "owner", Version = owned[0].Version });
+        Assert.That((await users.GetAccessUntil("owner", new() { "premium_plus" }))["premium_plus"], Is.EqualTo(owned[0].Expires));
+    }
+
+    [Test]
     public async Task FriendReceivesAccessWithoutBillingEvidenceOrOwnership()
     {
         await Buy();

@@ -375,7 +375,7 @@ namespace Payments.Controllers
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true);
             
             // Handle trial options - validate user hasn't already used trial for this product
-            bool enableTrial = options?.EnableTrial ?? false;
+            bool enableTrial = product.SlotCount == 0 && (options?.EnableTrial ?? false);
             int trialLengthDays = Math.Min(Math.Max(options?.TrialLengthDays ?? 3, 1), 3); // Cap at 3 days
             
             if (enableTrial)

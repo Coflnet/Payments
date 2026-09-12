@@ -553,6 +553,93 @@ public class SubscriptionServiceTests
         Assert.That(exception.Message, Does.Contain("subscription 2369999 was not found"));
     }
 
+    [TestCase("premium_plus", 27000)]
+    [TestCase("premium", 7200)]
+    public async Task SlotSubscription_RenewsSameSeatsAndPreservesAssignments(string tier, int cost)
+    {
+        var owner = await userService.GetOrCreate("slot-owner");
+        await userService.GetOrCreate("slot-friend");
+        var product = await ConfigureSlotSubscription(tier, cost);
+        var initial = CreatePaymentWebhook(owner.ExternalId, product.Id, "30001");
+        await subscriptionService.PaymentReceived(initial);
+        var slots = new TierSlotService(context);
+        var seats = await slots.GetOwned(owner.ExternalId);
+        Assert.That(seats, Has.Length.EqualTo(4));
+        await slots.Assign(owner.ExternalId, seats[0].Id, new() { UserId = owner.ExternalId, Version = seats[0].Version });
+        await slots.Assign(owner.ExternalId, seats[1].Id, new() { UserId = "slot-friend", Version = seats[1].Version });
+        const string minecraft = "123456781234123412341234567890ab";
+        await slots.Assign(owner.ExternalId, seats[2].Id, new() { MinecraftUuid = minecraft, Version = seats[2].Version });
+        var before = await slots.GetOwned(owner.ExternalId);
+        context.ChangeTracker.Clear();
+
+        var renewal = CreatePaymentWebhook(owner.ExternalId, product.Id, "30001", initial.Data.Attributes.UpdatedAt.AddDays(28));
+        await subscriptionService.PaymentReceived(renewal);
+
+        var after = await slots.GetOwned(owner.ExternalId);
+        Assert.That(after.Select(s => s.Id), Is.EqualTo(before.Select(s => s.Id)));
+        Assert.That(after.Select(s => s.AssignedUserId), Is.EqualTo(before.Select(s => s.AssignedUserId)));
+        Assert.That(after.Select(s => s.MinecraftUuid), Is.EqualTo(before.Select(s => s.MinecraftUuid)));
+        Assert.That(after.Select(s => s.Expires), Is.EqualTo(before.Select(s => s.Expires.AddDays(28))));
+        Assert.That(after.Select(s => s.Version), Is.EqualTo(before.Select(s => s.Version + 1)));
+        Assert.That((await userService.GetAccessUntil(owner.ExternalId, new() { tier }))[tier], Is.EqualTo(after[0].Expires));
+        Assert.That(await context.OwnerShips.CountAsync(), Is.Zero);
+        Assert.That((await userService.GetOrCreate(owner.ExternalId)).Balance, Is.Zero);
+        Assert.That(await context.TierSlotGrants.CountAsync(), Is.EqualTo(8));
+
+        // Retrying the same renewal must not add time, seats, or coins.
+        Assert.ThrowsAsync<TransactionService.DupplicateTransactionException>(() => subscriptionService.PaymentReceived(renewal));
+        Assert.That((await slots.GetOwned(owner.ExternalId)).Select(s => s.Expires), Is.EqualTo(after.Select(s => s.Expires)));
+        Assert.That(await context.TierSlotGrants.CountAsync(), Is.EqualTo(8));
+        Assert.That((await userService.GetOrCreate(owner.ExternalId)).Balance, Is.Zero);
+    }
+
+    [Test]
+    public async Task SlotSubscriptions_WithSameProductRemainIndependent()
+    {
+        var owner = await userService.GetOrCreate("multiple-subscriptions");
+        var product = await ConfigureSlotSubscription("premium_plus", 27000);
+        await subscriptionService.UpdateSubscription(CreateNonPayPalSubscriptionCreatedWebhook(owner.ExternalId, product.Id, DateTime.UtcNow.AddDays(28), "30002"));
+        await subscriptionService.UpdateSubscription(CreateNonPayPalSubscriptionCreatedWebhook(owner.ExternalId, product.Id, DateTime.UtcNow.AddDays(28), "30003"));
+        await subscriptionService.PaymentReceived(CreatePaymentWebhook(owner.ExternalId, product.Id, "30002"));
+        await subscriptionService.PaymentReceived(CreatePaymentWebhook(owner.ExternalId, product.Id, "30003"));
+        var other = await context.TierSlots.Where(s => s.SubscriptionId == "30003").Select(s => s.Expires).ToArrayAsync();
+        var renewal = CreatePaymentWebhook(owner.ExternalId, product.Id, "30002", DateTime.UtcNow.AddDays(28));
+        await subscriptionService.PaymentReceived(new Webhook(new Meta(false, "subscription_payment_success", null), renewal.Data));
+
+        Assert.That(await context.Subscriptions.CountAsync(), Is.EqualTo(2));
+        Assert.That(await context.TierSlots.CountAsync(), Is.EqualTo(8));
+        Assert.That(await context.TierSlots.Where(s => s.SubscriptionId == "30003").Select(s => s.Expires).ToArrayAsync(), Is.EqualTo(other));
+        Assert.That(await context.TierSlots.CountAsync(s => s.SubscriptionId == "30002" && s.Expires > DateTime.UtcNow.AddDays(55)), Is.EqualTo(4));
+    }
+
+    [Test]
+    public async Task SlotSubscription_PayPalInitialPaymentIsNotGrantedTwice()
+    {
+        var owner = await userService.GetOrCreate("paypal-slots");
+        var product = await ConfigureSlotSubscription("premium_plus", 27000);
+        var created = CreatePayPalSubscriptionCreatedWebhook(owner.ExternalId, product.Id, DateTime.UtcNow.AddDays(28), "30004");
+        await subscriptionService.UpdateSubscription(created);
+        var before = await context.TierSlots.Select(s => s.Expires).ToArrayAsync();
+        await subscriptionService.UpdateSubscription(created);
+        await subscriptionService.PaymentReceived(CreatePayPalPaymentSuccessWebhook(owner.ExternalId, product.Id, "30004"));
+
+        Assert.That(before, Has.Length.EqualTo(4));
+        Assert.That(await context.TierSlots.Select(s => s.Expires).ToArrayAsync(), Is.EqualTo(before));
+        Assert.That(await context.TierSlotGrants.CountAsync(), Is.EqualTo(4));
+        Assert.That((await userService.GetOrCreate(owner.ExternalId)).Balance, Is.Zero);
+    }
+
+    private async Task<TopUpProduct> ConfigureSlotSubscription(string tier, int cost)
+    {
+        var product = await context.TopUpProducts.FirstAsync();
+        product.SlotCount = 4;
+        product.SlotTier = tier;
+        product.Cost = cost;
+        product.OwnershipSeconds = 2419200;
+        await context.SaveChangesAsync();
+        return product;
+    }
+
     #region Helper Methods
 
     private Webhook CreateTrialSubscriptionWebhook(string userId, int productId, DateTime trialEndsAt, string subscriptionId = "test-sub-123")
@@ -564,7 +651,7 @@ public class SubscriptionServiceTests
         return new Webhook(meta, data);
     }
 
-    private Webhook CreatePaymentWebhook(string userId, int productId, string subscriptionId)
+    private Webhook CreatePaymentWebhook(string userId, int productId, string subscriptionId, DateTime? paymentTime = null)
     {
         var customData = new CustomData(userId, productId, 1800, "True");
         var meta = new Meta(false, "subscription_payment_success", customData);
@@ -598,7 +685,7 @@ public class SubscriptionServiceTests
             firstOrderItem: null,
             urls: null,
             createdAt: DateTime.UtcNow,
-            updatedAt: DateTime.UtcNow,
+            updatedAt: paymentTime ?? DateTime.UtcNow,
             testMode: false,
             subscriptionId: long.Parse(subscriptionId),
             renewsAt: DateTime.UtcNow.AddDays(30),

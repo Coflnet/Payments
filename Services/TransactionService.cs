@@ -437,7 +437,8 @@ namespace Coflnet.Payments.Services
             await PurchaseService(productSlug, userId, count, reference, dbProduct);
         }
 
-        public async Task PurchaseService(string productSlug, string userId, int count, string reference, Product dbProduct)
+        public async Task PurchaseService(string productSlug, string userId, int count, string reference, Product dbProduct,
+            string subscriptionId = null)
         {
             await PurchaseServiceWithDeclaration(
                 productSlug,
@@ -445,7 +446,8 @@ namespace Coflnet.Payments.Services
                 count,
                 reference,
                 dbProduct,
-                null);
+                null,
+                subscriptionId);
         }
 
         public async Task PurchaseServiceDeclared(
@@ -491,7 +493,8 @@ namespace Coflnet.Payments.Services
             int count,
             string reference,
             Product dbProduct,
-            ServicePurchaseRequest request)
+            ServicePurchaseRequest request,
+            string subscriptionId = null)
         {
             if (!dbProduct.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("product is not a service");
@@ -656,7 +659,8 @@ namespace Coflnet.Payments.Services
                     adjustedProduct,
                     owns,
                     request == null ? null : now,
-                    slotIds: request?.SlotIds);
+                    slotIds: request?.SlotIds,
+                    subscriptionId: subscriptionId);
                 if (evidence != null)
                 {
                     await EnqueueServicePurchaseConfirmation(
@@ -958,7 +962,8 @@ namespace Coflnet.Payments.Services
             bool commitTransaction,
             DateTime? evaluationAtUtc = null,
             bool publishEvent = true,
-            long[] slotIds = null)
+            long[] slotIds = null,
+            string subscriptionId = null)
         {
             var existingOwnerShip = user.Owns?.Where(p => p.Product == dbProduct) ?? new List<OwnerShip>();
             if (existingOwnerShip.Where(p => p.Expires > DateTime.UtcNow + TimeSpan.FromDays(3000)).Any())
@@ -989,7 +994,7 @@ namespace Coflnet.Payments.Services
             var time = TimeSpan.FromSeconds(adjustedProduct.OwnershipSeconds * count);
             if (dbProduct.SlotCount > 0)
                 await new TierSlotService(db).ApplyPurchase(user, dbProduct, transactionEvent.Id,
-                    count, adjustedProduct.OwnershipSeconds, slotIds);
+                    count, adjustedProduct.OwnershipSeconds, slotIds, subscriptionId);
             foreach (var item in allProductsToExtend)
             {
                 var existingExpiry = await userService.GetLongest(userId, new() { item.Slug });

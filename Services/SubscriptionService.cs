@@ -74,7 +74,7 @@ public class SubscriptionService
         {
             product = await context.TopUpProducts.FindAsync(customData.ProductId);
             subscription = await context.Subscriptions
-                .Where(s => s.User.ExternalId == userId && s.Product == product)
+                .Where(s => s.User.ExternalId == userId && s.ExternalId == webhook.Data.Id)
                 .FirstOrDefaultAsync();
         }
         else
@@ -335,6 +335,8 @@ public class SubscriptionService
     private async Task TryExtendSubscription(Webhook data, CustomData effectiveCustomData)
     {
         var product = context.TopUpProducts.Find(effectiveCustomData.ProductId);
+        var subscriptionId = data.Data.Type == "subscription-invoices"
+            ? data.Data.Attributes.SubscriptionId.ToString() : data.Data.Id;
         var referenceId = data.Data.Id + data.Data.Attributes.UpdatedAt.Date.ToString("yyyy-MM-dd");
         
         // Skip extension for trial subscriptions - they don't pay yet
@@ -362,8 +364,12 @@ public class SubscriptionService
         else
         {
             // is subscription update, check current expiry and abbort if its more than 1 day in the future already
-            var subscription = await context.OwnerShips.Where(s => s.User.ExternalId == effectiveCustomData.UserId && s.Product.Id == effectiveCustomData.ProductId).FirstOrDefaultAsync();
-            if (subscription != null && subscription.Expires > data.Data.Attributes.RenewsAt.Value.AddDays(-2))
+            var expires = product.SlotCount > 0
+                ? await context.TierSlots.Where(s => s.User.ExternalId == effectiveCustomData.UserId && s.SubscriptionId == subscriptionId)
+                    .Select(s => (DateTime?)s.Expires).MinAsync()
+                : await context.OwnerShips.Where(s => s.User.ExternalId == effectiveCustomData.UserId && s.Product.Id == effectiveCustomData.ProductId)
+                    .Select(s => (DateTime?)s.Expires).FirstOrDefaultAsync();
+            if (expires > data.Data.Attributes.RenewsAt?.AddDays(-2))
             {
                 logger.LogInformation("Subscription already extended, skipping");
                 return;
@@ -381,7 +387,8 @@ public class SubscriptionService
         {
             await transactionService.AddTopUp(effectiveCustomData.ProductId, effectiveCustomData.UserId, referenceId + "-topup");
             logger.LogInformation("starting purchase");
-            await transactionService.PurchaseService(product.Slug, effectiveCustomData.UserId, 1, referenceId, product);
+            await transactionService.PurchaseService(product.Slug, effectiveCustomData.UserId, 1, referenceId, product,
+                subscriptionId: subscriptionId);
             await transaction.CommitAsync();
             logger.LogInformation($"Payment received for user {effectiveCustomData.UserId} for product {effectiveCustomData.ProductId} extended by {product.OwnershipSeconds}");
         }

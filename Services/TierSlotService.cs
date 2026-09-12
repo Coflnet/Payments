@@ -60,7 +60,7 @@ public class TierSlotService(PaymentContext db)
     }
 
     internal async Task ApplyPurchase(User owner, Product product, long transactionId,
-        int count, long seconds, long[] slotIds)
+        int count, long seconds, long[] slotIds, string subscriptionId = null)
     {
         if (product.SlotCount < 1 || product.SlotCount > 100 || seconds <= 0
             || product.SlotTier is not ("starter_premium" or "premium" or "premium_plus"))
@@ -68,6 +68,12 @@ public class TierSlotService(PaymentContext db)
         var capacity = checked(product.SlotCount * count);
         if (capacity > 100)
             throw new ApiException("at most 100 slots can be purchased at once");
+        if (subscriptionId != null)
+        {
+            var existing = await db.TierSlots.Where(s => s.UserId == owner.Id && s.SubscriptionId == subscriptionId)
+                .Select(s => s.Id).ToArrayAsync();
+            slotIds = existing.Length == 0 ? null : existing;
+        }
         var slots = new System.Collections.Generic.List<TierSlot>();
         if (slotIds != null)
         {
@@ -81,7 +87,7 @@ public class TierSlotService(PaymentContext db)
         else
         {
             slots = Enumerable.Range(0, capacity).Select(_ => new TierSlot
-                { UserId = owner.Id, Tier = product.SlotTier }).ToList();
+                { UserId = owner.Id, Tier = product.SlotTier, SubscriptionId = subscriptionId }).ToList();
             db.TierSlots.AddRange(slots);
         }
         foreach (var slot in slots)
