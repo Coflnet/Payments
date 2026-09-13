@@ -45,7 +45,7 @@ public partial class SubscriptionService
     internal async Task<IEnumerable<UserSubscription>> GetUserSubscriptions(string userId)
     {
         var all = await context.Subscriptions
-            .Where(s => s.User == context.Users.Where(u => u.ExternalId == userId).FirstOrDefault())
+            .Where(s => s.User.ExternalId == userId)
             .Include(s => s.Product).ToListAsync();
         var dupplicate = all.GroupBy(s => s.ExternalId).Where(s => s.Count() > 1).FirstOrDefault()?.OrderByDescending(f => f.UpdatedAt).Skip(1).FirstOrDefault();
         if( dupplicate != null)
