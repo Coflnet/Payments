@@ -90,8 +90,10 @@ namespace Coflnet.Payments.Services
         /// refund was already applied, or <c>null</c> when the original top-up
         /// could not be found.
         /// </returns>
-        public async Task<decimal?> ApplyTopUpRefund(string reference, int totalAmount, int refundedAmount)
+        public async Task<decimal?> ApplyTopUpRefund(string reference, decimal totalAmount, decimal refundedAmount, string provider)
         {
+            if (string.IsNullOrWhiteSpace(provider))
+                throw new ArgumentException("A refund provider is required", nameof(provider));
             if (string.IsNullOrWhiteSpace(reference))
                 throw new ArgumentException("A refund reference is required", nameof(reference));
             if (totalAmount <= 0)
@@ -107,9 +109,9 @@ namespace Coflnet.Payments.Services
                     .Include(t => t.Product)
                     .Where(t => t.Reference == reference
                         && t.Amount > 0
-                        && t.Product.Type.HasFlag(Product.ProductType.TOP_UP))
-                    .OrderBy(t => t.Id)
-                    .FirstOrDefaultAsync();
+                        && t.Product.Type.HasFlag(Product.ProductType.TOP_UP)
+                        && db.TopUpProducts.Any(p => p.Id == t.ProductId && p.ProviderSlug == provider))
+                    .SingleOrDefaultAsync();
 
                 if (original == null)
                     return;
@@ -122,6 +124,7 @@ namespace Coflnet.Payments.Services
                         original.Amount * boundedRefundAmount / totalAmount,
                         0,
                         MidpointRounding.AwayFromZero);
+                targetRefund = Math.Min(targetRefund, original.Amount);
 
                 var refundReferencePrefix = $"refund transaction {original.Id} amount ";
                 var legacyFullRefundReference = $"revert transaction {original.Id}";
@@ -144,7 +147,7 @@ namespace Coflnet.Payments.Services
                     refundProduct,
                     original.User,
                     -refundDelta,
-                    refundReferencePrefix + boundedRefundAmount);
+                    refundReferencePrefix + boundedRefundAmount.ToString(CultureInfo.InvariantCulture));
                 await transactionEventProducer.ProduceEvent(refundEvent);
                 appliedAmount = refundDelta;
             });
@@ -1051,6 +1054,10 @@ namespace Coflnet.Payments.Services
                 .FirstOrDefaultAsync();
             if (transaction == null)
                 throw new ApiException("Transaction not found");
+            if (transaction.Product.Slug is "transfer" or "revert")
+                throw new ApiException("Transfers and reversals cannot be reverted as purchases");
+            if (transaction.Product.Type.HasFlag(Product.ProductType.TOP_UP) && transaction.Amount <= 0)
+                throw new ApiException("A top-up refund must deduct a positive top-up credit");
 
             var dbProduct = await GetProduct("revert");
             var reference = $"revert transaction {transactionId}";

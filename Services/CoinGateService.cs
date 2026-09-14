@@ -130,7 +130,7 @@ public class CoinGateService
     /// </summary>
     /// <param name="orderId">The CoinGate order ID</param>
     /// <returns>The order details</returns>
-    public async Task<CoinGateOrderResponse> GetOrder(long orderId)
+    public virtual async Task<CoinGateOrderResponse> GetOrder(long orderId)
     {
         if (!IsConfigured)
         {
@@ -173,6 +173,13 @@ public class CoinGateService
             // Fetch the order directly from CoinGate API to verify
             var order = await GetOrder(callback.Id);
 
+            if (order.Id != callback.Id || order.OrderId != callback.OrderId
+                || !string.Equals(order.PriceCurrency, callback.PriceCurrency, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("CoinGate callback verification failed: Order identity or currency mismatch");
+                return false;
+            }
+
             // Verify the order matches the callback data
             if (order.Status != callback.Status)
             {
@@ -211,7 +218,11 @@ public class CoinGateService
     /// </summary>
     private string GenerateCallbackToken(string orderId, string userId, int productId, decimal coinAmount)
     {
-        var secret = _config["COINGATE:CALLBACK_SECRET"] ?? _apiToken;
+        var secret = _config["COINGATE:CALLBACK_SECRET"];
+        if (string.IsNullOrWhiteSpace(secret))
+            secret = _apiToken;
+        if (string.IsNullOrWhiteSpace(secret))
+            throw new InvalidOperationException("CoinGate callback verification requires a secret");
         var data = $"{orderId}:{userId}:{productId}:{coinAmount}:{secret}";
         
         using var sha256 = System.Security.Cryptography.SHA256.Create();

@@ -23,6 +23,9 @@ using System.Security.Cryptography;
 using System.Text;
 using Coflnet.Payments.Models.LemonSqueezy;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Globalization;
+using System.Net.Http;
 
 namespace Payments.Controllers
 {
@@ -40,6 +43,7 @@ namespace Payments.Controllers
         private TransactionService transactionService;
         private IPaymentEventProducer paymentEventProducer;
         private readonly PayPalHttpClient paypalClient;
+        private readonly string paypalWebhookId;
         private readonly Coflnet.Payments.Services.SubscriptionService subscriptionService;
         private readonly GooglePlayService googlePlayService;
         private readonly Coflnet.Payments.Services.ProductService productService;
@@ -69,6 +73,7 @@ namespace Payments.Controllers
                 throw new InvalidOperationException("Lemon Squeezy webhook secret not set");
             this.transactionService = transactionService;
             this.paypalClient = paypalClient;
+            paypalWebhookId = config["PAYPAL:WEBHOOK_ID"];
             this.paymentEventProducer = paymentEventProducer;
             this.subscriptionService = subscriptionService;
             this._creatorCodeService = creatorCodeService;
@@ -282,18 +287,13 @@ namespace Payments.Controllers
                     var intentId = charge.PaymentIntentId;
                     _logger.LogInformation("stripe charge refunded " + intentId);
                     var payment = await db.PaymentRequests.Where(t => t.SessionId == intentId).FirstOrDefaultAsync();
-                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == intentId).Select(t => new { UserId = t.User.ExternalId, t.Id }).FirstOrDefaultAsync();
-                    if (transaction != null)
-                    {
-                        _logger.LogInformation($"reverting purchase {transaction.Id} from {transaction.UserId} because of refund");
-                        await transactionService.RevertPurchase(transaction.UserId, transaction.Id);
-                    }
-                    if (payment != null)
+                    await transactionService.ApplyTopUpRefund(intentId, charge.Amount, charge.AmountRefunded, "stripe");
+                    if (payment != null && charge.AmountRefunded >= charge.Amount)
                     {
                         payment.State = PaymentRequest.Status.REFUNDED;
                         await db.SaveChangesAsync();
                     }
-                    await MarkPaymentRefunded(intentId);
+                    await MarkPaymentRefunded(intentId, "stripe", charge.AmountRefunded / 100m, charge.AmountRefunded >= charge.Amount);
                 }
                 else
                 {
@@ -511,14 +511,14 @@ namespace Payments.Controllers
                             "Recorded partial refund for subscription order {OrderId}; subscription access is unchanged",
                             data.Attributes.Identifier);
                     }
-                    await MarkPaymentRefunded(data.Attributes.Identifier, refundedAmount / 100m, isFullRefund);
+                    await MarkPaymentRefunded(data.Attributes.Identifier, "lemonsqueezy", refundedAmount / 100m, isFullRefund);
                     return Ok();
                 }
 
                 var balanceDeduction = await transactionService.ApplyTopUpRefund(
                     data.Attributes.Identifier,
                     data.Attributes.Total,
-                    refundedAmount);
+                    refundedAmount, "lemonsqueezy");
                 if (balanceDeduction.HasValue)
                 {
                     _logger.LogInformation(
@@ -534,7 +534,7 @@ namespace Payments.Controllers
                         "No top-up transaction found for Lemon Squeezy refund order {OrderId}; balance was not changed",
                         data.Attributes.Identifier);
                 }
-                await MarkPaymentRefunded(data.Attributes.Identifier, refundedAmount / 100m, isFullRefund);
+                await MarkPaymentRefunded(data.Attributes.Identifier, "lemonsqueezy", refundedAmount / 100m, isFullRefund);
             }
             else if ((meta.EventName is "subscription_payment_success" or "subscription_payment_recovered") && data.Attributes.Status == "paid")
             {
@@ -597,7 +597,7 @@ namespace Payments.Controllers
             else if (meta.EventName == "subscription_payment_refunded")
             {
                 await subscriptionService.RefundPayment(webhook);
-                await MarkPaymentRefunded(data.Attributes.Identifier ?? "ls-invoice-" + data.Id,
+                await MarkPaymentRefunded(data.Attributes.Identifier ?? "ls-invoice-" + data.Id, "lemonsqueezy",
                     data.Attributes.RefundedAmount / 100m, data.Attributes.Refunded || data.Attributes.Status == "refunded"
                         || (data.Attributes.Total > 0 && data.Attributes.RefundedAmount >= data.Attributes.Total));
             }
@@ -775,8 +775,8 @@ namespace Payments.Controllers
                         try
                         {
                             var reference = $"coingate:{callback.Id}";
-                            await RevertTopUpWithReference(reference);
-                            await MarkPaymentRefunded(callback.OrderId);
+                            await transactionService.ApplyTopUpRefund(reference, 1, 1, "coingate");
+                            await MarkPaymentRefunded(callback.OrderId, "coingate");
                         }
                         catch (Exception ex)
                         {
@@ -825,8 +825,11 @@ namespace Payments.Controllers
             }
             var topupSlug = purchase?.Reference + "-topup";
             // because the topup 
-            await RevertTopUpWithReference(topupSlug);
-            await RevertTopUpWithReference(purchase.Reference, true);
+            await transactionService.WithTransactionAsync(async (tx, owns) =>
+            {
+                await RevertTopUpWithReference(topupSlug, webhook.Meta.CustomData.UserId);
+                await RevertTopUpWithReference(purchase.Reference, webhook.Meta.CustomData.UserId, true);
+            });
             _logger.LogInformation($"Reverted subscription payment for {webhook.Meta.CustomData.UserId} {webhook.Meta.CustomData.ProductId} {purchase?.Reference}");
         }
 
@@ -850,14 +853,27 @@ namespace Payments.Controllers
             {
                 _logger.LogInformation("reading json");
                 json = await new StreamReader(Request.Body).ReadToEndAsync();
-                var webhookResult = Newtonsoft.Json.JsonConvert.DeserializeObject<PayPalWebhookData>(json);
+                var webhook = JObject.Parse(json, new JsonLoadSettings { DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error });
+                if (!await VerifyPayPalWebhook(json))
+                    return Unauthorized();
+                var webhookResult = webhook.ToObject<PayPalWebhookData>();
+                if (string.IsNullOrWhiteSpace(webhookResult.Id) || !ValidPayPalId(webhookResult.Resource?.Id))
+                    return BadRequest();
                 _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(webhookResult));
                 if (webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
                 {
-                    var payerAddress = Newtonsoft.Json.Linq.JObject.Parse(json).SelectToken("resource.payer.address");
-                    var country = payerAddress?["country_code"]?.ToObject<string>()?.ToUpperInvariant();
-                    var postalCode = payerAddress?["postal_code"]?.ToObject<string>();
-                    var state = payerAddress?["admin_area_1"]?.ToObject<string>();
+                    var approved = (await paypalClient.Execute(new OrdersGetRequest(webhookResult.Resource.Id))).Result<Order>();
+                    if (approved.Id != webhookResult.Resource.Id)
+                        return BadRequest();
+                    if (approved.Status == "COMPLETED")
+                        return Ok();
+                    if (approved.Status != "APPROVED")
+                        return BadRequest();
+                    webhookResult.Resource = approved;
+                    var payerAddress = approved.Payer?.AddressPortable;
+                    var country = payerAddress?.CountryCode?.ToUpperInvariant();
+                    var postalCode = payerAddress?.PostalCode;
+                    var state = payerAddress?.AdminArea1;
                     var userId = webhookResult.Resource.PurchaseUnits[0].CustomId.Split(';')[2];
                     var user = db.Users.Where(u => u.ExternalId == userId).FirstOrDefault();
                     if (user != null && user.Country != country)
@@ -891,63 +907,60 @@ namespace Payments.Controllers
                 }
                 else if (webhookResult.EventType == "PAYMENT.CAPTURE.COMPLETED")
                 {
-                    dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
-                    var id = (string)data.resource.supplementary_data.related_ids.order_id;
-
-                    var refundableId = webhookResult.Resource.Links.Where(l => l.Rel == "self").First().Href.Split('/').Last();
-                    _logger.LogInformation("received confirmation for purchase " + id);
-                    var existing = await db.FiniteTransactions.Where(t => t.Reference == refundableId).FirstOrDefaultAsync();
-                    if (existing != null)
-                    {
-                        _logger.LogInformation($"already have transaction for {refundableId} {existing.Id}");
-                        return Ok();
-                    }
-                    var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).FirstOrDefaultAsync();
-                    referenceId = refundableId;
-                    if (transaction != null)
-                    {
-                        transaction.Reference = refundableId;
-                        await db.SaveChangesAsync();
-                        _logger.LogInformation($"updated transaction {transaction.Id} with refundable id {refundableId}");
-                    }
-                    else
-                    {
-                        _logger.LogInformation($"no transaction found for {id}");
-                    }
-
+                    referenceId = webhookResult.Resource.Id;
                 }
                 else if (webhookResult.EventType == "PAYMENT.CAPTURE.REFUNDED")
                 {
-                    dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
-                    var id = webhookResult.Resource.Links.Where(l => l.Rel == "up").First().Href.Split('/').Last();
-                    FiniteTransaction transaction = await RevertTopUpWithReference(id);
-                    _logger.LogInformation($"refunded payment, reverting topup {id} from {transaction.User.ExternalId} because of refund");
-                    await MarkPaymentRefunded(id);
+                    // Only PayPal's authenticated API response may identify the original capture.
+                    var refund = (await paypalClient.Execute(new PayPalCheckoutSdk.Payments.RefundsGetRequest(webhookResult.Resource.Id)))
+                        .Result<PayPalCheckoutSdk.Payments.Refund>();
+                    if (refund.Id != webhookResult.Resource.Id || refund.Status != "COMPLETED")
+                        return BadRequest();
+                    var captureId = PayPalCaptureId(refund.Links?.SingleOrDefault(l => l.Rel == "up")?.Href);
+                    var capture = (await paypalClient.Execute(new PayPalCheckoutSdk.Payments.CapturesGetRequest(captureId)))
+                        .Result<PayPalCheckoutSdk.Payments.Capture>();
+                    if (capture.Id != captureId || capture.Status is not ("REFUNDED" or "PARTIALLY_REFUNDED"))
+                        return BadRequest();
+                    var total = decimal.Parse(capture.Amount.Value, CultureInfo.InvariantCulture);
+                    var refunded = refund.SellerPayableBreakdown?.TotalRefundedAmount;
+                    if (refund.Amount?.CurrencyCode != capture.Amount.CurrencyCode
+                        || (capture.Status != "REFUNDED" && refunded?.CurrencyCode != capture.Amount.CurrencyCode))
+                        return BadRequest();
+                    var refundedAmount = capture.Status == "REFUNDED"
+                        ? total : decimal.Parse(refunded.Value, CultureInfo.InvariantCulture);
+                    if (refundedAmount <= 0 || refundedAmount > total)
+                        return BadRequest();
+                    var deduction = await transactionService.ApplyTopUpRefund(captureId, total, refundedAmount, "paypal");
+                    if (!deduction.HasValue)
+                        return BadRequest(); // Retry if the original credit has not arrived yet.
+                    await MarkPaymentRefunded(captureId, "paypal", refundedAmount, refundedAmount == total);
                     return Ok();
                 }
                 else
                 {
-                    _logger.LogWarning("paypal is not comlete type of " + webhookResult.EventType);
                     return Ok();
                 }
 
-                //3. Call PayPal to get the transaction
-                PayPalHttp.HttpResponse response;
-                try
-                {
-                    dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
-                    var id = (string)data.resource.supplementary_data.related_ids.order_id;
-                    OrdersGetRequest getRequest = new OrdersGetRequest(id);
-                    _logger.LogInformation($"getting order  {id} from " + webhookResult.Resource.Id);
-                    response = paypalClient.Execute(getRequest).Result;
-                }
-                catch (Exception e)
-                {
-                    _logger.LogError(e, "payPalPayment");
-                    throw new ApiException("The provided orderId has not vaid payment asociated");
-                }
-                //4. Save the transaction in your database. Implement logic to save transaction to your database for future reference.
-                var order = response.Result<PayPalCheckoutSdk.Orders.Order>();
+                var verifiedCapture = (await paypalClient.Execute(new PayPalCheckoutSdk.Payments.CapturesGetRequest(referenceId)))
+                    .Result<PayPalCheckoutSdk.Payments.Capture>();
+                if (verifiedCapture.Id != referenceId)
+                    return BadRequest();
+                // A delayed completion must never grant coins after the capture was refunded.
+                if (verifiedCapture.Status is "REFUNDED" or "PARTIALLY_REFUNDED")
+                    return Ok();
+                if (verifiedCapture.Status != "COMPLETED")
+                    return BadRequest();
+                var orderId = webhook.SelectToken("resource.supplementary_data.related_ids.order_id")?.Value<string>();
+                if (!ValidPayPalId(orderId))
+                    return BadRequest();
+                var order = (await paypalClient.Execute(new OrdersGetRequest(orderId))).Result<Order>();
+                if (order.Id != orderId || order.PurchaseUnits?.Count != 1
+                    || order.PurchaseUnits[0].Payments?.Captures?.SingleOrDefault()?.Id != referenceId
+                    || order.PurchaseUnits[0].Payments.Captures[0].Status != "COMPLETED"
+                    || order.PurchaseUnits[0].AmountWithBreakdown.CurrencyCode != verifiedCapture.Amount.CurrencyCode
+                    || decimal.Parse(order.PurchaseUnits[0].AmountWithBreakdown.Value, CultureInfo.InvariantCulture)
+                        != decimal.Parse(verifiedCapture.Amount.Value, CultureInfo.InvariantCulture))
+                    return BadRequest();
                 _logger.LogInformation("Retrieved Order Status");
                 AmountWithBreakdown amount = order.PurchaseUnits[0].AmountWithBreakdown;
                 _logger.LogInformation("Total Amount: {0} {1}", amount.CurrencyCode, amount.Value);
@@ -962,14 +975,34 @@ namespace Payments.Controllers
                 //if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.UtcNow.Subtract(TimeSpan.FromHours(1)))
                 //    throw new Exception("the provied order id is too old, please contact support for manual review");
 
-                var transactionId = order.Links.Where(l => l.Rel == "self").First().Href.Split('/').Last();
+                var transactionId = order.Id;
                 var product = order.PurchaseUnits[0];
                 var topupInfo = product.CustomId.Split(';');
                 _logger.LogInformation($"user {product.ReferenceId} purchased '{product.CustomId}' via PayPal {transactionId}");
                 var exactCoinAmount = 0;
                 if (topupInfo.Length >= 2)
                     int.TryParse(topupInfo[1], out exactCoinAmount);
-                await transactionService.AddTopUp(int.Parse(topupInfo[0]), product.ReferenceId, referenceId, exactCoinAmount);
+                var productId = int.Parse(topupInfo[0]);
+                if (!await db.TopUpProducts.AnyAsync(p => p.Id == productId && p.ProviderSlug == "paypal")
+                    || topupInfo.Length != 3 || topupInfo[2] != product.ReferenceId)
+                    return BadRequest();
+                var alreadyCredited = false;
+                await transactionService.WithTransactionAsync(async (tx, owns) =>
+                {
+                    var existing = await db.FiniteTransactions.SingleOrDefaultAsync(t =>
+                        (t.Reference == referenceId || t.Reference == order.Id)
+                        && t.ProductId == productId && t.User.ExternalId == product.ReferenceId && t.Amount > 0);
+                    if (existing != null)
+                    {
+                        existing.Reference = referenceId;
+                        await db.SaveChangesAsync();
+                        alreadyCredited = true;
+                        return;
+                    }
+                    await transactionService.AddTopUp(productId, product.ReferenceId, referenceId, exactCoinAmount);
+                });
+                if (alreadyCredited)
+                    return Ok();
 
                 await paymentEventProducer.ProduceEvent(new PaymentEvent
                 {
@@ -1036,9 +1069,54 @@ namespace Payments.Controllers
             return Ok();
         }
 
-        private async Task<FiniteTransaction> RevertTopUpWithReference(string id, bool revertTime = false)
+        private async Task<bool> VerifyPayPalWebhook(string json)
         {
-            var transaction = await db.FiniteTransactions.Where(t => t.Reference == id).Include(t => t.User).FirstOrDefaultAsync();
+            if (string.IsNullOrWhiteSpace(paypalWebhookId))
+                throw new InvalidOperationException("PAYPAL:WEBHOOK_ID is required to accept PayPal webhooks");
+            var body = new JObject { ["webhook_id"] = paypalWebhookId, ["webhook_event"] = new JRaw(json) };
+            foreach (var field in new[] { "auth_algo", "cert_url", "transmission_id", "transmission_sig", "transmission_time" })
+            {
+                var header = Request.Headers["PAYPAL-" + field.Replace('_', '-')];
+                if (header.Count != 1 || string.IsNullOrWhiteSpace(header[0]))
+                    return false;
+                body[field] = header[0];
+            }
+            // Post the entire event to PayPal; never fetch a caller-supplied certificate URL locally.
+            using var request = new PayPalHttp.HttpRequest("/v1/notifications/verify-webhook-signature", HttpMethod.Post, typeof(PayPalVerification))
+            {
+                Content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json")
+            };
+            var response = await paypalClient.Execute(request);
+            return response.Result<PayPalVerification>()?.Status == "SUCCESS";
+        }
+
+        private static bool ValidPayPalId(string id) => !string.IsNullOrWhiteSpace(id)
+            && id.Length <= 64 && id.All(c => char.IsAsciiLetterOrDigit(c) || c == '-');
+
+        private static string PayPalCaptureId(string apiLink)
+        {
+            const string prefix = "/v2/payments/captures/";
+            if (!Uri.TryCreate(apiLink, UriKind.Absolute, out var uri)
+                || !uri.AbsolutePath.StartsWith(prefix, StringComparison.Ordinal)
+                || !ValidPayPalId(uri.AbsolutePath[prefix.Length..]))
+                throw new ApiException("PayPal refund has no capture reference");
+            // Only the ID is used in a fixed SDK request to the configured PayPal environment.
+            return uri.AbsolutePath[prefix.Length..];
+        }
+
+        [DataContract]
+        public class PayPalVerification
+        {
+            [DataMember(Name = "verification_status")]
+            public string Status { get; set; }
+        }
+
+        private async Task<FiniteTransaction> RevertTopUpWithReference(string id, string userId, bool revertTime = false)
+        {
+            var transaction = await db.FiniteTransactions.Where(t => t.Reference == id && t.User.ExternalId == userId)
+                .Include(t => t.User).Include(t => t.Product).SingleOrDefaultAsync();
+            if (transaction == null || (!revertTime && (transaction.Amount <= 0 || !transaction.Product.Type.HasFlag(Coflnet.Payments.Models.Product.ProductType.TOP_UP))))
+                throw new ApiException("No positive top-up found for refund");
             await transactionService.RevertPurchase(transaction.User.ExternalId, transaction.Id, revertTime);
             return transaction;
         }
@@ -1725,12 +1803,12 @@ namespace Payments.Controllers
         /// <summary>
         /// Marks a payment record as refunded by external order ID
         /// </summary>
-        private async Task MarkPaymentRefunded(string externalOrderId, decimal? refundedAmount = null, bool isFullRefund = true)
+        private async Task MarkPaymentRefunded(string externalOrderId, string provider, decimal? refundedAmount = null, bool isFullRefund = true)
         {
             try
             {
                 var record = await db.PaymentRecords
-                    .Where(r => r.ExternalOrderId == externalOrderId || r.ExternalTransactionId == externalOrderId)
+                    .Where(r => r.Provider == provider && (r.ExternalOrderId == externalOrderId || r.ExternalTransactionId == externalOrderId))
                     .FirstOrDefaultAsync();
                 if (record != null)
                 {

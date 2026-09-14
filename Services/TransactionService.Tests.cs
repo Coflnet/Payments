@@ -36,7 +36,7 @@ public class TransactionServiceTests
     transactionService = new TransactionService(NullLogger<TransactionService>.Instance, context, userService, new NullTransationProducer(), null, ruleEngine);
 
         // seed a topup product and a purchaseable product
-        var topup = new TopUpProduct { Title = "TopUp", Slug = "topup-test", Cost = 10, OwnershipSeconds = 0, Type = Product.ProductType.TOP_UP };
+        var topup = new TopUpProduct { Title = "TopUp", Slug = "topup-test", ProviderSlug = "test", Cost = 10, OwnershipSeconds = 0, Type = Product.ProductType.TOP_UP };
         context.TopUpProducts.Add(topup);
 
         var svc = new PurchaseableProduct { Title = "Service", Slug = "svc-test", Cost = 5, OwnershipSeconds = 60, Type = Product.ProductType.SERVICE };
@@ -161,7 +161,7 @@ public class TransactionServiceTests
         var topup = await context.TopUpProducts.FirstAsync();
         await transactionService.AddTopUp(topup.Id, user.ExternalId, "partial-refund-order", 21600);
 
-        var applied = await transactionService.ApplyTopUpRefund("partial-refund-order", 8656, 3055);
+        var applied = await transactionService.ApplyTopUpRefund("partial-refund-order", 8656, 3055, "test");
         var balance = await context.Users
             .Where(u => u.ExternalId == user.ExternalId)
             .Select(u => u.Balance)
@@ -170,7 +170,7 @@ public class TransactionServiceTests
         Assert.That(applied, Is.EqualTo(7623m));
         Assert.That(balance, Is.EqualTo(13977m));
 
-        var duplicateApplied = await transactionService.ApplyTopUpRefund("partial-refund-order", 8656, 3055);
+        var duplicateApplied = await transactionService.ApplyTopUpRefund("partial-refund-order", 8656, 3055, "test");
         var duplicateBalance = await context.Users
             .Where(u => u.ExternalId == user.ExternalId)
             .Select(u => u.Balance)
@@ -181,6 +181,25 @@ public class TransactionServiceTests
         Assert.That(duplicateApplied, Is.Zero);
         Assert.That(duplicateBalance, Is.EqualTo(13977m));
         Assert.That(refundTransactions, Is.EqualTo(1));
+    }
+
+    [TestCase("transfer", -1)]
+    [TestCase("transfer", 1)]
+    [TestCase("revert", -1)]
+    [TestCase("revert", 1)]
+    public async Task RevertPurchase_CannotReverseTransfersOrRefunds(string slug, int amount)
+    {
+        var user = await userService.GetOrCreate("revert-guard");
+        user.Balance = 100;
+        var product = await context.Products.SingleOrDefaultAsync(p => p.Slug == slug)
+            ?? new PurchaseableProduct { Slug = slug, Type = Product.ProductType.TOP_UP };
+        var original = new FiniteTransaction { User = user, Product = product, Amount = amount, Reference = "guard" };
+        context.Add(original);
+        await context.SaveChangesAsync();
+
+        Assert.ThrowsAsync<ApiException>(() => transactionService.RevertPurchase(user.ExternalId, original.Id));
+        Assert.That(user.Balance, Is.EqualTo(100));
+        Assert.That(await context.FiniteTransactions.CountAsync(), Is.EqualTo(1));
     }
 
     [TestCase(0, 0, 1)]
@@ -254,9 +273,9 @@ public class TransactionServiceTests
         var topup = await context.TopUpProducts.FirstAsync();
         await transactionService.AddTopUp(topup.Id, user.ExternalId, "progressive-refund-order", 21600);
 
-        var firstDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 2500);
-        var secondDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 5000);
-        var finalDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 10000);
+        var firstDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 2500, "test");
+        var secondDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 5000, "test");
+        var finalDelta = await transactionService.ApplyTopUpRefund("progressive-refund-order", 10000, 10000, "test");
         var balance = await context.Users
             .Where(u => u.ExternalId == user.ExternalId)
             .Select(u => u.Balance)
