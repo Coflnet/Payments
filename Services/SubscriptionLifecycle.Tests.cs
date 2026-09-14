@@ -108,6 +108,7 @@ public partial class SubscriptionServiceTests
 
     [TestCase(0)]
     [TestCase(4)]
+    [TestCase(1)]
     public async Task CancellingAndResumingPreservePaidPeriodAndClearCancellation(int slots)
     {
         await SetupPlanSwitch(slots);

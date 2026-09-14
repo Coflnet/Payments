@@ -593,11 +593,14 @@ public partial class SubscriptionServiceTests
         Assert.That((await userService.GetOrCreate(owner.ExternalId)).Balance, Is.Zero);
     }
 
-    [Test]
-    public async Task SlotSubscriptions_WithSameProductRemainIndependent()
+    [TestCase(1)]
+    [TestCase(4)]
+    public async Task SlotSubscriptions_WithSameProductRemainIndependent(int slotCount)
     {
         var owner = await userService.GetOrCreate("multiple-subscriptions");
-        var product = await ConfigureSlotSubscription("premium_plus", 27000);
+        var product = await ConfigureSlotSubscription("premium_plus", slotCount == 1 ? 8500 : 27000);
+        product.SlotCount = slotCount;
+        await context.SaveChangesAsync();
         await subscriptionService.UpdateSubscription(CreateNonPayPalSubscriptionCreatedWebhook(owner.ExternalId, product.Id, DateTime.UtcNow.AddDays(28), "30002"));
         await subscriptionService.UpdateSubscription(CreateNonPayPalSubscriptionCreatedWebhook(owner.ExternalId, product.Id, DateTime.UtcNow.AddDays(28), "30003"));
         await subscriptionService.PaymentReceived(CreatePaymentWebhook(owner.ExternalId, product.Id, "30002"));
@@ -607,9 +610,9 @@ public partial class SubscriptionServiceTests
         await subscriptionService.PaymentReceived(new Webhook(new Meta(false, "subscription_payment_success", null), renewal.Data));
 
         Assert.That(await context.Subscriptions.CountAsync(), Is.EqualTo(2));
-        Assert.That(await context.TierSlots.CountAsync(), Is.EqualTo(8));
+        Assert.That(await context.TierSlots.CountAsync(), Is.EqualTo(slotCount * 2));
         Assert.That(await context.TierSlots.Where(s => s.SubscriptionId == "30003").Select(s => s.Expires).ToArrayAsync(), Is.EqualTo(other));
-        Assert.That(await context.TierSlots.CountAsync(s => s.SubscriptionId == "30002" && s.Expires > DateTime.UtcNow.AddDays(55)), Is.EqualTo(4));
+        Assert.That(await context.TierSlots.CountAsync(s => s.SubscriptionId == "30002" && s.Expires > DateTime.UtcNow.AddDays(55)), Is.EqualTo(slotCount));
     }
 
     [Test]

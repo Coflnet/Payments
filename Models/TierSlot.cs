@@ -44,4 +44,4 @@ public class TierSlotAssignment
 }
 
 public record TierSlotAccess(long Id, string OwnerId, string Tier, DateTime Expires,
-    string AssignedUserId, string MinecraftUuid, long Version, bool CanManage);
+    string AssignedUserId, string MinecraftUuid, long Version, bool CanManage, string SubscriptionId = null);

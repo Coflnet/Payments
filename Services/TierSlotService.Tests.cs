@@ -75,6 +75,22 @@ public class TierSlotServiceTests
     }
 
     [Test]
+    public async Task OnlyOwnerListingIncludesTheSubscriptionRenewingEachSlot()
+    {
+        await Buy();
+        var purchased = await db.TierSlots.OrderBy(s => s.Id).ToListAsync();
+        purchased[0].SubscriptionId = "single-subscription";
+        purchased[1].SubscriptionId = "another-subscription";
+        purchased[0].AssignedUserId = "friend";
+        await db.SaveChangesAsync();
+
+        Assert.That((await slots.GetOwned("owner")).Select(s => s.SubscriptionId),
+            Is.EqualTo(new string[] { "single-subscription", "another-subscription", null }));
+        Assert.That((await slots.GetAccess("friend")).Single().SubscriptionId, Is.Null);
+        Assert.That(await slots.GetOwned("friend"), Is.Empty);
+    }
+
+    [Test]
     public async Task MorePackagesIncreaseCapacityRatherThanDuration()
     {
         await Buy(count: 2);

@@ -14,7 +14,7 @@ public class TierSlotService(PaymentContext db)
     public async Task<TierSlotAccess[]> GetOwned(string ownerId) => await db.TierSlots
         .Where(s => s.User.ExternalId == ownerId).OrderBy(s => s.Id)
         .Select(s => new TierSlotAccess(s.Id, ownerId, s.Tier, s.Expires,
-            s.AssignedUserId, s.MinecraftUuid, s.Version, true)).ToArrayAsync();
+            s.AssignedUserId, s.MinecraftUuid, s.Version, true, s.SubscriptionId)).ToArrayAsync();
 
     // A Minecraft assignment is specific to that account. An accompanying user ID
     // restricts it further; it must never turn into access for all of that user's alts.
@@ -28,7 +28,7 @@ public class TierSlotService(PaymentContext db)
                 || (minecraftUuid != null && s.MinecraftUuid == minecraftUuid
                     && (userId == null || s.AssignedUserId == null || s.AssignedUserId == userId))))
             .Select(s => new TierSlotAccess(s.Id, s.User.ExternalId, s.Tier, s.Expires,
-                s.AssignedUserId, s.MinecraftUuid, s.Version, s.User.ExternalId == userId))
+                s.AssignedUserId, s.MinecraftUuid, s.Version, s.User.ExternalId == userId, null))
             .ToArrayAsync();
     }
 
