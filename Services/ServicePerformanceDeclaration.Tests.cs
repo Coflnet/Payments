@@ -18,9 +18,9 @@ namespace Coflnet.Payments.Services;
 public class ServicePerformanceDeclarationTests
 {
     private const string ExpertMarketplaceAgreementHash =
-        "9177b208e3226cd0974afdce79d4023520d69d65aaa34a8d86e04dd3e60f2401";
+        "d477358662b81d464396331ff79511db1623d5ad5c77809e3b92a5f0ce50acfe";
     private const string CreatorMarketplaceAgreementHash =
-        "652e91d78ec3aa86dd1e7e33c1e1a81dc423c7ecc1b004466cae1733c9c4a280";
+        "571ab277e36066ac89929fd72304096eb5b15dd324d8cb3718808a0454b76ddb";
     private static readonly DateTime Now = new(
         2026,
         9,
@@ -264,6 +264,49 @@ public class ServicePerformanceDeclarationTests
             Assert.That(transactionCount, Is.Zero);
             Assert.That(evidenceCount, Is.Zero);
         });
+    }
+
+    [Test]
+    public async Task Pinned_agreement_hashes_match_mod_release()
+    {
+        // Hardcoded on purpose (do not reference the shared
+        // ExpertMarketplaceAgreementHash / CreatorMarketplaceAgreementHash
+        // constants above): these are copied verbatim from SkyModCommands
+        // CurrentAgreement.ExpertMarketplaceHash / CreatorMarketplaceHash.
+        // The mod hard-enforces sending exactly these values
+        // (CurrentAgreement.InitializeExpertConfig throws otherwise), so
+        // Payments must accept exactly what the mod pins, or every Expert
+        // Config purchase fails.
+        const string modPinnedExpertMarketplaceHash =
+            "d477358662b81d464396331ff79511db1623d5ad5c77809e3b92a5f0ce50acfe";
+        const string modPinnedCreatorMarketplaceHash =
+            "571ab277e36066ac89929fd72304096eb5b15dd324d8cb3718808a0454b76ddb";
+        var product = AddExpertConfigProduct();
+        var user = await Fund("7");
+        user.Country = "DE";
+        user.Balance = 1000;
+        await db.SaveChangesAsync();
+        var service = CreateService(now: Now.AddTicks(-1));
+        var quote = await service.GetServicePurchaseQuote(
+            product.Slug, user.ExternalId, 1);
+        var request = Request("pinned-agreement-order");
+        request.AgreementId = "expertMarketplace";
+        request.AgreementHash = modPinnedExpertMarketplaceHash;
+        request.TaxCountry = quote.TaxCountry;
+        request.ConsumerRightsRegime = quote.ConsumerRightsRegime;
+        request.VatRateBasisPoints = quote.VatRateBasisPoints;
+        request.GrossEurCents = quote.GrossEurCents;
+        request.VatEurCents = quote.VatEurCents;
+        request.OrderDetailsJson = JsonConvert.SerializeObject(new
+        {
+            acceptedAgreement = new { hash = modPinnedExpertMarketplaceHash },
+            creatorAgreementHash = modPinnedCreatorMarketplaceHash
+        });
+
+        Assert.DoesNotThrowAsync(() => service
+            .PurchaseServiceDeclared(product.Slug, user.ExternalId, request),
+            "Pinned agreement evidence matching the mod's current release " +
+            "must not be rejected as invalid_expert_config_order_evidence.");
     }
 
     [Test]
