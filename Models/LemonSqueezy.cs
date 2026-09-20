@@ -121,7 +121,7 @@ public class VariantAttributes
     public string Interval { get; set; }
     
     [JsonPropertyName("interval_count")]
-    public int IntervalCount { get; set; }
+    public int? IntervalCount { get; set; }
     
     [JsonPropertyName("price")]
     public int Price { get; set; }
@@ -136,7 +136,7 @@ public class VariantAttributes
     public string TrialInterval { get; set; }
     
     [JsonPropertyName("trial_interval_count")]
-    public int TrialIntervalCount { get; set; }
+    public int? TrialIntervalCount { get; set; }
     
     [JsonPropertyName("status")]
     public string Status { get; set; }

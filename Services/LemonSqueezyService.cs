@@ -170,10 +170,10 @@ public class LemonSqueezyService
                     continue;
 
                 // Process subscription variants - store full variant info for intelligent selection
-                foreach (var variant in variants.Data.Where(v => v.Attributes.IsSubscription))
+                foreach (var variant in variants.Data.Where(v => v.Attributes.IsSubscription && v.Attributes.IntervalCount > 0))
                 {
                     var attrs = variant.Attributes;
-                    var key = GetVariantCacheKey(attrs.Interval, attrs.IntervalCount);
+                    var key = GetVariantCacheKey(attrs.Interval, attrs.IntervalCount.Value);
 
                     // Create VariantInfo with all relevant details
                     var variantInfo = new VariantInfo
@@ -184,7 +184,7 @@ public class LemonSqueezyService
                         Price = attrs.Price,
                         HasFreeTrial = attrs.HasFreeTrial,
                         Interval = attrs.Interval,
-                        IntervalCount = attrs.IntervalCount,
+                        IntervalCount = attrs.IntervalCount.Value,
                         IsSubscription = attrs.IsSubscription,
                         ProductId = attrs.ProductId
                     };

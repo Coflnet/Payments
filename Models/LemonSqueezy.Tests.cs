@@ -6,6 +6,24 @@ namespace Coflnet.Payments.Models.LemonSqueezy;
 public class LemonSqueezyWebhookTests
 {
     [Test]
+    public void VariantDiscovery_DeserializesNullIntervalsAlongsideSubscriptions()
+    {
+        const string json = """
+            {"data":[
+              {"id":"one-off","attributes":{"is_subscription":false,"interval":null,"interval_count":null,"trial_interval_count":null}},
+              {"id":"bazaar","attributes":{"is_subscription":true,"interval":"week","interval_count":4,"price":1299,"has_free_trial":true,"trial_interval_count":3}}
+            ]}
+            """;
+
+        var variants = JsonSerializer.Deserialize<VariantListResponse>(json).Data;
+
+        Assert.That(variants[0].Attributes.IntervalCount, Is.Null);
+        Assert.That(variants[0].Attributes.TrialIntervalCount, Is.Null);
+        Assert.That(variants[1].Attributes.IntervalCount, Is.EqualTo(4));
+        Assert.That(variants[1].Attributes.Price, Is.EqualTo(1299));
+    }
+
+    [Test]
     public void OrderRefunded_DeserializesCumulativePartialRefundAmount()
     {
         const string json = """

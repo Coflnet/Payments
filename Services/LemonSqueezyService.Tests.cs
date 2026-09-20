@@ -53,6 +53,25 @@ public class LemonSqueezyServiceTests
         _connection?.Dispose();
     }
 
+    [TestCase(true)]
+    [TestCase(false)]
+    public void GetBestVariant_TrialPreferenceTakesPriorityOverExactPrice(bool enableTrial)
+    {
+        cacheService.AddVariantInfo("week_4", new VariantInfo
+        {
+            VariantId = "matching-trial", Price = 1299, HasFreeTrial = enableTrial
+        });
+        cacheService.AddVariantInfo("week_4", new VariantInfo
+        {
+            VariantId = "matching-price", Price = 969, HasFreeTrial = !enableTrial
+        });
+
+        var result = service.GetBestVariant(2430000, enableTrial, 969);
+
+        Assert.That(result.VariantId, Is.EqualTo("matching-trial"));
+        Assert.That(result.HasFreeTrial, Is.EqualTo(enableTrial));
+    }
+
     /// <summary>
     /// Tests that GetBestVariant correctly selects a variant without trial when enableTrial is false,
     /// matching the specific price for BazaarPro monthly subscription.
