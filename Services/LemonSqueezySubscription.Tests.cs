@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using NUnit.Framework;
 
 namespace Coflnet.Payments.Services;
@@ -19,6 +20,7 @@ public class LemonSqueezySubscriptionTests
 {
     private WebApplication app;
     private LemonSqueezyService provider;
+    private VariantCacheService cacheService;
     private string method, body;
     private int status, price, priceVariant;
     private bool hasFreeTrial;
@@ -66,8 +68,8 @@ public class LemonSqueezySubscriptionTests
             ["LEMONSQUEEZY:STORE_ID"] = "34",
             ["LEMONSQUEEZY:SUBSCRIPTION_VARIANTS"] = "{\"l_premium-slots-4\":2118396}"
         }).Build();
-        provider = new LemonSqueezyService(config, NullLogger<LemonSqueezyService>.Instance, null,
-            new VariantCacheService(NullLogger<VariantCacheService>.Instance));
+        cacheService = new VariantCacheService(NullLogger<VariantCacheService>.Instance);
+        provider = new LemonSqueezyService(config, NullLogger<LemonSqueezyService>.Instance, null, cacheService);
         plan = new TopUpProduct { Slug = "l_premium-slots-4", Price = 29.69m, CurrencyCode = "eur", OwnershipSeconds = 2419200 };
     }
 
@@ -172,4 +174,73 @@ public class LemonSqueezySubscriptionTests
         Assert.ThrowsAsync<ApiException>(() => provider.ValidateSubscriptionPrice(subscription, plan));
     }
 
+    [Test]
+    public async Task SelectCheckoutVariant_UnmappedProduct_NeverReturnsReservedVariant()
+    {
+        // 2118396 is dedicated to l_premium-slots-4 (see Setup); an unrelated product must not get it
+        // even though it is the closest price match, or its list price would be disturbed on LemonSqueezy.
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "2118396", Price = 1299, HasFreeTrial = false });
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "9999999", Price = 1299, HasFreeTrial = false });
+        var unmapped = new TopUpProduct { Slug = "l_bazaarpro", Price = 12.99m, CurrencyCode = "eur", OwnershipSeconds = 2430000 };
+
+        var (variantId, trialEnabled) = await provider.SelectCheckoutVariantAsync(unmapped, eurPrice: 12.99m, enableTrial: false);
+
+        Assert.That(variantId, Is.Not.EqualTo("2118396"));
+        Assert.That(variantId, Is.EqualTo("9999999"));
+        Assert.That(trialEnabled, Is.False);
+    }
+
+    [Test]
+    public async Task SelectCheckoutVariant_MappedProductAtPlanPrice_UsesDedicatedVariantAndDisablesTrial()
+    {
+        var (variantId, trialEnabled) = await provider.SelectCheckoutVariantAsync(plan, eurPrice: plan.Price, enableTrial: true);
+
+        Assert.That(variantId, Is.EqualTo("2118396"));
+        Assert.That(trialEnabled, Is.False);
+    }
+
+    [Test]
+    public async Task SelectCheckoutVariant_MappedProductAtDiscountedPrice_AvoidsDedicatedVariant()
+    {
+        // A creator code / custom TopUpAmount can make the charged price differ from plan.Price;
+        // the dedicated variant must be skipped so custom_price never overwrites its list price.
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "2118396", Price = 2969, HasFreeTrial = false });
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "8888888", Price = 2500, HasFreeTrial = false });
+
+        var discountedPrice = 25.00m; // below plan.Price (29.69)
+        var (variantId, trialEnabled) = await provider.SelectCheckoutVariantAsync(plan, eurPrice: discountedPrice, enableTrial: false);
+
+        Assert.That(variantId, Is.Not.EqualTo("2118396"));
+        Assert.That(variantId, Is.EqualTo("8888888"));
+    }
+
+    [Test]
+    public async Task SelectCheckoutVariant_FallbackToReservedVariant_LogsWarningButDoesNotThrow()
+    {
+        var mockLogger = new Mock<ILogger<LemonSqueezyService>>();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["LEMONSQUEEZY:API_BASE_URL"] = app.Urls.Single(), ["LEMONSQUEEZY:API_KEY"] = "test-key",
+            ["LEMONSQUEEZY:STORE_ID"] = "34",
+            ["LEMONSQUEEZY:SUBSCRIPTION_VARIANTS"] = "{\"l_premium-slots-4\":2118396}",
+            // Misconfigured on purpose: the legacy fallback variant points at a dedicated variant.
+            ["LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID"] = "2118396"
+        }).Build();
+        var fallbackProvider = new LemonSqueezyService(config, mockLogger.Object, null,
+            new VariantCacheService(NullLogger<VariantCacheService>.Instance));
+        // Empty cache for week_4 forces GetBestVariant to fail and GetVariantId to be used instead.
+        var unmapped = new TopUpProduct { Slug = "l_bazaarpro", Price = 12.99m, CurrencyCode = "eur", OwnershipSeconds = 2419200 };
+
+        (string VariantId, bool EnableTrial) result = default;
+        Assert.DoesNotThrowAsync(async () => result = await fallbackProvider.SelectCheckoutVariantAsync(unmapped, eurPrice: 12.99m, enableTrial: false));
+
+        Assert.That(result.VariantId, Is.EqualTo("2118396"));
+        mockLogger.Verify(l => l.Log(
+            LogLevel.Warning,
+            It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((state, t) => state.ToString().Contains("reserved")),
+            It.IsAny<Exception>(),
+            It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+            Times.AtLeastOnce);
+    }
 }

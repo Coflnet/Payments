@@ -101,7 +101,9 @@ public class VariantCacheService
     /// Prioritizes trial preference (with/without trial), then selects the best price match.
     /// Rounds ownership duration to nearest 12-hour interval to handle buffer time in subscriptions.
     /// </summary>
-    public VariantInfo GetBestVariant(int ownershipSeconds, bool enableTrial, int? targetPrice = null)
+    /// <param name="reservedVariantIds">Variant IDs dedicated to a specific plan (e.g. LEMONSQUEEZY:SUBSCRIPTION_VARIANTS)
+    /// that must never be handed out for a different purchase, since their list price must stay equal to that plan's price.</param>
+    public VariantInfo GetBestVariant(int ownershipSeconds, bool enableTrial, int? targetPrice = null, ISet<string> reservedVariantIds = null)
     {
         // Round to nearest 12-hour interval to handle buffer time (e.g., 28 days + 3 hours should match 28 days)
         int twelveHoursInSeconds = (int)TimeSpan.FromHours(12).TotalSeconds;
@@ -142,6 +144,18 @@ public class VariantCacheService
         {
             logger.LogWarning("No cached variants found for interval key {Key}", intervalKey);
             return null;
+        }
+
+        // Exclude variants reserved for another plan before any other selection, so a dedicated
+        // variant's list price is never disturbed by an unrelated or differently-priced checkout.
+        if (reservedVariantIds != null && reservedVariantIds.Count > 0)
+        {
+            variants = variants.Where(v => !reservedVariantIds.Contains(v.VariantId)).ToList();
+            if (variants.Count == 0)
+            {
+                logger.LogWarning("All cached variants for {IntervalKey} are reserved for other products, cannot select a variant", intervalKey);
+                return null;
+            }
         }
 
         logger.LogDebug("Selecting best variant for {IntervalKey} with enableTrial={EnableTrial}, targetPrice={TargetPrice}. Found {Count} variants",

@@ -355,4 +355,41 @@ public class LemonSqueezyServiceTests
         Assert.That(result.VariantId, Is.EqualTo("1"));
         Assert.That(result.Interval, Is.EqualTo("week"));
         Assert.That(result.IntervalCount, Is.EqualTo(4));
-    }}
+    }
+
+    /// <summary>
+    /// Reproduces the production incident: an unmapped product (BazaarPro, 1299 cents, trial disabled)
+    /// used to land on the "Premium" variant (502893) because it is the closest price match once its own
+    /// trial variant is filtered out. 502893 is dedicated to l_premium and must never be handed out here.
+    /// </summary>
+    [Test]
+    public void GetBestVariant_ExcludesReservedVariants_EvenWhenTheyAreTheClosestPriceMatch()
+    {
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "502893", VariantName = "Premium", Price = 969, HasFreeTrial = false });
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "1277636", VariantName = "Premium+", Price = 3569, HasFreeTrial = false });
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "1277646", VariantName = "BazaarPro monthly", Price = 1299, HasFreeTrial = true });
+
+        // Sanity check: without the reserved set, the old (buggy) selection is unchanged.
+        var withoutReserved = service.GetBestVariant(2430000, enableTrial: false, targetPrice: 1299);
+        Assert.That(withoutReserved.VariantId, Is.EqualTo("502893"));
+
+        var reserved = new HashSet<string> { "502893", "1277645", "2118396", "1278931" };
+        var result = service.GetBestVariant(2430000, enableTrial: false, targetPrice: 1299, reserved);
+
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result.VariantId, Is.Not.EqualTo("502893"));
+        Assert.That(result.VariantId, Is.EqualTo("1277636"));
+    }
+
+    [Test]
+    public void GetBestVariant_ReturnsNull_WhenEveryCachedVariantIsReserved()
+    {
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "502893", VariantName = "Premium", Price = 969, HasFreeTrial = false });
+        cacheService.AddVariantInfo("week_4", new VariantInfo { VariantId = "1277646", VariantName = "BazaarPro monthly", Price = 1299, HasFreeTrial = true });
+
+        var reserved = new HashSet<string> { "502893", "1277646" };
+        var result = service.GetBestVariant(2430000, enableTrial: false, targetPrice: 1299, reserved);
+
+        Assert.That(result, Is.Null);
+    }
+}

@@ -391,29 +391,9 @@ namespace Payments.Controllers
             
             // Use smart variant selection - prioritize trial preference, then best price match
             // This allows using variants without trial for PayPal (workaround for LemonSqueezy bug)
-            var targetPriceCents = (int)(eurPrice * 100);
-            var bestVariant = lemonSqueezyService.GetBestVariant((int)product.OwnershipSeconds, enableTrial, targetPriceCents);
-            
-            string variantId;
-            if (lemonSqueezyService.SubscriptionVariants.TryGetValue(product.Slug, out var dedicatedVariant))
-            {
-                await lemonSqueezyService.ValidateCheckoutVariant(product, dedicatedVariant);
-                variantId = dedicatedVariant.ToString();
-                enableTrial = false;
-            }
-            else if (bestVariant != null)
-            {
-                variantId = bestVariant.VariantId;
-                _logger.LogInformation("Using best matching variant: {VariantName} (ID: {VariantId}) HasTrial: {HasTrial} Price: {Price}",
-                    bestVariant.VariantName, bestVariant.VariantId, bestVariant.HasFreeTrial, bestVariant.Price);
-            }
-            else
-            {
-                // Fallback to legacy variant selection
-                variantId = lemonSqueezyService.GetVariantId((int)product.OwnershipSeconds);
-                _logger.LogWarning("No matching variant found via GetBestVariant, falling back to GetVariantId: {VariantId}", variantId);
-            }
-            
+            var (variantId, effectiveEnableTrial) = await lemonSqueezyService.SelectCheckoutVariantAsync(product, eurPrice, enableTrial);
+            enableTrial = effectiveEnableTrial;
+
             // For LemonSqueezy subscriptions, pass the discount code and trial options to their checkout
             return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, true, validatedDiscount, enableTrial:enableTrial, trialLengthDays);
         }

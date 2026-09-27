@@ -300,9 +300,44 @@ public class LemonSqueezyService
     /// Get the best variant for a subscription based on duration, trial preference, and price.
     /// Delegates to VariantCacheService for actual selection logic.
     /// </summary>
-    public VariantInfo GetBestVariant(int ownershipSeconds, bool enableTrial, int? targetPrice = null)
+    public VariantInfo GetBestVariant(int ownershipSeconds, bool enableTrial, int? targetPrice = null, ISet<string> reservedVariantIds = null)
     {
-        return variantCache.GetBestVariant(ownershipSeconds, enableTrial, targetPrice);
+        return variantCache.GetBestVariant(ownershipSeconds, enableTrial, targetPrice, reservedVariantIds);
+    }
+
+    /// <summary>
+    /// Chooses the LemonSqueezy variant and effective trial flag for a subscription checkout.
+    /// Dedicated variants (LEMONSQUEEZY:SUBSCRIPTION_VARIANTS) are reserved for their own plan at its
+    /// full list price, since a provider-initiated plan change bills that variant's own price. A product
+    /// without a mapping, or a mapped product charged a different price (creator code/custom amount),
+    /// must never be placed on someone else's dedicated variant, so those are excluded from selection.
+    /// </summary>
+    public virtual async Task<(string VariantId, bool EnableTrial)> SelectCheckoutVariantAsync(TopUpProduct product, decimal eurPrice, bool enableTrial)
+    {
+        var reservedVariantIds = new HashSet<string>(SubscriptionVariants.Values.Select(v => v.ToString()), StringComparer.Ordinal);
+
+        if (SubscriptionVariants.TryGetValue(product.Slug, out var dedicatedVariant) && eurPrice == product.Price)
+        {
+            await ValidateCheckoutVariant(product, dedicatedVariant);
+            return (dedicatedVariant.ToString(), false);
+        }
+
+        var targetPriceCents = (int)(eurPrice * 100);
+        var bestVariant = GetBestVariant((int)product.OwnershipSeconds, enableTrial, targetPriceCents, reservedVariantIds);
+        if (bestVariant != null)
+        {
+            logger.LogInformation("Using best matching variant: {VariantName} (ID: {VariantId}) HasTrial: {HasTrial} Price: {Price}",
+                bestVariant.VariantName, bestVariant.VariantId, bestVariant.HasFreeTrial, bestVariant.Price);
+            return (bestVariant.VariantId, enableTrial);
+        }
+
+        var fallbackVariantId = GetVariantId((int)product.OwnershipSeconds);
+        logger.LogWarning("No matching variant found via GetBestVariant, falling back to GetVariantId: {VariantId}", fallbackVariantId);
+        var reservedFor = SubscriptionVariants.FirstOrDefault(kv => kv.Value.ToString() == fallbackVariantId && kv.Key != product.Slug);
+        if (reservedFor.Key != null)
+            logger.LogWarning("Fallback variant {VariantId} for product {ProductSlug} is reserved for {ReservedSlug}; LEMONSQUEEZY:SUBSCRIPTION_VARIANT_ID should point to a non-dedicated variant.",
+                fallbackVariantId, product.Slug, reservedFor.Key);
+        return (fallbackVariantId, enableTrial);
     }
 
     /// <summary>
