@@ -49,7 +49,18 @@ public class LemonSqueezyService
             ?? throw new ApiException("Lemon Squeezy returned an invalid subscription.");
     }
 
-    public virtual async Task ValidateSubscriptionVariant(TopUpProduct product, long variantId)
+    /// <summary>
+    /// Strict check used before a provider-initiated plan change, which bills the variant's own list price.
+    /// </summary>
+    public virtual Task ValidateSubscriptionVariant(TopUpProduct product, long variantId) => ValidateVariant(product, variantId, strict: true);
+
+    /// <summary>
+    /// Checkout only needs to confirm what checkout itself cannot override (subscription flag, interval, currency);
+    /// SetupPayment always sends a custom_price and skips the trial, so a differing list price or trial must not block it.
+    /// </summary>
+    public virtual Task ValidateCheckoutVariant(TopUpProduct product, long variantId) => ValidateVariant(product, variantId, strict: false);
+
+    private async Task ValidateVariant(TopUpProduct product, long variantId, bool strict)
     {
         using var client = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
         var variant = await ReadProviderAttributes(client, $"/v1/variants/{variantId}");
@@ -58,12 +69,37 @@ public class LemonSqueezyService
         if (storeId != config["LEMONSQUEEZY:STORE_ID"] || providerProduct.GetProperty("status").GetString() != "published")
             throw new ApiException("The subscription variant is not a published plan in this store.");
         var store = await ReadProviderAttributes(client, $"/v1/stores/{storeId}");
-        var interval = SubscriptionService.SubscriptionInterval(product.OwnershipSeconds);
-        if (!variant.GetProperty("is_subscription").GetBoolean()
-            || variant.GetProperty("price").GetDecimal() != product.Price * 100m
-            || variant.GetProperty("interval").GetString() + "_" + variant.GetProperty("interval_count").GetInt32() != interval
-            || variant.GetProperty("has_free_trial").GetBoolean()
-            || !string.Equals(store.GetProperty("currency").GetString(), product.CurrencyCode, StringComparison.OrdinalIgnoreCase))
+        var expectedInterval = SubscriptionService.SubscriptionInterval(product.OwnershipSeconds);
+
+        var isSubscription = variant.GetProperty("is_subscription").GetBoolean();
+        // interval/interval_count are JSON null on non-subscription variants; treat that as a plain mismatch, not a parse error.
+        var actualInterval = variant.TryGetProperty("interval", out var intervalProp) && intervalProp.ValueKind != JsonValueKind.Null
+            && variant.TryGetProperty("interval_count", out var countProp) && countProp.ValueKind != JsonValueKind.Null
+            ? intervalProp.GetString() + "_" + countProp.GetInt32() : null;
+        var currency = store.GetProperty("currency").GetString();
+        var expectedPrice = product.Price * 100m;
+        var price = variant.GetProperty("price").GetDecimal();
+        var hasFreeTrial = variant.GetProperty("has_free_trial").GetBoolean();
+
+        var subscriptionMismatch = !isSubscription;
+        var priceMismatch = price != expectedPrice;
+        var intervalMismatch = actualInterval != expectedInterval;
+        var currencyMismatch = !string.Equals(currency, product.CurrencyCode, StringComparison.OrdinalIgnoreCase);
+
+        var mismatches = new List<string>();
+        if (subscriptionMismatch) mismatches.Add($"is_subscription actual {isSubscription} expected true");
+        if (priceMismatch) mismatches.Add($"price actual {price} expected {expectedPrice}");
+        if (intervalMismatch) mismatches.Add($"interval actual {actualInterval ?? "null"} expected {expectedInterval}");
+        if (hasFreeTrial) mismatches.Add("has_free_trial actual true expected false");
+        if (currencyMismatch) mismatches.Add($"currency actual {currency} expected {product.CurrencyCode}");
+        if (mismatches.Count > 0)
+            logger.LogWarning("Lemon Squeezy variant {VariantId} for product {ProductSlug} does not fully match ({Mode}): {Mismatches}",
+                variantId, product.Slug, strict ? "plan-change" : "checkout", string.Join("; ", mismatches));
+
+        var blocks = strict
+            ? subscriptionMismatch || priceMismatch || intervalMismatch || hasFreeTrial || currencyMismatch
+            : subscriptionMismatch || intervalMismatch || currencyMismatch;
+        if (blocks)
             throw new ApiException("The subscription variant does not match this plan's price and billing period.");
     }
 

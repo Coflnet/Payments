@@ -397,7 +397,7 @@ namespace Payments.Controllers
             string variantId;
             if (lemonSqueezyService.SubscriptionVariants.TryGetValue(product.Slug, out var dedicatedVariant))
             {
-                await lemonSqueezyService.ValidateSubscriptionVariant(product, dedicatedVariant);
+                await lemonSqueezyService.ValidateCheckoutVariant(product, dedicatedVariant);
                 variantId = dedicatedVariant.ToString();
                 enableTrial = false;
             }

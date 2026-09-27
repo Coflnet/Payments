@@ -21,6 +21,10 @@ public class LemonSqueezySubscriptionTests
     private LemonSqueezyService provider;
     private string method, body;
     private int status, price, priceVariant;
+    private bool hasFreeTrial;
+    private string interval;
+    private int? intervalCount;
+    private string currency;
     private TopUpProduct plan;
 
     [SetUp]
@@ -29,6 +33,10 @@ public class LemonSqueezySubscriptionTests
         status = 200;
         price = 2969;
         priceVariant = 2118396;
+        hasFreeTrial = false;
+        interval = "week";
+        intervalCount = 4;
+        currency = "EUR";
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -42,9 +50,9 @@ public class LemonSqueezySubscriptionTests
             context.Response.ContentType = "application/vnd.api+json";
             object attributes = context.Request.Path.Value switch
             {
-                "/v1/variants/2118396" => new { product_id = 12, is_subscription = true, price, interval = "week", interval_count = 4, has_free_trial = false },
+                "/v1/variants/2118396" => new { product_id = 12, is_subscription = true, price, interval, interval_count = intervalCount, has_free_trial = hasFreeTrial },
                 "/v1/products/12" => new { store_id = 34, status = "published" },
-                "/v1/stores/34" => new { currency = "EUR" },
+                "/v1/stores/34" => new { currency },
                 "/v1/prices/56" => new { unit_price = price, variant_id = priceVariant },
                 _ => new { variant_id = 2118396, status = "active", renews_at = "2026-10-01T00:00:00Z",
                     first_subscription_item = new { price_id = 56, quantity = 1 }, payment_processor = "paypal", urls = new { customer_portal_update_subscription = "https://test.lemonsqueezy.com/billing/update" } }
@@ -90,6 +98,53 @@ public class LemonSqueezySubscriptionTests
         await provider.ValidateSubscriptionVariant(plan, 2118396);
         price = 3369;
         Assert.ThrowsAsync<ApiException>(() => provider.ValidateSubscriptionVariant(plan, 2118396));
+    }
+
+    [Test]
+    public async Task PlanChangeValidationStillThrowsOnFreeTrial()
+    {
+        await provider.ValidateSubscriptionVariant(plan, 2118396);
+        hasFreeTrial = true;
+        Assert.ThrowsAsync<ApiException>(() => provider.ValidateSubscriptionVariant(plan, 2118396));
+    }
+
+    [Test]
+    public async Task CheckoutValidationIgnoresListPriceMismatch()
+    {
+        price = 3369;
+        Assert.DoesNotThrowAsync(() => provider.ValidateCheckoutVariant(plan, 2118396));
+    }
+
+    [Test]
+    public async Task CheckoutValidationIgnoresFreeTrial()
+    {
+        hasFreeTrial = true;
+        Assert.DoesNotThrowAsync(() => provider.ValidateCheckoutVariant(plan, 2118396));
+    }
+
+    [Test]
+    public async Task CheckoutValidationThrowsOnIntervalMismatch()
+    {
+        // plan.OwnershipSeconds (2419200s = 4 weeks) expects "week_4"; the fake variant now reports monthly billing.
+        interval = "month";
+        intervalCount = 1;
+        Assert.ThrowsAsync<ApiException>(() => provider.ValidateCheckoutVariant(plan, 2118396));
+    }
+
+    [Test]
+    public async Task CheckoutValidationThrowsOnCurrencyMismatch()
+    {
+        currency = "USD";
+        Assert.ThrowsAsync<ApiException>(() => provider.ValidateCheckoutVariant(plan, 2118396));
+    }
+
+    [Test]
+    public async Task CheckoutValidationThrowsApiExceptionNotParseErrorWhenIntervalIsNull()
+    {
+        // Non-subscription variants report interval/interval_count as JSON null.
+        interval = null;
+        intervalCount = null;
+        Assert.ThrowsAsync<ApiException>(() => provider.ValidateCheckoutVariant(plan, 2118396));
     }
 
     [Test]
