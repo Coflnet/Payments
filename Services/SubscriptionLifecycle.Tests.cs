@@ -21,6 +21,41 @@ namespace Coflnet.Payments.Services;
 
 public partial class SubscriptionServiceTests
 {
+    [Test]
+    public async Task SignedSubscriptionInvoicePublishesProviderBuyerEmailForBazaarProUser()
+    {
+        const string accountEmail = "bazaarpro-account@example.test";
+        const string secret = "webhook-test-secret";
+        await userService.GetOrCreate(accountEmail);
+        var product = await context.TopUpProducts.FirstAsync();
+        var webhook = CreatePaymentWebhook(accountEmail, product.Id, "40002");
+        var payload = JsonSerializer.SerializeToUtf8Bytes(webhook);
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["LEMONSQUEEZY:SECRET"] = secret
+        }).Build();
+        PaymentEvent published = null;
+        var producer = new Mock<IPaymentEventProducer>();
+        producer.Setup(p => p.ProduceEvent(It.IsAny<PaymentEvent>()))
+            .Callback<PaymentEvent>(payment => published = payment)
+            .Returns(Task.CompletedTask);
+        var controller = new CallbackController(config, NullLogger<CallbackController>.Instance,
+            context, transactionService, null, producer.Object, subscriptionService,
+            NullLogger<GooglePayController>.Instance, null, productService, null, null)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+        controller.Request.Body = new MemoryStream(payload);
+        var signature = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), payload));
+
+        Assert.That(await controller.LemonSqueezy(signature), Is.TypeOf<OkResult>());
+        Assert.That(published, Is.Not.Null);
+        Assert.That(published.UserId, Is.EqualTo(accountEmail));
+        Assert.That(published.Email, Is.EqualTo(webhook.Data.Attributes.UserEmail));
+        Assert.That(published.PaymentProviderTransactionId, Is.EqualTo(webhook.Data.Attributes.Identifier));
+        producer.Verify(p => p.ProduceEvent(It.IsAny<PaymentEvent>()), Times.Once);
+    }
+
     [TestCase("subscription_updated")]
     [TestCase("subscription_plan_changed")]
     public async Task SignedPlanWebhookWaitsForPaidInvoiceAndDoesNotRenewAccess(string eventName)
