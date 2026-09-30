@@ -99,6 +99,7 @@ namespace Coflnet.Payments
             services.AddScoped<UserService>();
             services.AddScoped<Services.SubscriptionService>();
             services.AddScoped<LemonSqueezyService>();
+            services.AddScoped<ILemonSqueezyCustomerLookup>(sp => sp.GetRequiredService<LemonSqueezyService>());
             services.AddSingleton<VariantCacheService>();
             services.AddSingleton<GooglePlayService>();
             services.AddSingleton<ExchangeService>();

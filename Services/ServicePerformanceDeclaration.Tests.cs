@@ -337,8 +337,10 @@ public class ServicePerformanceDeclarationTests
         });
     }
 
-    [TestCase("CA")]
-    [TestCase("NO")]
+    [TestCase("TR")]
+    [TestCase("AE")]
+    [TestCase("tr")]
+    [TestCase("ZZZ")]
     [TestCase(null)]
     public async Task ExpertConfigRejectsUnsupportedBuyerCountry(string country)
     {
@@ -363,6 +365,238 @@ public class ServicePerformanceDeclarationTests
                 .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1))
                 ?.Message,
             Is.EqualTo("expert_config_tax_quote_unavailable"));
+    }
+
+    [TestCase("CA")]
+    [TestCase("NO")]
+    [TestCase("ca")]
+    public async Task ExpertConfigQuoteUsesRowRegimeWithZeroVat(string country)
+    {
+        var (product, user) = await ExpertConfigBuyer($"row-{country}-buyer", country);
+
+        var quote = await CreateService()
+            .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(quote.TaxCountry, Is.EqualTo(country.ToUpperInvariant()));
+            Assert.That(quote.ConsumerRightsRegime, Is.EqualTo("ROW"));
+            Assert.That(quote.VatRateBasisPoints, Is.Zero);
+            Assert.That(quote.VatEurCents, Is.Zero);
+        });
+    }
+
+    [Test]
+    public async Task LemonSqueezyOnlyBuyerWithoutCountryResolvesCountryThroughLookup()
+    {
+        var (product, user) = await ExpertConfigBuyer("ls-only-buyer", null);
+        AddLemonSqueezyRecord(user, "9001");
+        await db.SaveChangesAsync();
+        var lookup = new FakeLemonSqueezyLookup { Location = new("CA", "Ontario") };
+
+        var quote = await CreateService(lemonSqueezyLookup: lookup)
+            .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1);
+
+        db.ChangeTracker.Clear();
+        var storedUser = await db.Users.SingleAsync(u => u.ExternalId == user.ExternalId);
+        var storedRecord = await db.PaymentRecords.SingleAsync();
+        Assert.Multiple(() =>
+        {
+            Assert.That(lookup.OrderIds, Is.EqualTo(new[] { "9001" }));
+            Assert.That(quote.TaxCountry, Is.EqualTo("CA"));
+            Assert.That(quote.ConsumerRightsRegime, Is.EqualTo("ROW"));
+            Assert.That(quote.VatEurCents, Is.Zero);
+            Assert.That(storedUser.Country, Is.EqualTo("CA"));
+            Assert.That(storedRecord.Country, Is.EqualTo("CA"));
+        });
+    }
+
+    [Test]
+    public async Task LemonSqueezyLookupFailureKeepsQuoteUnavailable()
+    {
+        var (product, user) = await ExpertConfigBuyer("ls-lookup-fails", null);
+        AddLemonSqueezyRecord(user, "9002");
+        await db.SaveChangesAsync();
+        var lookup = new FakeLemonSqueezyLookup { Throw = true };
+
+        Assert.That(
+            Assert.ThrowsAsync<ApiException>(() => CreateService(lemonSqueezyLookup: lookup)
+                .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1))
+                ?.Message,
+            Is.EqualTo("expert_config_tax_quote_unavailable"));
+    }
+
+    private void AddLemonSqueezyRecord(User user, string orderId) =>
+        db.PaymentRecords.Add(new PaymentRecord
+        {
+            UserId = user.Id,
+            ExternalUserId = user.ExternalId,
+            Provider = "lemonsqueezy",
+            ExternalOrderId = "ls-" + orderId,
+            ExternalTransactionId = orderId,
+            Currency = "USD",
+            PaidAt = Now.AddDays(-1),
+            Status = PaymentRecordStatus.Confirmed
+        });
+
+    private sealed class FakeLemonSqueezyLookup : ILemonSqueezyCustomerLookup
+    {
+        public LemonSqueezyCustomerLocation Location { get; set; }
+        public bool Throw { get; set; }
+        public List<string> OrderIds { get; } = new();
+
+        public Task<LemonSqueezyCustomerLocation> GetCustomerLocationAsync(string customerId)
+            => throw new NotSupportedException();
+
+        public Task<LemonSqueezyCustomerLocation> GetOrderCustomerLocationAsync(string orderId)
+        {
+            OrderIds.Add(orderId);
+            if (Throw)
+                throw new InvalidOperationException("LS down");
+            return Task.FromResult(Location);
+        }
+    }
+
+    [Test]
+    public async Task EuCountryWithoutExplicitVatEntryIsStillUnavailable()
+    {
+        // ROW falls back to a default rate, EU must never do so
+        var (product, user) = await ExpertConfigBuyer("eu-no-vat-buyer", "FR");
+
+        Assert.That(
+            Assert.ThrowsAsync<ApiException>(() => CreateService()
+                .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1))
+                ?.Message,
+            Is.EqualTo("expert_config_tax_quote_unavailable"));
+    }
+
+    [Test]
+    public async Task RowDeclaredPurchaseWithGermanLocaleUsesEnglishTexts()
+    {
+        var product = AddExpertConfigProduct();
+        var user = await Fund("77");
+        user.Country = "CA";
+        user.Balance = 1000;
+        await db.SaveChangesAsync();
+        var service = CreateService(now: Now);
+        var quote = await service.GetServicePurchaseQuote(
+            product.Slug, user.ExternalId, 1);
+        var request = ExpertConfigRequest("row-de-locale-order", quote);
+        request.Locale = "de-DE";
+
+        await service.PurchaseServiceDeclared(
+            product.Slug, user.ExternalId, request);
+        // an exact retry must be recognised as the same request
+        user.Balance = 0;
+        await db.SaveChangesAsync();
+        Assert.DoesNotThrowAsync(() => CreateService(now: Now.AddTicks(-1))
+            .PurchaseServiceDeclared(product.Slug, user.ExternalId, request));
+
+        var evidence = await db.ServicePerformanceDeclarations.SingleAsync();
+        var confirmation = JsonConvert.DeserializeObject<PaymentEvent>(
+            (await db.PaymentConfirmationOutbox.SingleAsync()).Payload);
+        Assert.Multiple(() =>
+        {
+            Assert.That(quote.ConsumerRightsRegime, Is.EqualTo("ROW"));
+            Assert.That(evidence.Locale, Is.EqualTo("en"));
+            Assert.That(evidence.TaxCountry, Is.EqualTo("CA"));
+            Assert.That(confirmation.LegalLocale, Is.EqualTo("en"));
+        });
+    }
+
+    [Test]
+    public void SalesRestrictionsKeepCoinSaleBehaviour()
+    {
+        Assert.Multiple(() =>
+        {
+            foreach (var blocked in new[] { "TR", "AE", "SA", "KR", "VN", "CL", "MX", "PE", "MD" })
+                Assert.That(global::Payments.Controllers.CallbackController.DoWeSellto(blocked, null), Is.False, blocked);
+            Assert.That(global::Payments.Controllers.CallbackController.DoWeSellto("GB", "BT1 1AA"), Is.False);
+            Assert.That(global::Payments.Controllers.CallbackController.DoWeSellto("GB", "SW1A 1AA"), Is.True);
+            Assert.That(global::Payments.Controllers.CallbackController.DoWeSellto("CA", null), Is.True);
+        });
+    }
+
+    private async Task<(PurchaseableProduct product, User user)> ExpertConfigBuyer(
+        string id, string userCountry)
+    {
+        var product = new PurchaseableProduct
+        {
+            Title = "Expert config purchase",
+            Slug = "config-purchase",
+            Cost = 600,
+            OwnershipSeconds = 0,
+            Type = Product.ProductType.SERVICE,
+            Groups = []
+        };
+        var group = new Group { Slug = product.Slug, Products = [product] };
+        product.Groups.Add(group);
+        db.Groups.Add(group);
+        var user = await Fund(id);
+        user.Country = userCountry;
+        await db.SaveChangesAsync();
+        return (product, user);
+    }
+
+    private void AddRecord(User user, string country, DateTime paidAt) =>
+        db.PaymentRecords.Add(new PaymentRecord
+        {
+            ExternalUserId = user.ExternalId,
+            UserId = user.Id,
+            Country = country,
+            Currency = "EUR",
+            Provider = "test",
+            PaidAt = paidAt
+        });
+
+    [Test]
+    public async Task ExpertConfigQuoteFallsBackToPaymentRecordCountry()
+    {
+        var (product, user) = await ExpertConfigBuyer("record-country-buyer", null);
+        AddRecord(user, "fr", DateTime.UtcNow.AddDays(-5));
+        AddRecord(user, " de ", DateTime.UtcNow.AddDays(-1));
+        AddRecord(user, null, DateTime.UtcNow);
+        await db.SaveChangesAsync();
+
+        var quote = await CreateService()
+            .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(quote.TaxCountry, Is.EqualTo("DE"));
+            Assert.That(quote.ConsumerRightsRegime, Is.EqualTo("EU"));
+        });
+    }
+
+    [Test]
+    public async Task ExpertConfigQuoteWithoutAnyCountryIsUnavailable()
+    {
+        var (product, user) = await ExpertConfigBuyer("no-country-buyer", null);
+        AddRecord(user, "", DateTime.UtcNow);
+        await db.SaveChangesAsync();
+
+        Assert.That(
+            Assert.ThrowsAsync<ApiException>(() => CreateService()
+                .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1))
+                ?.Message,
+            Is.EqualTo("expert_config_tax_quote_unavailable"));
+    }
+
+    [Test]
+    public async Task ExpertConfigUserCountryTakesPrecedenceOverRecords()
+    {
+        var (product, user) = await ExpertConfigBuyer("precedence-buyer", "US");
+        AddRecord(user, "DE", DateTime.UtcNow);
+        await db.SaveChangesAsync();
+
+        var quote = await CreateService()
+            .GetServicePurchaseQuote(product.Slug, user.ExternalId, 1);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(quote.TaxCountry, Is.EqualTo("US"));
+            Assert.That(quote.ConsumerRightsRegime, Is.EqualTo("US"));
+        });
     }
 
     [TestCase("GB", "UK", 2000)]
@@ -616,7 +850,8 @@ public class ServicePerformanceDeclarationTests
     private TransactionService CreateService(
         bool enforce = false,
         ILogger<TransactionService> logger = null,
-        DateTime? now = null)
+        DateTime? now = null,
+        ILemonSqueezyCustomerLookup lemonSqueezyLookup = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string>
@@ -629,7 +864,8 @@ public class ServicePerformanceDeclarationTests
                 ["CONVERSION_RATE:Eur"] = "6.69",
                 ["EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:DE"] = "1900",
                 ["EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:GB"] = "2000",
-                ["EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:US"] = "0"
+                ["EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:US"] = "0",
+                ["EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:ROW"] = "0"
             })
             .Build();
         return new(
@@ -639,7 +875,8 @@ public class ServicePerformanceDeclarationTests
             new NoopTransactionProducer(),
             config,
             new RuleEngine(NullLogger<RuleEngine>.Instance, db),
-            new FixedTimeProvider(new DateTimeOffset(now ?? Now)));
+            new FixedTimeProvider(new DateTimeOffset(now ?? Now)),
+            lemonSqueezyLookup);
     }
 
     private PurchaseableProduct AddExpertConfigProduct()

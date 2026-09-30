@@ -34,6 +34,7 @@ namespace Coflnet.Payments.Services
         private readonly TimeProvider timeProvider;
         private readonly bool enforceServicePerformanceDeclaration;
         private readonly IConfiguration configuration;
+        private readonly ILemonSqueezyCustomerLookup lemonSqueezyLookup;
 
         public TransactionService(
             ILogger<TransactionService> logger,
@@ -42,8 +43,10 @@ namespace Coflnet.Payments.Services
             ITransactionEventProducer transactionEventProducer,
             IConfiguration config,
             IRuleEngine ruleEngine,
-            TimeProvider timeProvider = null)
+            TimeProvider timeProvider = null,
+            ILemonSqueezyCustomerLookup lemonSqueezyLookup = null)
         {
+            this.lemonSqueezyLookup = lemonSqueezyLookup;
             this.logger = logger;
             db = context;
             this.userService = userService;
@@ -511,7 +514,9 @@ namespace Coflnet.Payments.Services
             await WithTransactionAsync(async (tx, owns) =>
             {
                 var user = await userService.GetOrCreate(userId);
-                var locale = NormalizeLocale(request?.Locale);
+                var locale = NormalizeLocale(
+                    request?.Locale,
+                    request?.ConsumerRightsRegime);
                 if (request != null)
                 {
                     if (!Guid.TryParse(request.RequestId, out _))
@@ -756,8 +761,14 @@ namespace Coflnet.Payments.Services
             });
         }
 
-        private static string NormalizeLocale(string locale) =>
-            locale?.StartsWith(
+        /// <summary>
+        /// ROW (rest of world) legal texts only exist in English, so ROW
+        /// declarations are always recorded and compared as "en".
+        /// </summary>
+        private static string NormalizeLocale(string locale, string regime = null) =>
+            regime == "ROW"
+                ? "en"
+                : locale?.StartsWith(
                 "de",
                 StringComparison.OrdinalIgnoreCase) == true
                 ? "de"
@@ -797,25 +808,86 @@ namespace Coflnet.Payments.Services
             && evidence.VatEurCents == request.VatEurCents
             && evidence.OrderDetailsJson == request.OrderDetailsJson;
 
-        private static string ConsumerRightsRegime(string country) =>
-            country switch
+        /// <summary>
+        /// Maps a buyer country to the consumer-rights regime. Countries we do
+        /// not sell to, and unknown or malformed countries, have no regime.
+        /// </summary>
+        private static string ConsumerRightsRegime(string country)
+        {
+            if (country == "GB")
+                return "UK";
+            if (country == "US")
+                return "US";
+            if (country != null && EuCountries.Contains(country))
+                return "EU";
+            if (country?.Length == 2
+                && country.All(c => c is >= 'A' and <= 'Z')
+                && !SalesRestrictions.IsCountryBlocked(country))
+                return "ROW";
+            return null;
+        }
+
+        /// <summary>
+        /// Lazy backfill for Lemon Squeezy buyers whose country was never stored: looks up the
+        /// most recent LS order's customer, persists the country on the user and record.
+        /// Never throws; returns null on any failure so the caller keeps the quote-unavailable error.
+        /// </summary>
+        private async Task<string> ResolveLemonSqueezyCountry(User user)
+        {
+            if (lemonSqueezyLookup == null)
+                return null;
+            try
             {
-                "GB" => "UK",
-                "US" => "US",
-                _ when EuCountries.Contains(country) => "EU",
-                _ => null
-            };
+                var record = await db.PaymentRecords
+                    .Where(r => r.ExternalUserId == user.ExternalId
+                        && r.Provider == "lemonsqueezy"
+                        && r.ExternalTransactionId != null)
+                    .OrderByDescending(r => r.PaidAt)
+                    .FirstOrDefaultAsync();
+                if (record == null)
+                    return null;
+                var location = await lemonSqueezyLookup
+                    .GetOrderCustomerLocationAsync(record.ExternalTransactionId)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                if (location?.Country == null)
+                    return null;
+                record.Country = location.Country;
+                record.State ??= location.Region;
+                user.Country = location.Country;
+                await db.SaveChangesAsync();
+                return location.Country;
+            }
+            catch (Exception e)
+            {
+                logger.LogWarning(e, "Could not resolve Lemon Squeezy country for user {UserId}", user.ExternalId);
+                return null;
+            }
+        }
 
         private async Task<ServicePurchaseQuote> Quote(
             User user,
             decimal coinAmount)
         {
             var country = user.Country?.Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(country))
+            {
+                // User.Country is only set by the Stripe/PayPal webhooks; buyers
+                // from other providers only have it on their payment records.
+                var recordCountry = await db.PaymentRecords.AsNoTracking()
+                    .Where(record => record.ExternalUserId == user.ExternalId
+                        && record.Country != null && record.Country.Trim() != "")
+                    .OrderByDescending(record => record.PaidAt)
+                    .Select(record => record.Country)
+                    .FirstOrDefaultAsync();
+                country = recordCountry?.Trim().ToUpperInvariant();
+            }
+            if (string.IsNullOrEmpty(country))
+                country = await ResolveLemonSqueezyCountry(user);
             if (country == "GB")
             {
                 var postalCode = await db.PaymentRecords.AsNoTracking()
                     .Where(record => record.ExternalUserId == user.ExternalId
-                        && record.Country == "GB")
+                        && record.Country.ToUpper() == "GB")
                     .OrderByDescending(record => record.PaidAt)
                     .Select(record => record.ZipCode)
                     .FirstOrDefaultAsync();
@@ -825,13 +897,7 @@ namespace Coflnet.Payments.Services
                     throw new ApiException(
                         "expert_config_tax_quote_unavailable");
             }
-            var consumerRightsRegime = country switch
-            {
-                "GB" => "UK",
-                "US" => "US",
-                _ when EuCountries.Contains(country) => "EU",
-                _ => null
-            };
+            var consumerRightsRegime = ConsumerRightsRegime(country);
             var valuationCoins = configuration?.GetValue<decimal>(
                 "CONVERSION_RATE:Amount") ?? 0;
             var valuationEur = configuration?.GetValue<decimal>(
@@ -840,6 +906,9 @@ namespace Coflnet.Payments.Services
                 ? configuration?.GetValue<int?>(
                     $"EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:{country}")
                 : null;
+            if (!vatRate.HasValue && consumerRightsRegime == "ROW")
+                vatRate = configuration?.GetValue<int?>(
+                    "EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:ROW");
             if (consumerRightsRegime == null
                 || valuationCoins <= 0 || valuationEur <= 0 || !vatRate.HasValue
                 || vatRate is < 0 or > 10_000)

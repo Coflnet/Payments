@@ -50,6 +50,7 @@ namespace Payments.Controllers
         private readonly GooglePayController _googlePayController;
         private readonly CreatorCodeService _creatorCodeService;
         private readonly CoinGateService _coinGateService;
+        private readonly ILemonSqueezyCustomerLookup _lemonSqueezyCustomerLookup;
 
         public CallbackController(
             IConfiguration config,
@@ -63,9 +64,11 @@ namespace Payments.Controllers
             GooglePlayService googlePlayService,
             Coflnet.Payments.Services.ProductService productService,
             CreatorCodeService creatorCodeService,
-            CoinGateService coinGateService)
+            CoinGateService coinGateService,
+            ILemonSqueezyCustomerLookup lemonSqueezyCustomerLookup = null)
         {
             _logger = logger;
+            _lemonSqueezyCustomerLookup = lemonSqueezyCustomerLookup;
             db = context;
             signingSecret = config["STRIPE:SIGNING_SECRET"];
             lemonSqueezySecret = config["LEMONSQUEEZY:SECRET"];
@@ -82,6 +85,26 @@ namespace Payments.Controllers
             this.productService = productService;
             // instantiate GooglePayController to reuse its verification logic and keep a single implementation
             _googlePayController = new GooglePayController(googlePayLogger, googlePlayService, transactionService, paymentEventProducer, productService);
+        }
+
+        /// <summary>
+        /// Best-effort lookup of the LemonSqueezy customer's billing location. Never throws.
+        /// </summary>
+        private async Task<LemonSqueezyCustomerLocation> LookupLemonSqueezyLocation(int customerId)
+        {
+            if (_lemonSqueezyCustomerLookup == null || customerId <= 0)
+                return null;
+            try
+            {
+                return await _lemonSqueezyCustomerLookup
+                    .GetCustomerLocationAsync(customerId.ToString())
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not resolve Lemon Squeezy customer {CustomerId} country", customerId);
+                return null;
+            }
         }
 
         /// <summary>
@@ -444,11 +467,21 @@ namespace Payments.Controllers
                     }
                     catch { /* already logged */ }
                 }
+                // The order webhook carries no billing country. Resolve it from the LS customer.
+                // LS wins for the payment record (it is the order's billing country); the user's
+                // country is only filled when empty so a Stripe/PayPal-derived value is kept.
+                var lsLocation = await LookupLemonSqueezyLocation(data.Attributes.CustomerId);
+                if (lsLocation?.Country != null && lsUser != null && string.IsNullOrWhiteSpace(lsUser.Country))
+                {
+                    lsUser.Country = lsLocation.Country;
+                    await db.SaveChangesAsync();
+                }
                 await RecordPayment(new PaymentRecord
                 {
                     UserId = lsUser?.Id ?? 0,
                     ExternalUserId = meta.CustomData.UserId,
-                    Country = lsUser?.Country,
+                    Country = lsLocation?.Country ?? lsUser?.Country,
+                    State = lsLocation?.Region,
                     ZipCode = lsUser?.Zip,
                     GrossAmount = data.Attributes.Total / 100m,
                     Subtotal = data.Attributes.Subtotal / 100m,
@@ -1210,14 +1243,7 @@ namespace Payments.Controllers
         /// <returns>True if we accept payment from this country</returns>
         public static bool DoWeSellto(string country, string postalCode)
         {
-            if (country == "GB" && (postalCode?.StartsWith("BT") ?? false))
-                return false; // registration too complicated for northern ireland
-            if (country == "AE")
-                return false; // can't register for taxes as a foreigner
-            var list = new string[] { "TR", "AE", "SA", "KR", "VN", "CL", "MX", "PE", "MD" };
-            if (list.Contains(country))
-                return false; // to much overhead to register for taxes
-            return true;
+            return SalesRestrictions.DoWeSellTo(country, postalCode);
         }
 
         private async Task CompleteOrder(PayPalCheckoutSdk.Core.PayPalHttpClient client, string id)

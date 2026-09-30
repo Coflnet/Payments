@@ -14,7 +14,7 @@ using RestSharp;
 
 namespace Coflnet.Payments.Services;
 
-public class LemonSqueezyService
+public class LemonSqueezyService : ILemonSqueezyCustomerLookup
 {
     public IReadOnlyDictionary<string, long> SubscriptionVariants => config["LEMONSQUEEZY:SUBSCRIPTION_VARIANTS"] is string mappings
         ? System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, long>>(mappings)
@@ -953,6 +953,46 @@ public class LemonSqueezyService
             DirctLink = link,
             Id = checkoutId
         };
+    }
+
+    /// <inheritdoc />
+    public virtual async Task<LemonSqueezyCustomerLocation> GetCustomerLocationAsync(string customerId)
+    {
+        // https://docs.lemonsqueezy.com/api/customers/the-customer-object (attributes.country/region)
+        var root = await GetJsonApiAsync($"/v1/customers/{Uri.EscapeDataString(customerId)}");
+        var attributes = root.GetProperty("data").GetProperty("attributes");
+        var country = attributes.TryGetProperty("country", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String
+            ? c.GetString()?.Trim().ToUpperInvariant() : null;
+        if (country?.Length != 2)
+            return null;
+        var region = attributes.TryGetProperty("region", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.String
+            ? r.GetString()?.Trim() : null;
+        if (region?.Length > 10)
+            region = region[..10];
+        return new LemonSqueezyCustomerLocation(country, string.IsNullOrEmpty(region) ? null : region);
+    }
+
+    /// <inheritdoc />
+    public virtual async Task<LemonSqueezyCustomerLocation> GetOrderCustomerLocationAsync(string orderId)
+    {
+        var order = await GetJsonApiAsync($"/v1/orders/{Uri.EscapeDataString(orderId)}");
+        var attributes = order.GetProperty("data").GetProperty("attributes");
+        if (!attributes.TryGetProperty("customer_id", out var customerId)
+            || customerId.ValueKind != System.Text.Json.JsonValueKind.Number)
+            return null;
+        return await GetCustomerLocationAsync(customerId.GetInt64().ToString());
+    }
+
+    private async Task<System.Text.Json.JsonElement> GetJsonApiAsync(string path)
+    {
+        using var restclient = new RestClient(config["LEMONSQUEEZY:API_BASE_URL"] ?? "https://api.lemonsqueezy.com");
+        var request = new RestRequest(path, Method.Get);
+        request.AddHeader("Accept", "application/vnd.api+json");
+        request.AddHeader("Authorization", "Bearer " + config["LEMONSQUEEZY:API_KEY"]);
+        var response = await restclient.ExecuteAsync(request);
+        if (!response.IsSuccessful)
+            throw new InvalidOperationException($"Lemon Squeezy GET {path} failed: {(int)response.StatusCode}");
+        return System.Text.Json.JsonDocument.Parse(response.Content).RootElement.Clone();
     }
 
     private RestRequest CreateRequest(Method method)

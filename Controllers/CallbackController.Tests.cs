@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
@@ -146,6 +147,126 @@ public class CallbackControllerTests
         Assert.That(
             await context.FiniteTransactions.AnyAsync(t => t.Reference == "coingate:37656726"),
             Is.True);
+    }
+
+    [Test]
+    public async Task LemonSqueezyOrder_NullUserCountry_StoresCustomerCountryOnUserAndRecord()
+    {
+        var lookup = new FakeLemonSqueezyLookup { Location = new("CA", "Ontario") };
+        var (user, context) = await PostLemonSqueezyOrder(lookup, "ls-ca-buyer");
+
+        var record = await context.PaymentRecords.SingleAsync();
+        Assert.Multiple(() =>
+        {
+            Assert.That(lookup.CustomerIds, Is.EqualTo(new[] { "4242" }));
+            Assert.That(user.Country, Is.EqualTo("CA"));
+            Assert.That(record.Country, Is.EqualTo("CA"));
+            Assert.That(record.State, Is.EqualTo("Ontario"));
+        });
+    }
+
+    [Test]
+    public async Task LemonSqueezyOrder_ExistingUserCountry_IsNotOverwritten()
+    {
+        var lookup = new FakeLemonSqueezyLookup { Location = new("CA", null) };
+        var (user, context) = await PostLemonSqueezyOrder(lookup, "ls-de-buyer", "DE");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(user.Country, Is.EqualTo("DE"));
+            Assert.That(context.PaymentRecords.Single().Country, Is.EqualTo("CA"));
+        });
+    }
+
+    [Test]
+    public async Task LemonSqueezyOrder_FailedLookup_StillCompletesTopUp()
+    {
+        var lookup = new FakeLemonSqueezyLookup { Throw = true };
+        var (user, context) = await PostLemonSqueezyOrder(lookup, "ls-fail-buyer");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(user.Country, Is.Null);
+            Assert.That(user.Balance, Is.EqualTo(1800));
+            Assert.That(context.PaymentRecords.Single().Country, Is.Null);
+        });
+    }
+
+    private static async Task<(User user, PaymentContext context)> PostLemonSqueezyOrder(
+        FakeLemonSqueezyLookup lookup, string externalId, string userCountry = null)
+    {
+        var connection = new SqliteConnection("Filename=:memory:");
+        connection.Open();
+        var context = new PaymentContext(new DbContextOptionsBuilder<PaymentContext>()
+            .UseSqlite(connection).Options);
+        await context.Database.EnsureCreatedAsync();
+        var user = new User { ExternalId = externalId, Locale = "en-US", Country = userCountry };
+        context.Users.Add(user);
+        context.TopUpProducts.Add(new TopUpProduct
+        {
+            Id = 153,
+            Title = "1,800 CoflCoins",
+            Slug = "c_cc_1800",
+            Cost = 1800,
+            Type = Product.ProductType.TOP_UP
+        });
+        await context.SaveChangesAsync();
+        var events = new NullEventProducer();
+        var transactionService = new TransactionService(
+            NullLogger<TransactionService>.Instance, context,
+            new UserService(NullLogger<UserService>.Instance, context),
+            events, null, new RuleEngine(NullLogger<RuleEngine>.Instance, context));
+        const string secret = "test-secret";
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new[] { new KeyValuePair<string, string>("LEMONSQUEEZY:SECRET", secret) })
+            .Build();
+        var controller = new CallbackController(
+            config, NullLogger<CallbackController>.Instance, context, transactionService,
+            null, events, null, NullLogger<GooglePayController>.Instance, null, null, null, null,
+            lookup);
+        var payload = Encoding.UTF8.GetBytes($$"""
+            {
+              "meta": {
+                "event_name": "order_created",
+                "custom_data": { "user_id": "{{externalId}}", "product_id": 153, "coin_amount": 1800, "is_subscription": "false" }
+              },
+              "data": {
+                "type": "orders",
+                "id": "9001",
+                "attributes": {
+                  "store_id": 1, "customer_id": 4242, "identifier": "ls-order-{{externalId}}",
+                  "status": "paid", "currency": "USD", "total": 999, "subtotal": 999, "tax": 0,
+                  "user_name": "Buyer", "user_email": "buyer@example.com",
+                  "created_at": "2026-09-01T10:00:00Z"
+                }
+              }
+            }
+            """);
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
+        controller.Request.Body = new MemoryStream(payload);
+        var signature = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), payload));
+        var result = await controller.LemonSqueezy(signature);
+        Assert.That(result, Is.TypeOf<OkResult>());
+        await context.Entry(user).ReloadAsync();
+        return (user, context);
+    }
+
+    private sealed class FakeLemonSqueezyLookup : ILemonSqueezyCustomerLookup
+    {
+        public LemonSqueezyCustomerLocation Location { get; set; }
+        public bool Throw { get; set; }
+        public List<string> CustomerIds { get; } = new();
+
+        public Task<LemonSqueezyCustomerLocation> GetCustomerLocationAsync(string customerId)
+        {
+            CustomerIds.Add(customerId);
+            if (Throw)
+                throw new InvalidOperationException("LS down");
+            return Task.FromResult(Location);
+        }
+
+        public Task<LemonSqueezyCustomerLocation> GetOrderCustomerLocationAsync(string orderId)
+            => throw new NotSupportedException();
     }
 
     private static CallbackController CreateLemonSqueezyController(string secret, byte[] payload)
