@@ -1008,4 +1008,27 @@ public class ServicePerformanceDeclarationTests
         public Task ProduceEvent(TransactionEvent transactionEvent) =>
             Task.CompletedTask;
     }
+
+    [Test]
+    public void PurchaseRequestAcceptsRowConsumerRightsRegime()
+    {
+        // ASP.NET model validation rejected "ROW" (MaxLength 2) before it reached the service
+        var request = new ServicePurchaseRequest
+        {
+            Reference = "row-validation",
+            RequestId = "row-validation",
+            Locale = "en",
+            ConsumerRightsRegime = "ROW",
+            TaxCountry = "AI"
+        };
+        var results = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
+
+        var valid = System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+            request,
+            new System.ComponentModel.DataAnnotations.ValidationContext(request),
+            results,
+            validateAllProperties: true);
+
+        Assert.That(valid, Is.True, string.Join("; ", results.Select(r => r.ErrorMessage)));
+    }
 }

@@ -80,7 +80,7 @@ public sealed class ServicePurchaseRequest
     public string WithdrawalSha256 { get; set; }
     [MaxLength(2)]
     public string TaxCountry { get; set; }
-    [MaxLength(2)]
+    [MaxLength(3)]
     public string ConsumerRightsRegime { get; set; }
     public int VatRateBasisPoints { get; set; }
     public long GrossEurCents { get; set; }
