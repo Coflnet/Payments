@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -156,6 +157,52 @@ public class CoinGateService
 
         _logger.LogInformation("CoinGate order {OrderId} status: {Status}", orderId, order.Status);
         return order;
+    }
+
+    /// <summary>
+    /// Date value for the orders list filters. Verified against the live API on 2026-10-07: CoinGate honours
+    /// <c>paid_at[from]=yyyy-MM-dd</c> but silently ignores a value with a time part and returns every order.
+    /// </summary>
+    public static string PaidOrdersFilterDate(DateTime from)
+    {
+        return from.ToUniversalTime().Date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Lists all orders with status paid whose paid_at is at or after <paramref name="from"/>
+    /// </summary>
+    public virtual async Task<List<CoinGateOrderResponse>> ListPaidOrdersAsync(DateTime from)
+    {
+        if (!IsConfigured)
+        {
+            throw new ApiException("CoinGate payments are not configured");
+        }
+
+        var result = new List<CoinGateOrderResponse>();
+        var fromParam = Uri.EscapeDataString(PaidOrdersFilterDate(from));
+        var page = 1;
+        var totalPages = 1;
+        do
+        {
+            var url = $"{_baseUrl}/orders?status=paid&paid_at[from]={fromParam}&page={page}&per_page=100";
+            var response = await _httpClient.GetAsync(url);
+            var content = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("CoinGate API error listing paid orders page {Page}: {StatusCode} - {Response}",
+                    page, response.StatusCode, content);
+                throw new ApiException($"Failed to list CoinGate orders: {content}");
+            }
+            var list = JsonSerializer.Deserialize<CoinGateOrderList>(content, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+            if (list?.Orders != null)
+                result.AddRange(list.Orders);
+            totalPages = list?.TotalPages ?? 1;
+            page++;
+        } while (page <= totalPages);
+        return result;
     }
 
     /// <summary>

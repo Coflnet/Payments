@@ -50,6 +50,7 @@ namespace Payments.Controllers
         private readonly GooglePayController _googlePayController;
         private readonly CreatorCodeService _creatorCodeService;
         private readonly CoinGateService _coinGateService;
+        private readonly CoinGateOrderProcessor _coinGateOrderProcessor;
         private readonly ILemonSqueezyCustomerLookup _lemonSqueezyCustomerLookup;
 
         public CallbackController(
@@ -65,9 +66,13 @@ namespace Payments.Controllers
             Coflnet.Payments.Services.ProductService productService,
             CreatorCodeService creatorCodeService,
             CoinGateService coinGateService,
-            ILemonSqueezyCustomerLookup lemonSqueezyCustomerLookup = null)
+            ILemonSqueezyCustomerLookup lemonSqueezyCustomerLookup = null,
+            CoinGateOrderProcessor coinGateOrderProcessor = null)
         {
             _logger = logger;
+            _coinGateOrderProcessor = coinGateOrderProcessor ?? new CoinGateOrderProcessor(
+                context, transactionService, paymentEventProducer,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<CoinGateOrderProcessor>.Instance);
             _lemonSqueezyCustomerLookup = lemonSqueezyCustomerLookup;
             db = context;
             signingSecret = config["STRIPE:SIGNING_SECRET"];
@@ -724,68 +729,19 @@ namespace Payments.Controllers
                     return StatusCode(400, "Callback verification failed");
                 }
 
-                var user = await db.Users.Where(u => u.ExternalId == userId).FirstOrDefaultAsync();
-                var userCountry = user?.Country;
-
                 // Process based on status
                 switch (callback.Status)
                 {
                     case CoinGateOrderStatus.Paid:
                         _logger.LogInformation("CoinGate payment completed for order {OrderId}, user {UserId}", callback.OrderId, userId);
                         
-                        try
-                        {
-                            // Use the CoinGate order ID as the transaction reference
-                            var reference = $"coingate:{callback.Id}";
-                            await transactionService.AddTopUp(productId, userId, reference, (int)coinAmount);
-
-                            // Send payment event
-                            await paymentEventProducer.ProduceEvent(new PaymentEvent
-                            {
-                                PayedAmount = (double)callback.PriceAmount,
-                                ProductId = productId.ToString(),
-                                UserId = userId,
-                                Currency = callback.PriceCurrency,
-                                PaymentMethod = callback.PayCurrency ?? "crypto",
-                                PaymentProvider = "coingate",
-                                PaymentProviderTransactionId = callback.Id.ToString(),
-                                Timestamp = callback.CreatedAt
-                            });
-
-                            _logger.LogInformation("CoinGate topup processed successfully: {OrderId}, {Amount} coins for user {UserId}", 
-                                callback.OrderId, coinAmount, userId);
-
-                            // Record for tax compliance — CoinGate does NOT remit tax
-                            await RecordPayment(new PaymentRecord
-                            {
-                                UserId = user?.Id ?? 0,
-                                ExternalUserId = userId,
-                                Country = userCountry,
-                                ZipCode = user?.Zip,
-                                GrossAmount = callback.PriceAmount,
-                                Subtotal = callback.PriceAmount,
-                                TaxAmount = 0,
-                                TaxRemittedByProcessor = false,
-                                NetAmount = callback.ReceiveAmount ?? callback.PriceAmount,
-                                ProcessorFee = callback.PriceAmount - (callback.ReceiveAmount ?? callback.PriceAmount),
-                                Currency = callback.PriceCurrency?.ToUpper() ?? "USD",
-                                Provider = "coingate",
-                                PaymentMethod = callback.PayCurrency ?? "crypto",
-                                ExternalOrderId = callback.OrderId,
-                                ExternalTransactionId = callback.Id.ToString(),
-                                ProductSlug = productId.ToString(),
-                                ProductId = productId,
-                                CoinAmount = (long)coinAmount,
-                                PaidAt = callback.CreatedAt,
-                                Status = PaymentRecordStatus.Confirmed,
-                                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString()
-                            });
-                        }
-                        catch (TransactionService.DupplicateTransactionException)
-                        {
-                            _logger.LogInformation("CoinGate duplicate transaction for order {OrderId}", callback.OrderId);
-                            // Already processed, return success
-                        }
+                        await _coinGateOrderProcessor.ProcessPaidOrderAsync(
+                            CoinGateOrder.FromCallback(callback),
+                            userId,
+                            productId.ToString(),
+                            (int)coinAmount,
+                            "callback",
+                            HttpContext.Connection.RemoteIpAddress?.ToString());
                         break;
 
                     case CoinGateOrderStatus.Confirming:

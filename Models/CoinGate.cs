@@ -195,6 +195,21 @@ public class CoinGateOrderResponse
 }
 
 /// <summary>
+/// Paged order listing returned by GET /v2/orders
+/// </summary>
+public class CoinGateOrderList
+{
+    [JsonPropertyName("current_page")]
+    public int CurrentPage { get; set; }
+
+    [JsonPropertyName("total_pages")]
+    public int TotalPages { get; set; }
+
+    [JsonPropertyName("orders")]
+    public System.Collections.Generic.List<CoinGateOrderResponse> Orders { get; set; }
+}
+
+/// <summary>
 /// CoinGate payment callback data
 /// </summary>
 public class CoinGateCallback
