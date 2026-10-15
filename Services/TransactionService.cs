@@ -21,8 +21,11 @@ namespace Coflnet.Payments.Services
     {
         private const string ExpertMarketplaceAgreementHash =
             "d477358662b81d464396331ff79511db1623d5ad5c77809e3b92a5f0ce50acfe";
-        private const string CreatorMarketplaceAgreementHash =
-            "571ab277e36066ac89929fd72304096eb5b15dd324d8cb3718808a0454b76ddb";
+        private static readonly HashSet<string> CreatorMarketplaceAgreementHashes = new(StringComparer.Ordinal)
+        {
+            "56555b769bca24d8abb3e0617326e93f3b1484045ca2ebecceb28c69925efe4e",
+            "571ab277e36066ac89929fd72304096eb5b15dd324d8cb3718808a0454b76ddb"
+        };
         private static readonly DateTimeOffset ExpertConfigRolloutAt = new(
             2026, 9, 4, 10, 0, 0, TimeSpan.Zero);
         private ILogger<TransactionService> logger;
@@ -956,10 +959,8 @@ namespace Coflnet.Payments.Services
                         (string)details["acceptedAgreement"]?["hash"],
                         ExpertMarketplaceAgreementHash,
                         StringComparison.Ordinal)
-                    || !string.Equals(
-                        (string)details["creatorAgreementHash"],
-                        CreatorMarketplaceAgreementHash,
-                        StringComparison.Ordinal))
+                    || !CreatorMarketplaceAgreementHashes.Contains(
+                        (string)details["creatorAgreementHash"]))
                     throw new JsonException();
             }
             catch (JsonException)

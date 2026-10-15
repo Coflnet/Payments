@@ -266,21 +266,17 @@ public class ServicePerformanceDeclarationTests
         });
     }
 
-    [Test]
-    public async Task Pinned_agreement_hashes_match_mod_release()
+    [TestCase("56555b769bca24d8abb3e0617326e93f3b1484045ca2ebecceb28c69925efe4e")]
+    [TestCase("571ab277e36066ac89929fd72304096eb5b15dd324d8cb3718808a0454b76ddb")]
+    public async Task Pinned_agreement_hashes_match_mod_release(
+        string modPinnedCreatorMarketplaceHash)
     {
-        // Hardcoded on purpose (do not reference the shared
-        // ExpertMarketplaceAgreementHash / CreatorMarketplaceAgreementHash
-        // constants above): these are copied verbatim from SkyModCommands
-        // CurrentAgreement.ExpertMarketplaceHash / CreatorMarketplaceHash.
-        // The mod hard-enforces sending exactly these values
-        // (CurrentAgreement.InitializeExpertConfig throws otherwise), so
-        // Payments must accept exactly what the mod pins, or every Expert
-        // Config purchase fails.
+        // Copied from SkyModCommands CurrentAgreement.ExpertMarketplaceHash
+        // and CreatorMarketplaceHashes, independently of the shared constants.
+        // Both compatible creator roots remain valid; new orders record the
+        // published root, which Payments must accept and preserve exactly.
         const string modPinnedExpertMarketplaceHash =
             "d477358662b81d464396331ff79511db1623d5ad5c77809e3b92a5f0ce50acfe";
-        const string modPinnedCreatorMarketplaceHash =
-            "571ab277e36066ac89929fd72304096eb5b15dd324d8cb3718808a0454b76ddb";
         var product = AddExpertConfigProduct();
         var user = await Fund("7");
         user.Country = "DE";
@@ -307,6 +303,8 @@ public class ServicePerformanceDeclarationTests
             .PurchaseServiceDeclared(product.Slug, user.ExternalId, request),
             "Pinned agreement evidence matching the mod's current release " +
             "must not be rejected as invalid_expert_config_order_evidence.");
+        var evidence = await db.ServicePerformanceDeclarations.SingleAsync();
+        Assert.That(evidence.OrderDetailsJson, Is.EqualTo(request.OrderDetailsJson));
     }
 
     [Test]
