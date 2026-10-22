@@ -90,6 +90,19 @@ public class PaypalSecurityTests
         return controller;
     }
 
+    /// <summary>Records the order the way <see cref="TopUpController.CreatePayPal"/> does.</summary>
+    private async Task<PaymentRequest> SeedRequest(decimal amount = 10, string orderId = "ORDER", User user = null, TopUpProduct product = null)
+    {
+        var request = new PaymentRequest
+        {
+            User = user ?? sender, ProductId = product ?? topup, Provider = "paypal", SessionId = orderId,
+            Amount = amount, State = PaymentRequest.Status.CREATED, CreatedAt = DateTime.UtcNow
+        };
+        db.PaymentRequests.Add(request);
+        await db.SaveChangesAsync();
+        return request;
+    }
+
     private async Task SeedCredit(Product product = null, decimal amount = 100)
     {
         db.FiniteTransactions.Add(new FiniteTransaction { Product = product ?? topup, User = sender, Amount = amount, Reference = "CAPTURE" });
@@ -263,23 +276,27 @@ public class PaypalSecurityTests
          "links":[{"rel":"self","href":"https://attacker.invalid/FAKE"}]}}
         """;
 
-    private void SetOrder(string status = "COMPLETED")
+    private void SetOrder(string status = "COMPLETED", string customId = null, string amount = "10.00", string currency = "EUR")
     {
+        customId ??= $"{topup.Id};100;sender";
         paypal.Replies["/v2/checkout/orders/ORDER"] = JObject.Parse($$$"""
         {"id":"ORDER","status":"{{{status}}}",
          "payer":{"email_address":"buyer@example.invalid","name":{"given_name":"Test","surname":"Buyer"},
                   "address":{"country_code":"DE","postal_code":"10115"}},
-         "purchase_units":[{"reference_id":"sender","custom_id":"{{{topup.Id}}};100;sender",
-           "amount":{"value":"10.00","currency_code":"EUR"},
+         "purchase_units":[{"reference_id":"sender","custom_id":"{{{customId}}}",
+           "amount":{"value":"{{{amount}}}","currency_code":"{{{currency}}}"},
            "shipping":{"name":{"full_name":"Test Buyer"},"address":{"country_code":"DE","postal_code":"10115"}},
-           "payments":{"captures":[{"id":"CAPTURE","status":"COMPLETED","amount":{"value":"10.00","currency_code":"EUR"}}]}}]}
+           "payments":{"captures":[{"id":"CAPTURE","status":"COMPLETED","amount":{"value":"{{{amount}}}","currency_code":"{{{currency}}}"}}]}}]}
+        """);
+        paypal.Replies["/v2/payments/captures/CAPTURE"] = JObject.Parse($$$"""
+        {"id":"CAPTURE","status":"COMPLETED","amount":{"value":"{{{amount}}}","currency_code":"{{{currency}}}"}}
         """);
     }
 
     [Test]
     public async Task CompletionCreditsApiSelectedAccountOnceAndIgnoresCallbackLinks()
     {
-        SetRefund("0", "COMPLETED");
+        var request = await SeedRequest();
         SetOrder();
         Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<OkResult>());
         Assert.That(await Controller(Completion.Replace("EVENT", "OTHER-EVENT")).Paypal(), Is.TypeOf<OkResult>());
@@ -287,6 +304,99 @@ public class PaypalSecurityTests
         Assert.That(receiver.Balance, Is.EqualTo(1));
         Assert.That((await db.FiniteTransactions.SingleAsync()).Reference, Is.EqualTo("CAPTURE"));
         Assert.That((await db.PaymentRecords.SingleAsync()).Provider, Is.EqualTo("paypal"));
+        Assert.That(request.State, Is.EqualTo(PaymentRequest.Status.PAID));
+    }
+
+    /// <summary>
+    /// Reported exploit: the public client id lets a buyer create their own order against our
+    /// merchant account, choosing both the price and the coin count in custom_id. Such an order
+    /// has no server-side payment request and must never be credited.
+    /// </summary>
+    [Test]
+    public async Task ForgedOrderWithoutServerRequestIsNotCredited()
+    {
+        SetOrder(customId: $"{topup.Id};2160000;sender", amount: "0.01");
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<BadRequestResult>());
+        Assert.That(sender.Balance, Is.EqualTo(99));
+        Assert.That(await db.FiniteTransactions.CountAsync(), Is.Zero);
+        Assert.That(await db.PaymentRecords.CountAsync(), Is.Zero);
+    }
+
+    [Test]
+    public async Task PaidAmountMustEqualTheServerPrice()
+    {
+        var request = await SeedRequest(amount: 116.28m);
+        SetOrder(customId: $"{topup.Id};21600;sender", amount: "0.01");
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<BadRequestResult>());
+        Assert.That(sender.Balance, Is.EqualTo(99));
+        Assert.That(await db.FiniteTransactions.CountAsync(), Is.Zero);
+        Assert.That(request.State, Is.EqualTo(PaymentRequest.Status.CREATED));
+    }
+
+    [Test]
+    public async Task ServerPricedCustomAmountIsCreditedInFull()
+    {
+        await SeedRequest(amount: 116.28m);
+        SetOrder(customId: $"{topup.Id};21600;sender", amount: "116.28");
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<OkResult>());
+        Assert.That(sender.Balance, Is.EqualTo(21699));
+    }
+
+    [Test]
+    public async Task RequestCurrencyMustMatchCapture()
+    {
+        await SeedRequest();
+        SetOrder(currency: "USD");
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<BadRequestResult>());
+        Assert.That(sender.Balance, Is.EqualTo(99));
+    }
+
+    [Test]
+    public async Task RequestOfAnotherUserCannotFulfilTheOrder()
+    {
+        await SeedRequest(user: receiver);
+        SetOrder();
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<BadRequestResult>());
+        Assert.That(sender.Balance, Is.EqualTo(99));
+        Assert.That(receiver.Balance, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task RequestOfAnotherProductCannotFulfilTheOrder()
+    {
+        var other = new TopUpProduct { Slug = "paypal-other", ProviderSlug = "paypal", Type = Product.ProductType.TOP_UP, Cost = 10, CurrencyCode = "EUR" };
+        db.Add(other);
+        await SeedRequest(product: other);
+        SetOrder();
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<BadRequestResult>());
+        Assert.That(sender.Balance, Is.EqualTo(99));
+    }
+
+    [Test]
+    public async Task ApprovalOfForgedOrderIsNeverCaptured()
+    {
+        SetOrder("APPROVED", customId: $"{topup.Id};999999;sender", amount: "0.02");
+        paypal.Replies["/v2/checkout/orders/ORDER/capture"] = JObject.Parse("""{"id":"ORDER","status":"COMPLETED"}""");
+        var result = await Controller("""
+        {"id":"EVENT","event_type":"CHECKOUT.ORDER.APPROVED","resource":{"id":"ORDER",
+         "purchase_units":[{"custom_id":"1;999999;sender"}]}}
+        """).Paypal();
+        Assert.That(result, Is.TypeOf<OkResult>());
+        Assert.That(paypal.Calls, Is.EqualTo(new[] { VerifyPath, "/v2/checkout/orders/ORDER" }));
+        Assert.That(sender.Country, Is.Null);
+    }
+
+    [Test]
+    public async Task ApprovalWithTamperedAmountIsNeverCaptured()
+    {
+        await SeedRequest(amount: 10);
+        SetOrder("APPROVED", amount: "0.01");
+        paypal.Replies["/v2/checkout/orders/ORDER/capture"] = JObject.Parse("""{"id":"ORDER","status":"COMPLETED"}""");
+        var result = await Controller("""
+        {"id":"EVENT","event_type":"CHECKOUT.ORDER.APPROVED","resource":{"id":"ORDER","purchase_units":[{"custom_id":"1;100;sender"}]}}
+        """).Paypal();
+        Assert.That(result, Is.TypeOf<OkResult>());
+        Assert.That(paypal.Calls, Does.Not.Contain("/v2/checkout/orders/ORDER/capture"));
     }
 
     [TestCase("id", "OTHER-CAPTURE")]
@@ -314,6 +424,7 @@ public class PaypalSecurityTests
     [Test]
     public async Task ApprovalUsesApiOrderBeforeUpdatingAccountOrCapturing()
     {
+        await SeedRequest();
         SetOrder("APPROVED");
         paypal.Replies["/v2/checkout/orders/ORDER/capture"] = JObject.Parse("""{"id":"ORDER","status":"COMPLETED"}""");
         var result = await Controller("""

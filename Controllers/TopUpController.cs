@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -285,7 +286,7 @@ namespace Payments.Controllers
                     validatedDiscount.Code, eurPrice);
             }
             
-            var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##") };
+            var moneyValue = new Money() { CurrencyCode = product.CurrencyCode, Value = eurPrice.ToString("0.##", CultureInfo.InvariantCulture) };
             var order = new OrderRequest()
             {
                 CheckoutPaymentIntent = "CAPTURE",
@@ -296,13 +297,13 @@ namespace Payments.Controllers
                         AmountWithBreakdown = new AmountWithBreakdown()
                         {
                             CurrencyCode = product.CurrencyCode,
-                            Value = eurPrice.ToString ("0.##"),
+                            Value = moneyValue.Value,
                             AmountBreakdown = new AmountBreakdown()
                             {
                                 ItemTotal = moneyValue
                             }
                         },
-                        CustomId = product.Id.ToString() + ";" + coinAmount.ToString("0.##")  + ";" + user.ExternalId,
+                        CustomId = product.Id.ToString() + ";" + coinAmount.ToString("0.##", CultureInfo.InvariantCulture) + ";" + user.ExternalId,
                         ReferenceId = user.ExternalId,
                         Description = product.Title,
                         Items = new List<Item>(){
@@ -343,6 +344,24 @@ namespace Payments.Controllers
             {
                 Console.WriteLine("\t{0}: {1}\tCall Type: {2}", link.Rel, link.Href, link.Method);
             }
+            // The callback only captures and credits orders that match a request created here.
+            // Anyone can create orders against our merchant account with the public client id,
+            // so the order itself (amount, custom_id) must never be trusted on its own.
+            db.PaymentRequests.Add(new PaymentRequest()
+            {
+                User = user,
+                ProductId = db.TopUpProducts.Find(product.Id),
+                Provider = "paypal",
+                SessionId = result.Id,
+                Amount = decimal.Parse(moneyValue.Value, CultureInfo.InvariantCulture),
+                State = PaymentRequest.Status.CREATED,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+                CreateOnIp = System.Net.IPAddress.TryParse(options?.UserIp, out var createdOnIp) ? createdOnIp : null,
+                Locale = options?.Locale,
+                DeviceFingerprint = options?.Fingerprint
+            });
+            await db.SaveChangesAsync();
 
             return new TopUpIdResponse()
             {

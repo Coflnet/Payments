@@ -860,6 +860,11 @@ namespace Payments.Controllers
                         return Ok();
                     if (approved.Status != "APPROVED")
                         return BadRequest();
+                    var approvedUnit = approved.PurchaseUnits?.Count == 1 ? approved.PurchaseUnits[0] : null;
+                    var approvedRequest = await FindPayPalRequest(approved.Id);
+                    if (!PayPalOrderMatchesRequest(approvedRequest, approved.Id, approvedUnit,
+                            approvedUnit?.AmountWithBreakdown?.Value, approvedUnit?.AmountWithBreakdown?.CurrencyCode, "approval"))
+                        return Ok(); // never capture money for an order we did not price ourselves
                     webhookResult.Resource = approved;
                     var payerAddress = approved.Payer?.AddressPortable;
                     var country = payerAddress?.CountryCode?.ToUpperInvariant();
@@ -977,9 +982,15 @@ namespace Payments.Controllers
                 if (!await db.TopUpProducts.AnyAsync(p => p.Id == productId && p.ProviderSlug == "paypal")
                     || topupInfo.Length != 3 || topupInfo[2] != product.ReferenceId)
                     return BadRequest();
+                var paymentRequest = await FindPayPalRequest(order.Id);
+                if (!PayPalOrderMatchesRequest(paymentRequest, order.Id, product,
+                        verifiedCapture.Amount.Value, verifiedCapture.Amount.CurrencyCode, "completion"))
+                    return BadRequest();
                 var alreadyCredited = false;
                 await transactionService.WithTransactionAsync(async (tx, owns) =>
                 {
+                    paymentRequest.State = PaymentRequest.Status.PAID;
+                    paymentRequest.UpdatedAt = DateTime.UtcNow;
                     var existing = await db.FiniteTransactions.SingleOrDefaultAsync(t =>
                         (t.Reference == referenceId || t.Reference == order.Id)
                         && t.ProductId == productId && t.User.ExternalId == product.ReferenceId && t.Amount > 0);
@@ -991,6 +1002,7 @@ namespace Payments.Controllers
                         return;
                     }
                     await transactionService.AddTopUp(productId, product.ReferenceId, referenceId, exactCoinAmount);
+                    await db.SaveChangesAsync();
                 });
                 if (alreadyCredited)
                     return Ok();
@@ -1079,6 +1091,50 @@ namespace Payments.Controllers
             };
             var response = await paypalClient.Execute(request);
             return response.Result<PayPalVerification>()?.Status == "SUCCESS";
+        }
+
+        private Task<PaymentRequest> FindPayPalRequest(string orderId)
+        {
+            return db.PaymentRequests
+                .Include(r => r.User)
+                .Include(r => r.ProductId)
+                .Where(r => r.SessionId == orderId && r.Provider == "paypal")
+                .OrderByDescending(r => r.Id)
+                .FirstOrDefaultAsync();
+        }
+
+        /// <summary>
+        /// Only orders created by <see cref="TopUpController.CreatePayPal"/> are captured or fulfilled.
+        /// The public client id lets anyone create an order against our merchant account with an
+        /// arbitrary amount and custom_id, so the order's own fields prove nothing by themselves:
+        /// the user, product, amount and currency must all equal what this service priced.
+        /// </summary>
+        private bool PayPalOrderMatchesRequest(PaymentRequest request, string orderId, PurchaseUnit unit,
+            string amountValue, string currencyCode, string stage)
+        {
+            var custom = unit?.CustomId?.Split(';');
+            string reason;
+            if (request == null)
+                reason = "no payment request was created for this order";
+            else if (custom == null || custom.Length != 3 || !int.TryParse(custom[0], out var productId)
+                || request.ProductId == null || request.ProductId.Id != productId)
+                reason = "product does not match";
+            else if (string.IsNullOrEmpty(request.User?.ExternalId)
+                || request.User.ExternalId != custom[2] || request.User.ExternalId != unit.ReferenceId)
+                reason = "user does not match";
+            else if (!decimal.TryParse(amountValue, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount)
+                || amount != request.Amount)
+                reason = "amount does not match";
+            else if (string.IsNullOrEmpty(request.ProductId.CurrencyCode)
+                || !string.Equals(currencyCode, request.ProductId.CurrencyCode, StringComparison.OrdinalIgnoreCase))
+                reason = "currency does not match";
+            else
+                return true;
+            _logger.LogError(
+                "Rejected PayPal order {OrderId} at {Stage}: {Reason}. custom_id '{CustomId}' for {Amount} {Currency}, expected {ExpectedAmount} {ExpectedCurrency} from user {UserId}",
+                orderId, stage, reason, unit?.CustomId, amountValue, currencyCode,
+                request?.Amount, request?.ProductId?.CurrencyCode, request?.User?.ExternalId);
+            return false;
         }
 
         private static bool ValidPayPalId(string id) => !string.IsNullOrWhiteSpace(id)
