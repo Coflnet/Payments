@@ -654,9 +654,12 @@ public partial class SubscriptionServiceTests
         return new Webhook(meta, data);
     }
 
-    private Webhook CreatePaymentWebhook(string userId, int productId, string subscriptionId, DateTime? paymentTime = null)
+    private Webhook CreatePaymentWebhook(string userId, int productId, string subscriptionId, DateTime? paymentTime = null, string signingSecret = null)
     {
-        var customData = new CustomData(userId, productId, 1800, "True");
+        // Through the controller only signed custom data may identify an unknown subscription.
+        var signature = signingSecret == null ? null
+            : LemonSqueezyCustomDataSigner.Sign(signingSecret, userId, productId, 1800, "True", null, 0, 969);
+        var customData = new CustomData(userId, productId, 1800, "True", null, 0, 969, signature);
         var meta = new Meta(false, "subscription_payment_success", customData);
         var attributes = new Attributes(
             storeId: 12595,

@@ -28,7 +28,7 @@ public partial class SubscriptionServiceTests
         const string secret = "webhook-test-secret";
         await userService.GetOrCreate(accountEmail);
         var product = await context.TopUpProducts.FirstAsync();
-        var webhook = CreatePaymentWebhook(accountEmail, product.Id, "40002");
+        var webhook = CreatePaymentWebhook(accountEmail, product.Id, "40002", signingSecret: secret);
         var payload = JsonSerializer.SerializeToUtf8Bytes(webhook);
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
         {
@@ -87,6 +87,40 @@ public partial class SubscriptionServiceTests
         Assert.That(await context.TierSlots.AllAsync(s => s.Tier == "premium_plus"), Is.True);
         Assert.That(await context.TierSlots.Select(s => s.Expires).ToArrayAsync(), Is.EqualTo(expiry));
         Assert.That(changingSubscription.User.Balance, Is.Zero);
+    }
+
+    /// <summary>
+    /// Custom data on a subscription webhook is buyer-controllable; only a signed one may create a
+    /// subscription (and the product it grants) for a user this service knows nothing about yet.
+    /// </summary>
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task OnlySignedCustomDataCanCreateSubscription(bool signed)
+    {
+        const string secret = "webhook-test-secret";
+        const string userId = "ls-sub-forger";
+        var product = await context.TopUpProducts.FirstAsync();
+        var signature = signed
+            ? LemonSqueezyCustomDataSigner.Sign(secret, userId, product.Id, 1800, "True", null, 0, 969) : "deadbeef";
+        var customData = new CustomData(userId, product.Id, 1800, "True", null, 0, 969, signature);
+        var data = new Data("subscriptions", "77001", CreateTrialAttributes(DateTime.UtcNow.AddDays(3)), null, null);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new Webhook(new Meta(false, "subscription_created", customData), data));
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["LEMONSQUEEZY:SECRET"] = secret
+        }).Build();
+        var controller = new CallbackController(config, NullLogger<CallbackController>.Instance,
+            context, transactionService, null, null, subscriptionService,
+            NullLogger<GooglePayController>.Instance, null, productService, null, null)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+        controller.Request.Body = new MemoryStream(payload);
+        var webhookSignature = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), payload));
+
+        Assert.That(await controller.LemonSqueezy(webhookSignature), Is.TypeOf<OkResult>());
+        Assert.That(await context.Subscriptions.AnyAsync(s => s.ExternalId == "77001"), Is.EqualTo(signed));
+        Assert.That(await context.OwnerShips.AnyAsync(o => o.User.ExternalId == userId), Is.EqualTo(signed));
     }
 
     private Webhook RefundInvoice(string id, string reason, bool full = true, DateTime? createdAt = null) =>

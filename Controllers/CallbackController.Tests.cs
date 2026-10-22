@@ -192,8 +192,52 @@ public class CallbackControllerTests
         });
     }
 
+    /// <summary>
+    /// Reported exploit class: custom data can be attached to any Lemon Squeezy checkout through URL
+    /// parameters, so an unsigned coin amount, product or user in the webhook must never be credited.
+    /// </summary>
+    [Test]
+    public async Task LemonSqueezyOrder_UnsignedCustomData_IsRejected()
+    {
+        var (user, context) = await PostLemonSqueezyOrder(new FakeLemonSqueezyLookup(), "ls-forger", sign: false, expectRejected: true);
+        Assert.That(user.Balance, Is.Zero);
+        Assert.That(await context.FiniteTransactions.CountAsync(), Is.Zero);
+        Assert.That(await context.PaymentRecords.CountAsync(), Is.Zero);
+    }
+
+    [Test]
+    public async Task LemonSqueezyOrder_TamperedCoinAmount_IsRejected()
+    {
+        var (user, _) = await PostLemonSqueezyOrder(new FakeLemonSqueezyLookup(), "ls-forger", claimedCoins: 2160000, expectRejected: true);
+        Assert.That(user.Balance, Is.Zero);
+    }
+
+    [Test]
+    public async Task LemonSqueezyOrder_PaidLessThanSignedPrice_IsRejected()
+    {
+        var (user, _) = await PostLemonSqueezyOrder(new FakeLemonSqueezyLookup(), "ls-forger", subtotal: 1, expectRejected: true);
+        Assert.That(user.Balance, Is.Zero);
+    }
+
+    [Test]
+    public async Task LemonSqueezyOrder_OtherVariant_IsRejected()
+    {
+        var (user, _) = await PostLemonSqueezyOrder(new FakeLemonSqueezyLookup(), "ls-forger", orderVariant: 555, expectRejected: true);
+        Assert.That(user.Balance, Is.Zero);
+    }
+
+    [Test]
+    public async Task LemonSqueezyOrder_SignedCustomAmountOnItsVariant_IsCredited()
+    {
+        var (user, _) = await PostLemonSqueezyOrder(new FakeLemonSqueezyLookup(), "ls-buyer",
+            signedCoins: 21600, claimedCoins: 21600, priceCents: 11628, subtotal: 11628, orderVariant: 777);
+        Assert.That(user.Balance, Is.EqualTo(21600));
+    }
+
     private static async Task<(User user, PaymentContext context)> PostLemonSqueezyOrder(
-        FakeLemonSqueezyLookup lookup, string externalId, string userCountry = null)
+        FakeLemonSqueezyLookup lookup, string externalId, string userCountry = null, bool sign = true,
+        long signedCoins = 1800, long claimedCoins = 1800, long priceCents = 999, int subtotal = 999,
+        long orderVariant = 0, bool expectRejected = false)
     {
         var connection = new SqliteConnection("Filename=:memory:");
         connection.Open();
@@ -224,18 +268,30 @@ public class CallbackControllerTests
             config, NullLogger<CallbackController>.Instance, context, transactionService,
             null, events, null, NullLogger<GooglePayController>.Instance, null, null, null, null,
             lookup);
+        var customSignature = sign
+            ? $"\"signature\": \"{LemonSqueezyCustomDataSigner.Sign(secret, externalId, 153, signedCoins, "False", null, 777, priceCents)}\","
+            : "";
+        var firstOrderItem = orderVariant > 0
+            ? $$"""
+              "first_order_item": { "id": 1, "order_id": 9001, "product_id": 1, "variant_id": {{orderVariant}}, "price_id": 1,
+                "product_name": "Coins", "variant_name": "Coins", "price": {{subtotal}},
+                "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-01T10:00:00Z", "test_mode": false },
+              """
+            : "";
         var payload = Encoding.UTF8.GetBytes($$"""
             {
               "meta": {
                 "event_name": "order_created",
-                "custom_data": { "user_id": "{{externalId}}", "product_id": 153, "coin_amount": 1800, "is_subscription": "false" }
+                "custom_data": { "user_id": "{{externalId}}", "product_id": "153", "coin_amount": "{{claimedCoins}}", "is_subscription": "False",
+                                 "variant_id": "777", "price_cents": "{{priceCents}}", {{customSignature}} "enable_trial": "False" }
               },
               "data": {
                 "type": "orders",
                 "id": "9001",
                 "attributes": {
                   "store_id": 1, "customer_id": 4242, "identifier": "ls-order-{{externalId}}",
-                  "status": "paid", "currency": "USD", "total": 999, "subtotal": 999, "tax": 0,
+                  "status": "paid", "currency": "USD", "total": {{subtotal}}, "subtotal": {{subtotal}}, "tax": 0,
+                  {{firstOrderItem}}
                   "user_name": "Buyer", "user_email": "buyer@example.com",
                   "created_at": "2026-09-01T10:00:00Z"
                 }
@@ -246,7 +302,7 @@ public class CallbackControllerTests
         controller.Request.Body = new MemoryStream(payload);
         var signature = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), payload));
         var result = await controller.LemonSqueezy(signature);
-        Assert.That(result, Is.TypeOf<OkResult>());
+        Assert.That(result, expectRejected ? Is.TypeOf<BadRequestResult>() : Is.TypeOf<OkResult>());
         await context.Entry(user).ReloadAsync();
         return (user, context);
     }

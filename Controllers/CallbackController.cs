@@ -40,6 +40,7 @@ namespace Payments.Controllers
         private readonly PaymentContext db;
         private string signingSecret;
         private string lemonSqueezySecret;
+        private readonly string lemonSqueezyCustomDataSecret;
         private TransactionService transactionService;
         private IPaymentEventProducer paymentEventProducer;
         private readonly PayPalHttpClient paypalClient;
@@ -79,6 +80,7 @@ namespace Payments.Controllers
             lemonSqueezySecret = config["LEMONSQUEEZY:SECRET"];
             if (string.IsNullOrWhiteSpace(lemonSqueezySecret))
                 throw new InvalidOperationException("Lemon Squeezy webhook secret not set");
+            lemonSqueezyCustomDataSecret = LemonSqueezyCustomDataSigner.SecretFrom(config);
             this.transactionService = transactionService;
             this.paypalClient = paypalClient;
             paypalWebhookId = config["PAYPAL:WEBHOOK_ID"];
@@ -395,8 +397,36 @@ namespace Payments.Controllers
             });
             var data = webhook.Data;
             var meta = webhook.Meta;
+            // Buyers can attach their own custom data to any checkout via URL parameters, so only
+            // values signed by LemonSqueezyService.SetupPayment may identify user, product or coins.
+            var customDataSigned = LemonSqueezyCustomDataSigner.Verify(lemonSqueezyCustomDataSecret, meta.CustomData);
+            if (meta.EventName == "order_created" && !customDataSigned)
+            {
+                _logger.LogError("Rejected Lemon Squeezy order {OrderId}: custom data is missing or not signed by this service (user {UserId}, product {ProductId}, coins {CoinAmount})",
+                    data?.Attributes?.Identifier, meta.CustomData?.UserId, meta.CustomData?.ProductId, meta.CustomData?.CoinAmount);
+                return BadRequest();
+            }
+            var subscriptionVariant = data?.Type == "subscriptions" ? data.Attributes?.VariantId ?? 0 : 0;
+            if (meta.CustomData != null && (!customDataSigned
+                || subscriptionVariant > 0 && subscriptionVariant != meta.CustomData.VariantId))
+            {
+                _logger.LogWarning("Ignoring {Reason} Lemon Squeezy custom data on {EventName} for {Id}; resolving from the stored subscription instead",
+                    customDataSigned ? "wrong-variant" : "unsigned", meta.EventName, data?.Id);
+                webhook = new Coflnet.Payments.Models.LemonSqueezy.Webhook(new Meta(meta.TestMode, meta.EventName, null), data);
+                meta = webhook.Meta;
+            }
             if (meta.EventName == "order_created" && data.Attributes.Status == "paid")
             {
+                var orderVariant = data.Attributes.FirstOrderItem?.VariantId ?? 0;
+                var pricedAsSigned = data.Attributes.Subtotal == meta.CustomData.PriceCents
+                    || data.Attributes.FirstOrderItem?.Price == meta.CustomData.PriceCents;
+                if (!pricedAsSigned || orderVariant > 0 && orderVariant != meta.CustomData.VariantId)
+                {
+                    _logger.LogError("Rejected Lemon Squeezy order {OrderId}: paid {Subtotal} {Currency} on variant {Variant} but custom data was signed for {PriceCents} cents on variant {SignedVariant} (user {UserId}, coins {CoinAmount})",
+                        data.Attributes.Identifier, data.Attributes.Subtotal, data.Attributes.Currency, orderVariant,
+                        meta.CustomData.PriceCents, meta.CustomData.VariantId, meta.CustomData.UserId, meta.CustomData.CoinAmount);
+                    return BadRequest();
+                }
                 if (webhook.Meta.CustomData.IsSubscription.Equals("true", StringComparison.OrdinalIgnoreCase)) // custom data can only be strings
                 {
                     _logger.LogInformation("lemonsqueezy subscription payment, skipping");

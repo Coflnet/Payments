@@ -865,6 +865,11 @@ public class LemonSqueezyService : ILemonSqueezyCustomerLookup
             checkoutOptions["skip_trial"] = false;
         }
 
+        var priceCents = (int)(finalPrice * 100);
+        var coinAmountCents = (int)coinAmount;
+        var signature = LemonSqueezyCustomDataSigner.Sign(LemonSqueezyCustomDataSigner.SecretFrom(config),
+            user.ExternalId.ToString(), product.Id, coinAmountCents, isSubscription.ToString(), creatorCodeId,
+            long.Parse(variantId), priceCents);
         var createData = new
         {
             data = new
@@ -872,7 +877,7 @@ public class LemonSqueezyService : ILemonSqueezyCustomerLookup
                 type = "checkouts",
                 attributes = new
                 {
-                    custom_price = (int)(finalPrice * 100),
+                    custom_price = priceCents,
                     product_options = new
                     {
                         name = product.Title,
@@ -891,11 +896,14 @@ public class LemonSqueezyService : ILemonSqueezyCustomerLookup
                         {
                             user_id = user.ExternalId.ToString(),
                             product_id = product.Id.ToString(),
-                            coin_amount = ((int)coinAmount).ToString(),
+                            coin_amount = coinAmountCents.ToString(),
                             is_subscription = isSubscription.ToString(),
                             creator_code = creatorCodeId,
                             enable_trial = enableTrial.ToString(),
-                            trial_length_days = effectiveTrialDays.ToString()
+                            trial_length_days = effectiveTrialDays.ToString(),
+                            variant_id = variantId,
+                            price_cents = priceCents.ToString(),
+                            signature
                         },
                     },
                     expires_at = DateTime.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")

@@ -370,13 +370,19 @@ public class CustomData
         int productId,
         long coinAmount,
         string isSubscription,
-        string creatorCode = null)
+        string creatorCode = null,
+        long variantId = 0,
+        long priceCents = 0,
+        string signature = null)
     {
         this.UserId = userId;
         this.ProductId = productId;
         this.CoinAmount = coinAmount;
         IsSubscription = isSubscription;
         CreatorCode = creatorCode;
+        VariantId = variantId;
+        PriceCents = priceCents;
+        Signature = signature;
     }
 
     [JsonPropertyName("user_id")]
@@ -389,6 +395,15 @@ public class CustomData
     public string IsSubscription { get; }
     [JsonPropertyName("creator_code")]
     public string CreatorCode { get; }
+    /// <summary>Variant the checkout was created for; signed.</summary>
+    [JsonPropertyName("variant_id")]
+    public long VariantId { get; }
+    /// <summary>Price in cents the checkout was created with (custom_price); signed.</summary>
+    [JsonPropertyName("price_cents")]
+    public long PriceCents { get; }
+    /// <summary>HMAC over the other values, see <c>LemonSqueezyCustomDataSigner</c>.</summary>
+    [JsonPropertyName("signature")]
+    public string Signature { get; }
 }
 
 public class Customer
