@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -31,6 +32,14 @@ public class PaymentMetricService : BackgroundService
     private static readonly Gauge OpenRequests = Metrics.CreateGauge(
         "payments_open_requests",
         "Payment requests currently waiting for completion");
+    private static readonly Gauge ActiveProductOwners = Metrics.CreateGauge(
+        "payments_active_product_owners",
+        "Distinct active ownership users matching the product slug or group, as in Products service count",
+        new GaugeConfiguration { LabelNames = new[] { "product" }, SuppressInitialValue = true });
+    private static readonly Gauge ActiveProductOwnersLastSuccess = Metrics.CreateGauge(
+        "payments_active_product_owners_last_success_timestamp_seconds",
+        "Unix timestamp of the last successful active product owner computation",
+        new GaugeConfiguration { LabelNames = new[] { "product" }, SuppressInitialValue = true });
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<PaymentMetricService> _logger;
@@ -70,6 +79,7 @@ public class PaymentMetricService : BackgroundService
                     payment => payment.Status == PaymentRecordStatus.Confirmed
                         && payment.PaidAt >= now.AddHours(-24),
                     stoppingToken));
+                await RefreshActiveProductOwners(db, now, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -82,5 +92,19 @@ public class PaymentMetricService : BackgroundService
 
             await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
         }
+    }
+
+    internal static async Task RefreshActiveProductOwners(PaymentContext db, DateTime now, CancellationToken cancellationToken)
+    {
+        const string product = "premium_plus";
+        // Preserve ProductsController.GetOwnerCount, including group membership and UserId grouping.
+        var count = await db.OwnerShips
+            .Where(ownership => (ownership.Product.Slug == product
+                || ownership.Product.Groups.Any(group => group.Slug == product))
+                && ownership.Expires > now)
+            .GroupBy(ownership => ownership.UserId)
+            .CountAsync(cancellationToken);
+        ActiveProductOwners.WithLabels(product).Set(count);
+        ActiveProductOwnersLastSuccess.WithLabels(product).Set(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
     }
 }

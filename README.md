@@ -5,6 +5,30 @@ Handles payments, and access to digital goods and services
 Configuration is handled via [asp.net configuration providers](https://docs.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-6.0#environment-variables)
 Keys with defaults are set in [`appsettings.json`](appsettings.json)
 
+### Active premium plus owners
+
+The existing `/metrics` endpoint exports `payments_active_product_owners{product="premium_plus"}`
+once per minute. It preserves `GET /Products/service/premium_plus/count`: count distinct
+`OwnerShips.UserId` groups whose ownership has not expired and whose product slug or product
+group slug matches `premium_plus`. Multiple matching ownerships count once. The legacy nullable
+user group also counts once. Tier slots alone do not count; this is the existing ownership cohort.
+
+`payments_active_product_owners_last_success_timestamp_seconds{product="premium_plus"}`
+records a successful computation. Neither metric publishes an initial zero, and database errors
+leave the previous count and timestamp unchanged. Consumers must filter stale computations,
+even while Prometheus continues scraping successfully. For a Prometheus target identified by
+`job` and `instance`, the equivalent fresh average is:
+
+```promql
+avg(
+  payments_active_product_owners{product="premium_plus"}
+  and on(job, instance, product)
+  (time() - payments_active_product_owners_last_success_timestamp_seconds{product="premium_plus"} < 180)
+)
+```
+
+These aggregate metrics use the existing scrape endpoint and contain no user identifiers.
+
 ### How purchases work
 1. Start top up 
 2. wait till payment is verified
