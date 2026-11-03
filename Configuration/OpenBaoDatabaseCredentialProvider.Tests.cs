@@ -87,4 +87,62 @@ public sealed class OpenBaoDatabaseCredentialProviderTests
             File.Delete(token);
         }
     }
+
+    private const string BaseConnection = "Host=db;Port=26257;Database=pay;Username=svc;Password=old;Trust Server Certificate=true";
+
+    private static OpenBaoDatabaseOptions MtlsOptions() => new()
+    {
+        MtlsEnabled = true,
+        ClientCertificatePath = "/certs/tls.crt",
+        ClientKeyPath = "/certs/tls.key",
+        RootCertificatePath = "/certs/ca.crt"
+    };
+
+    [Test]
+    public void MtlsPathUsesNpgsqlChainFilesWithVerifyFull()
+    {
+        var connection = OpenBaoDatabaseCredentialProvider.BuildConnectionString(BaseConnection, MtlsOptions());
+        var builder = new Npgsql.NpgsqlConnectionStringBuilder(connection);
+
+        Assert.That(builder.SslMode, Is.EqualTo(Npgsql.SslMode.VerifyFull));
+        Assert.That(builder.SslCertificate, Is.EqualTo("/certs/tls.crt"));
+        Assert.That(builder.SslKey, Is.EqualTo("/certs/tls.key"));
+        Assert.That(builder.RootCertificate, Is.EqualTo("/certs/ca.crt"));
+        Assert.That(builder.TrustServerCertificate, Is.False);
+        Assert.That(connection, Does.Not.Contain("Trust Server Certificate"));
+        Assert.That(builder.Password, Is.Null);
+    }
+
+    [Test]
+    public void MtlsPathCapsConnectionLifetimeAndTimeout()
+    {
+        var connection = OpenBaoDatabaseCredentialProvider.BuildConnectionString(
+            BaseConnection + ";Connection Lifetime=3600;Timeout=60", MtlsOptions());
+        var builder = new Npgsql.NpgsqlConnectionStringBuilder(connection);
+
+        Assert.That(builder.ConnectionLifetime, Is.EqualTo(300));
+        Assert.That(builder.Timeout, Is.EqualTo(10));
+    }
+
+    [Test]
+    public void MtlsPathKeepsSmallerConfiguredLifetime()
+    {
+        var connection = OpenBaoDatabaseCredentialProvider.BuildConnectionString(
+            BaseConnection + ";Connection Lifetime=60;Timeout=5", MtlsOptions());
+        var builder = new Npgsql.NpgsqlConnectionStringBuilder(connection);
+
+        Assert.That(builder.ConnectionLifetime, Is.EqualTo(60));
+        Assert.That(builder.Timeout, Is.EqualTo(5));
+    }
+
+    [Test]
+    public void NonMtlsPathOnlyStripsThePassword()
+    {
+        var connection = OpenBaoDatabaseCredentialProvider.BuildConnectionString(
+            BaseConnection, new OpenBaoDatabaseOptions());
+        var expected = new Npgsql.NpgsqlConnectionStringBuilder(BaseConnection) { Password = null }.ConnectionString;
+
+        Assert.That(connection, Is.EqualTo(expected));
+        Assert.That(new Npgsql.NpgsqlConnectionStringBuilder(connection).TrustServerCertificate, Is.True);
+    }
 }

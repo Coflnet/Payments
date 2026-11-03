@@ -49,46 +49,47 @@ internal sealed class OpenBaoDatabaseCredentialProvider
         options.Validate();
         var provider = new OpenBaoDatabaseCredentialProvider(options);
 
-        // Strip any password from the base string; OpenBao supplies it.
-        var builder = new NpgsqlConnectionStringBuilder(baseConnectionString) { Password = null };
-        if (options.MtlsEnabled)
-        {
-            // Keep password authentication during enrollment while presenting
-            // a short-lived client certificate. VerifyFull also removes the
-            // legacy Trust Server Certificate escape hatch.
-            builder.SslMode = SslMode.VerifyFull;
-            builder.Remove("Trust Server Certificate");
-            builder.RootCertificate = null;
-            builder.SslCertificate = null;
-            builder.SslKey = null;
-        }
-        var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.ConnectionString);
-        if (options.MtlsEnabled)
-        {
-            // Npgsql invokes these callbacks for every new physical connection,
-            // so cert-manager file rotations do not require a process restart.
-            dataSourceBuilder.UseSslClientAuthenticationOptionsCallback(sslOptions =>
-            {
-                sslOptions.ClientCertificates = new X509CertificateCollection
-                {
-                    X509Certificate2.CreateFromPemFile(
-                        options.ClientCertificatePath,
-                        options.ClientKeyPath)
-                };
-            });
-            dataSourceBuilder.UseRootCertificatesCallback(() =>
-            {
-                var certificates = new X509Certificate2Collection();
-                certificates.ImportFromPemFile(options.RootCertificatePath);
-                return certificates;
-            });
-        }
+        var dataSourceBuilder = new NpgsqlDataSourceBuilder(BuildConnectionString(baseConnectionString, options));
         dataSourceBuilder.UsePeriodicPasswordProvider(
             (_, ct) => provider.GetPasswordAsync(ct),
             ProviderPollInterval(options.RefreshInterval),
             ProviderPollInterval(options.FailureRefreshInterval));
         return dataSourceBuilder.Build();
     }
+
+    /// <summary>Upper bound for the lifetime of a physical connection, so renewed client certificates are picked up.</summary>
+    internal const int MaxMtlsConnectionLifetimeSeconds = 300;
+
+    /// <summary>Upper bound for the connect timeout on the mTLS path.</summary>
+    internal const int MaxMtlsConnectTimeoutSeconds = 10;
+
+    /// <summary>
+    /// Builds the Npgsql connection string. Without mTLS only the password is
+    /// stripped. With mTLS Npgsql loads the full PEM chain (leaf plus
+    /// intermediate) itself and re-reads the files for every physical connection.
+    /// </summary>
+    internal static string BuildConnectionString(string baseConnectionString, OpenBaoDatabaseOptions options)
+    {
+        // Strip any password from the base string; OpenBao supplies it.
+        var builder = new NpgsqlConnectionStringBuilder(baseConnectionString) { Password = null };
+        if (options.MtlsEnabled)
+            ApplyMtls(builder, options);
+        return builder.ConnectionString;
+    }
+
+    private static void ApplyMtls(NpgsqlConnectionStringBuilder builder, OpenBaoDatabaseOptions options)
+    {
+        builder.SslMode = SslMode.VerifyFull;
+        builder.Remove("Trust Server Certificate");
+        builder.RootCertificate = options.RootCertificatePath;
+        builder.SslCertificate = options.ClientCertificatePath;
+        builder.SslKey = options.ClientKeyPath;
+        builder.SslPassword = null;
+        builder.ConnectionLifetime = CapOrDefault(builder.ConnectionLifetime, MaxMtlsConnectionLifetimeSeconds);
+        builder.Timeout = CapOrDefault(builder.Timeout, MaxMtlsConnectTimeoutSeconds);
+    }
+
+    private static int CapOrDefault(int configured, int max) => configured <= 0 ? max : Math.Min(configured, max);
 
     // OpenBao returns the remaining static-role TTL with the current password.
     // Wake Npgsql frequently enough to observe the rotation boundary, but keep
