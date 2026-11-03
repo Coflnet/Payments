@@ -3,6 +3,7 @@ using Coflnet.Payments.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using NUnit.Framework;
 
 namespace Payments.Controllers;
@@ -20,7 +21,7 @@ public class HealthControllerTests
         await connection.OpenAsync();
         await using var db = Context(connection);
 
-        var result = await new HealthController(db).Ready();
+        var result = await new HealthController(db, NullLogger<HealthController>.Instance).Ready();
 
         Assert.That(result, Is.TypeOf<OkResult>());
     }
@@ -31,7 +32,7 @@ public class HealthControllerTests
         await using var connection = new SqliteConnection("Data Source=/nonexistent-dir/x.db;Mode=ReadOnly");
         await using var db = Context(connection);
 
-        var result = await new HealthController(db).Ready();
+        var result = await new HealthController(db, NullLogger<HealthController>.Instance).Ready();
 
         Assert.That(result, Is.TypeOf<StatusCodeResult>().With.Property("StatusCode").EqualTo(503));
     }

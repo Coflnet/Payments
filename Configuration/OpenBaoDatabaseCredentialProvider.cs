@@ -25,6 +25,12 @@ namespace Coflnet.Security.OpenBao;
 /// </summary>
 internal sealed class OpenBaoDatabaseCredentialProvider
 {
+    /// <summary>Upper bound for the lifetime of a physical connection, so renewed client certificates are picked up.</summary>
+    internal const int MaxMtlsConnectionLifetimeSeconds = 300;
+
+    /// <summary>Upper bound for the connect timeout on the mTLS path.</summary>
+    internal const int MaxMtlsConnectTimeoutSeconds = 10;
+
     private static readonly TimeSpan MaximumProviderPollInterval = TimeSpan.FromSeconds(5);
     private readonly OpenBaoDatabaseOptions options;
     private readonly SemaphoreSlim credentialRefreshLock = new(1, 1);
@@ -56,12 +62,6 @@ internal sealed class OpenBaoDatabaseCredentialProvider
             ProviderPollInterval(options.FailureRefreshInterval));
         return dataSourceBuilder.Build();
     }
-
-    /// <summary>Upper bound for the lifetime of a physical connection, so renewed client certificates are picked up.</summary>
-    internal const int MaxMtlsConnectionLifetimeSeconds = 300;
-
-    /// <summary>Upper bound for the connect timeout on the mTLS path.</summary>
-    internal const int MaxMtlsConnectTimeoutSeconds = 10;
 
     /// <summary>
     /// Builds the Npgsql connection string. Without mTLS only the password is

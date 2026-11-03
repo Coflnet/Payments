@@ -145,4 +145,29 @@ public sealed class OpenBaoDatabaseCredentialProviderTests
         Assert.That(connection, Is.EqualTo(expected));
         Assert.That(new Npgsql.NpgsqlConnectionStringBuilder(connection).TrustServerCertificate, Is.True);
     }
+
+    [TestCase("TrustServerCertificate=true")]
+    [TestCase("Trust Server Certificate=true")]
+    public void MtlsPathNeutralisesTrustServerCertificateInBase(string setting)
+    {
+        var connection = OpenBaoDatabaseCredentialProvider.BuildConnectionString(
+            "Host=db;Username=svc;" + setting, MtlsOptions());
+
+        Assert.That(new Npgsql.NpgsqlConnectionStringBuilder(connection).TrustServerCertificate, Is.False);
+        Assert.That(connection, Does.Not.Contain("Trust Server Certificate"));
+    }
+
+    [Test]
+    public void MtlsPathOverridesStaleSslSettingsInBase()
+    {
+        var connection = OpenBaoDatabaseCredentialProvider.BuildConnectionString(
+            "Host=db;Username=svc;SSL Certificate=/old/c.crt;SSL Key=/old/c.key;Root Certificate=/old/ca.crt;SSL Password=stale",
+            MtlsOptions());
+        var builder = new Npgsql.NpgsqlConnectionStringBuilder(connection);
+
+        Assert.That(builder.SslCertificate, Is.EqualTo("/certs/tls.crt"));
+        Assert.That(builder.SslKey, Is.EqualTo("/certs/tls.key"));
+        Assert.That(builder.RootCertificate, Is.EqualTo("/certs/ca.crt"));
+        Assert.That(builder.SslPassword, Is.Null);
+    }
 }
