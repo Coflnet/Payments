@@ -120,6 +120,7 @@ namespace Payments.Controllers
             if (product == null)
                 throw new ApiException("Product not found");
             var fallbackCountry = await GetMatchingCountry(topupotions, false, "Stripe");
+            EnsureCountryAllowed(fallbackCountry);
 
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(topupotions, product);
             
@@ -276,6 +277,9 @@ namespace Payments.Controllers
                 await db.SaveChangesAsync();
             }
             var product = await GetTopupProduct(productId, "paypal");
+            // the payer country is only known after approval (checked again in the callback), reject known signals early
+            EnsureCountryAllowed(options?.Country);
+            EnsureCountryAllowed(await ipCountryLookup.GetCountry(options?.UserIp));
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product);
             
             // For PayPal, apply the LemonSqueezy discount code to the price directly
@@ -434,6 +438,7 @@ namespace Payments.Controllers
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product);
 
             var country = await GetMatchingCountry(options, true, "Crypto");
+            EnsureCountryAllowed(country);
             if (!CallbackController.DoWeAcceptCoinGateFrom(country, coinAmount))
                 throw new ApiException($"We are sorry but we can not sell crypto to your country ({country}) at this time");
             if (user.Country != country)
@@ -461,6 +466,12 @@ namespace Payments.Controllers
                 user.ExternalId, productId, eurPrice);
 
             return await coinGateService.CreateOrder(user, product, eurPrice, coinAmount, options);
+        }
+
+        private static void EnsureCountryAllowed(string country)
+        {
+            if (SalesRestrictions.IsBlockedForDirectProviders(country))
+                throw new ApiException(SalesRestrictions.DirectProviderBlockedMessage(country.Trim().ToUpperInvariant()));
         }
 
         private async Task<string> GetMatchingCountry(TopUpOptions options, bool requireExplicit, string paymentMethod)

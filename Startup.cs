@@ -109,6 +109,7 @@ namespace Coflnet.Payments
             services.AddScoped<TierSlotService>();
             services.AddScoped<GroupService>();
             services.AddScoped<CreatorCodeService>();
+            SalesRestrictions.Configure(Configuration[SalesRestrictions.ConfigKey]);
             services.AddSingleton<CoinGateService>();
             services.AddScoped<CoinGateOrderProcessor>();
             services.AddHttpClient<IIpCountryLookup, IpCountryLookup>(client =>

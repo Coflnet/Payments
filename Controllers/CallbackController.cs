@@ -1016,6 +1016,15 @@ namespace Payments.Controllers
                 if (!PayPalOrderMatchesRequest(paymentRequest, order.Id, product,
                         verifiedCapture.Amount.Value, verifiedCapture.Amount.CurrencyCode, "completion"))
                     return BadRequest();
+                var completedPayer = order.Payer?.AddressPortable;
+                if (!DoWeSellto(completedPayer?.CountryCode?.ToUpperInvariant(), completedPayer?.PostalCode))
+                {
+                    // captured outside CompleteOrder (client side or dashboard), so it can only be refunded now
+                    _logger.LogWarning("PayPal capture {CaptureId} from {Country} requires a manual refund", referenceId, completedPayer.CountryCode);
+                    paymentRequest.State = PaymentRequest.Status.REFUND_PENDING;
+                    await db.SaveChangesAsync();
+                    return Ok();
+                }
                 var alreadyCredited = false;
                 await transactionService.WithTransactionAsync(async (tx, owns) =>
                 {
@@ -1218,6 +1227,8 @@ namespace Payments.Controllers
         /// <returns>True if we accept CoinGate payment from this country</returns>
         public static bool DoWeAcceptCoinGateFrom(string country, decimal coinAmount)
         {
+            if (SalesRestrictions.IsBlockedForDirectProviders(country))
+                return false;
             // EU member states (27 countries as of 2024)
             var euCountries = new string[] 
             { 

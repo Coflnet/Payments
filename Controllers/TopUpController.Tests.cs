@@ -119,6 +119,84 @@ public class TopUpControllerTests
         Assert.That(request.CreateOnIp, Is.EqualTo(IPAddress.Parse("8.8.8.8")));
     }
 
+    [TestCase("CH")]
+    [TestCase("LI")]
+    public async Task PayPal_BlocksSwissVatAreaIpBeforeCreatingOrder(string ipCountry)
+    {
+        await using var fixture = await Fixture.Create(ipCountry);
+
+        var exception = Assert.ThrowsAsync<ApiException>(() => fixture.Controller.CreatePayPal(
+            "207906", "p_cc_1800", new TopUpOptions { UserIp = "8.8.8.8" }));
+
+        Assert.That(exception.Message, Does.Contain("LemonSqueezy"));
+        Assert.That(fixture.PayPal.CreatedOrder, Is.Null);
+    }
+
+    [Test]
+    public async Task PayPal_BlocksSelectedSwissCountry()
+    {
+        await using var fixture = await Fixture.Create("DE");
+
+        Assert.ThrowsAsync<ApiException>(() => fixture.Controller.CreatePayPal(
+            "207906", "p_cc_1800", new TopUpOptions { Country = "ch", UserIp = "8.8.8.8" }));
+        Assert.That(fixture.PayPal.CreatedOrder, Is.Null);
+    }
+
+    [TestCase("CH")]
+    [TestCase("LI")]
+    public async Task Stripe_BlocksSwissVatArea(string country)
+    {
+        await using var fixture = await Fixture.Create(country);
+
+        var exception = Assert.ThrowsAsync<ApiException>(() => fixture.Controller.CreateStripeSession(
+            "207906", "s_cc_1800", new TopUpOptions { Country = country, UserIp = "8.8.8.8" }));
+
+        Assert.That(exception.Message, Does.Contain("LemonSqueezy"));
+    }
+
+    [TestCase("CH")]
+    [TestCase("LI")]
+    public async Task CoinGate_BlocksSwissVatArea(string country)
+    {
+        await using var fixture = await Fixture.Create(country);
+
+        var exception = Assert.ThrowsAsync<ApiException>(() => fixture.Controller.CreateCoinGate(
+            "207906", "c_cc_1800", new TopUpOptions { Country = country, UserIp = "8.8.8.8" }));
+
+        Assert.That(exception.Message, Does.Contain("LemonSqueezy"));
+        Assert.That(fixture.CoinGate.OrderCreated, Is.False);
+    }
+
+    [TestCase("CH")]
+    [TestCase("LI")]
+    public void DirectProviderCallbacksRejectSwissVatAreaButLemonSqueezyPathStaysOpen(string country)
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(CallbackController.DoWeSellto(country, null), Is.False);
+            Assert.That(CallbackController.DoWeAcceptCoinGateFrom(country, 100000), Is.False);
+            // LemonSqueezy (merchant of record) never consults the direct provider list
+            Assert.That(SalesRestrictions.IsCountryBlocked(country), Is.False);
+        });
+    }
+
+    [Test]
+    public void BlockedCountriesAreConfigurable()
+    {
+        try
+        {
+            SalesRestrictions.Configure("");
+            Assert.That(CallbackController.DoWeSellto("CH", null), Is.True);
+            SalesRestrictions.Configure("at, ch");
+            Assert.That(CallbackController.DoWeSellto("CH", null), Is.False);
+            Assert.That(CallbackController.DoWeSellto("LI", null), Is.True);
+        }
+        finally
+        {
+            SalesRestrictions.Configure(null);
+        }
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;

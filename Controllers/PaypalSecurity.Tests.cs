@@ -399,6 +399,39 @@ public class PaypalSecurityTests
         Assert.That(paypal.Calls, Does.Not.Contain("/v2/checkout/orders/ORDER/capture"));
     }
 
+    /// <summary>
+    /// Regression: CH was missing from the blocked countries, so Swiss PayPal payers were captured.
+    /// </summary>
+    [TestCase("CH")]
+    [TestCase("LI")]
+    public async Task ApprovalFromSwissVatAreaIsNeverCaptured(string country)
+    {
+        await SeedRequest();
+        SetOrder("APPROVED");
+        paypal.Replies["/v2/checkout/orders/ORDER"]["payer"]["address"]["country_code"] = country;
+        paypal.Replies["/v2/checkout/orders/ORDER/capture"] = JObject.Parse("""{"id":"ORDER","status":"COMPLETED"}""");
+        var result = await Controller("""
+        {"id":"EVENT","event_type":"CHECKOUT.ORDER.APPROVED","resource":{"id":"ORDER","purchase_units":[{"custom_id":"1;100;sender"}]}}
+        """).Paypal();
+        Assert.That(result, Is.TypeOf<OkResult>());
+        Assert.That(paypal.Calls, Does.Not.Contain("/v2/checkout/orders/ORDER/capture"));
+    }
+
+    /// <summary>
+    /// A Swiss order captured outside our approval flow (client side or dashboard) must not be credited.
+    /// </summary>
+    [Test]
+    public async Task CompletedCaptureFromSwissPayerIsNotCreditedAndMarkedForRefund()
+    {
+        var request = await SeedRequest();
+        SetOrder();
+        paypal.Replies["/v2/checkout/orders/ORDER"]["payer"]["address"]["country_code"] = "CH";
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<OkResult>());
+        Assert.That(sender.Balance, Is.EqualTo(99));
+        Assert.That(await db.FiniteTransactions.CountAsync(), Is.Zero);
+        Assert.That(request.State, Is.EqualTo(PaymentRequest.Status.REFUND_PENDING));
+    }
+
     [TestCase("id", "OTHER-CAPTURE")]
     [TestCase("status", "REFUNDED")]
     public async Task OrderMustConfirmTheSameCompletedCapture(string field, string value)
