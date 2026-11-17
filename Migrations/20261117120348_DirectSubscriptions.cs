@@ -13,6 +13,26 @@ namespace Payments.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AddColumn<string>(
+                name: "CheckoutCountry",
+                table: "Subscriptions",
+                type: "character varying(2)",
+                maxLength: 2,
+                nullable: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Subscriptions_CheckoutCountry_Status",
+                table: "Subscriptions",
+                columns: new[] { "CheckoutCountry", "Status" });
+
+            // Partial: only reversal rows (new with this release) are unique; sale rows of earlier releases may hold duplicates.
+            migrationBuilder.CreateIndex(
+                name: "UX_CreatorCodeRevenues_Reversal",
+                table: "CreatorCodeRevenues",
+                column: "TransactionReference",
+                unique: true,
+                filter: "\"TransactionReference\" LIKE '%#refund:%'");
+
+            migrationBuilder.AddColumn<string>(
                 name: "CreatorCode",
                 table: "Subscriptions",
                 type: "character varying(50)",
@@ -79,6 +99,13 @@ namespace Payments.Migrations
                 type: "character varying(50)",
                 maxLength: 50,
                 nullable: true);
+
+            migrationBuilder.AddColumn<bool>(
+                name: "ManagedPayments",
+                table: "PaymentRequests",
+                type: "boolean",
+                nullable: false,
+                defaultValue: false);
 
             migrationBuilder.CreateTable(
                 name: "DiscountCodes",
@@ -155,11 +182,50 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
                 table: "PayPalPlans",
                 columns: new[] { "ProductSlug", "BillingWeeks", "Currency" },
                 unique: true);
+
+            migrationBuilder.AddColumn<int>(
+                name: "PaymentRequestId",
+                table: "ServicePerformanceDeclarations",
+                type: "integer",
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "BillingCountry",
+                table: "PaymentRecords",
+                type: "character varying(2)",
+                maxLength: 2,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "CheckoutCountry",
+                table: "PaymentRecords",
+                type: "character varying(2)",
+                maxLength: 2,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "PaymentMethodCountry",
+                table: "PaymentRecords",
+                type: "character varying(2)",
+                maxLength: 2,
+                nullable: true);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropIndex(
+                name: "UX_CreatorCodeRevenues_Reversal",
+                table: "CreatorCodeRevenues");
+
+            migrationBuilder.DropIndex(
+                name: "IX_Subscriptions_CheckoutCountry_Status",
+                table: "Subscriptions");
+
+            migrationBuilder.DropColumn(
+                name: "CheckoutCountry",
+                table: "Subscriptions");
+
             migrationBuilder.DropTable(
                 name: "DiscountCodes");
 
@@ -180,6 +246,10 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
 
             migrationBuilder.DropColumn(
                 name: "DiscountCode",
+                table: "PaymentRequests");
+
+            migrationBuilder.DropColumn(
+                name: "ManagedPayments",
                 table: "PaymentRequests");
 
             migrationBuilder.DropIndex(
@@ -209,6 +279,22 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
             migrationBuilder.DropColumn(
                 name: "ProviderPlanId",
                 table: "Subscriptions");
+
+            migrationBuilder.DropColumn(
+                name: "PaymentRequestId",
+                table: "ServicePerformanceDeclarations");
+
+            migrationBuilder.DropColumn(
+                name: "BillingCountry",
+                table: "PaymentRecords");
+
+            migrationBuilder.DropColumn(
+                name: "CheckoutCountry",
+                table: "PaymentRecords");
+
+            migrationBuilder.DropColumn(
+                name: "PaymentMethodCountry",
+                table: "PaymentRecords");
         }
     }
 }

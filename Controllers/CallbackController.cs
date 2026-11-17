@@ -196,6 +196,8 @@ namespace Payments.Controllers
                             if (request != null)
                             {
                                 request.State = PaymentRequest.Status.REFUND_PENDING;
+                                request.UpdatedAt = DateTime.UtcNow; // when marked; the revenue export filters by it
+                                request.Country ??= paymentCountry;
                                 request.SessionId = paymentIntent.Id;
                                 await db.SaveChangesAsync();
                             }
@@ -1027,6 +1029,8 @@ namespace Payments.Controllers
                     // captured outside CompleteOrder (client side or dashboard), so it can only be refunded now
                     _logger.LogWarning("PayPal capture {CaptureId} from {Country} requires a manual refund", referenceId, completedPayer.CountryCode);
                     paymentRequest.State = PaymentRequest.Status.REFUND_PENDING;
+                    paymentRequest.UpdatedAt = DateTime.UtcNow; // when marked; the revenue export filters by it
+                    paymentRequest.Country ??= completedPayer?.CountryCode?.ToUpperInvariant();
                     await db.SaveChangesAsync();
                     return Ok();
                 }

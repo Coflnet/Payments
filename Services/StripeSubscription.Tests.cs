@@ -76,6 +76,7 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         Assert.That(subscription.ProviderSlug, Is.EqualTo("stripe"));
         Assert.That(subscription.Product.Slug, Is.EqualTo("l_premium"));
         Assert.That(subscription.PriceCents, Is.EqualTo(969));
+        Assert.That(subscription.CheckoutCountry, Is.EqualTo("US"), "the US direct cap counts by it");
         Assert.That(subscription.Status, Is.EqualTo("active"));
         Assert.That(await Grants("stripe-invoice-in_1"), Is.EqualTo(1));
         Assert.That(await Grants("stripe-invoice-in_1-topup"), Is.EqualTo(1));
@@ -343,26 +344,54 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         Assert.That((await Access("sub_1")).Product.Slug, Is.EqualTo("l_premium"));
     }
 
+    /// <summary>
+    /// Regression: the session's recurring price was the discounted first price and was raised after the first invoice,
+    /// so Stripe's page showed the discount as the renewal price. Now the recurring price is the full price from the start
+    /// (a one-time coupon lowers the first invoice), nothing is repriced and only the discounted first total is accepted.
+    /// </summary>
     [Test]
-    public async Task FirstPaymentOnlyDiscountReturnsToThePlanPriceAfterTheFirstInvoice()
+    public async Task FirstPaymentOnlyDiscountNeedsNoRepriceAfterTheFirstInvoice()
     {
         db.DiscountCodes.Add(new DiscountCode { Code = "INTRO", AmountType = "percent", Amount = 50, Duration = DiscountCode.FirstPaymentOnly });
         await db.SaveChangesAsync();
         checkoutMetadata[Keys.DiscountCode] = "INTRO";
-        checkoutMetadata[Keys.PriceCents] = "485";
-        remote = Snapshot(priceCents: 485);
+        checkoutMetadata[Keys.FirstPriceCents] = "485";
+        remote = Snapshot();
         var service = Service(stripe.Object);
-        var requests = new List<StripePriceChangeRequest>();
-        OnPriceChange(_ => new StripePriceChange(remote = Snapshot(plan: "l_premium"), null, null), requests);
 
-        await service.StripeInvoicePaid(Invoice(total: 485));
-        await service.StripeInvoicePaid(Invoice(total: 485));
+        Assert.That(await service.StripeInvoicePaid(Invoice(total: 485)), Is.Not.Null);
 
-        Assert.That(requests.Single().UnitAmount, Is.EqualTo(969));
-        Assert.That(requests.Single().InvoiceNow, Is.False);
+        stripe.Verify(s => s.ChangePrice(It.IsAny<StripeSubscriptionSnapshot>(), It.IsAny<StripePriceChangeRequest>()), Times.Never);
         Assert.That((await Subscription("sub_1")).PriceCents, Is.EqualTo(969));
         Assert.That(await service.StripeInvoicePaid(Invoice("in_2", "subscription_cycle")), Is.Not.Null);
         Assert.That(await Grants("stripe-invoice-in_2"), Is.EqualTo(1));
+    }
+
+    [TestCase(969, Description = "the coupon was not applied")]
+    [TestCase(500, Description = "another discount")]
+    public async Task FirstInvoiceOfAFirstPaymentCodeMustChargeExactlyTheDiscountedPrice(long total)
+    {
+        checkoutMetadata[Keys.FirstPriceCents] = "485";
+        remote = Snapshot();
+        var service = Service(stripe.Object);
+
+        Assert.That(await service.StripeInvoicePaid(Invoice(total: total)), Is.Null);
+        Assert.That(await Grants("stripe-invoice-in_1"), Is.Zero);
+        Assert.That(await RefundMark("stripe", "in_1"), Is.EqualTo(PaymentRequest.Status.REFUND_PENDING));
+        Assert.That((await db.PaymentRequests.SingleAsync(r => r.SessionId == "in_1")).Country, Is.EqualTo("US"),
+            "the revenue export lists the sale under its checkout country");
+    }
+
+    [Test]
+    public async Task RenewalAfterAFirstPaymentCodeMustChargeTheFullPrice()
+    {
+        checkoutMetadata[Keys.FirstPriceCents] = "485";
+        remote = Snapshot();
+        var service = Service(stripe.Object);
+        await service.StripeInvoicePaid(Invoice(total: 485));
+
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_2", "subscription_cycle", 485)), Is.Null, "the coupon was once only");
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_3", "subscription_cycle", 969)), Is.Not.Null);
     }
 
     [Test]
@@ -566,28 +595,27 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
     }
 
     /// <summary>
-    /// A plan switch reprices to the target plan's net price plus the VAT of the checkout country
-    /// (35.69 * 1.19 = 42.47), a "first payment only" code returns to the gross plan price (9.69 -> 11.53).
+    /// A plan switch reprices to the target plan's net price plus the VAT of the checkout country (35.69 * 1.19 = 42.47);
+    /// a "first payment only" code does not apply to it.
     /// </summary>
     [Test]
-    public async Task PlanSwitchAndEndOfFirstPaymentCodeUseTheGrossPrice()
+    public async Task PlanSwitchAfterAFirstPaymentCodeUsesTheGrossPriceWithoutIt()
     {
         db.DiscountCodes.Add(new DiscountCode { Code = "INTRO", AmountType = "percent", Amount = 50, Duration = DiscountCode.FirstPaymentOnly });
         await db.SaveChangesAsync();
         checkoutMetadata[Keys.Country] = "DE";
         checkoutMetadata[Keys.DiscountCode] = "INTRO";
-        checkoutMetadata[Keys.PriceCents] = "576";
-        remote = Snapshot(priceCents: 576);
+        checkoutMetadata[Keys.PriceCents] = "1153";
+        checkoutMetadata[Keys.FirstPriceCents] = "576";
+        remote = Snapshot(priceCents: 1153);
         var service = Service(stripe.Object);
         var requests = new List<StripePriceChangeRequest>();
         OnPriceChange(r => new StripePriceChange(remote = Snapshot(plan: r.PlanSlug, priceCents: r.UnitAmount), "in_up", "paid"), requests);
 
         await service.StripeInvoicePaid(Invoice(total: 576));
-        Assert.That(requests.Single().UnitAmount, Is.EqualTo(1153));
-
-        // the discount ended with the first invoice, so the switch is priced without it
         await service.ChangePlan("buyer", "sub_1", "l_prem_plus");
-        Assert.That(requests.Last().UnitAmount, Is.EqualTo(4247));
+
+        Assert.That(requests.Single().UnitAmount, Is.EqualTo(4247));
         Assert.That((await Subscription("sub_1")).PriceCents, Is.EqualTo(4247));
     }
 
@@ -610,8 +638,8 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
     }
 
     /// <summary>
-    /// Regression: a redelivered first invoice (its recording failed) took the creator base from the agreed price,
-    /// which the end of a "first payment only" code had already raised: the share of 9.69 instead of the paid 4.84.
+    /// Regression: a redelivered first invoice (its recording failed) took the creator base from the agreed (recurring)
+    /// price: the share of 9.69 instead of the paid 4.84.
     /// </summary>
     [Test]
     public async Task RetriedFirstInvoiceKeepsTheCreatorShareOfWhatWasPaid()
@@ -623,14 +651,14 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         checkoutMetadata[Keys.Country] = "DE";
         checkoutMetadata[Keys.DiscountCode] = "INTRO";
         checkoutMetadata[Keys.CreatorCode] = "CREATOR";
-        checkoutMetadata[Keys.PriceCents] = "576";
-        remote = Snapshot(priceCents: 576);
-        OnPriceChange(r => new StripePriceChange(remote = Snapshot(priceCents: r.UnitAmount), null, null));
+        checkoutMetadata[Keys.PriceCents] = "1153";
+        checkoutMetadata[Keys.FirstPriceCents] = "576";
+        remote = Snapshot(priceCents: 1153);
         var service = Service(stripe.Object);
         failingPublishes = 1;
 
         await PostStripe(service, "invoice.paid", InvoiceJson(total: 576));
-        Assert.That((await Subscription("sub_1")).PriceCents, Is.EqualTo(1153), "the code ended with the first invoice");
+        Assert.That((await Subscription("sub_1")).PriceCents, Is.EqualTo(1153), "renewals are agreed at the full price");
         await PostStripe(service, "invoice.paid", InvoiceJson(total: 576));
 
         Assert.That((await db.CreatorCodeRevenues.SingleAsync()).FinalPrice, Is.EqualTo(4.84m));
@@ -675,6 +703,144 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         var record = await db.PaymentRecords.SingleAsync();
         Assert.That(record.TaxRemittedByProcessor, Is.True);
         Assert.That(record.Currency, Is.EqualTo("BRL"));
+    }
+
+    private async Task SeedCheckoutRequest(string ip)
+    {
+        var request = await SeedCheckout("stripe", "cs_1", premium, 11.53m);
+        request.CreateOnIp = System.Net.IPAddress.Parse(ip);
+        await db.SaveChangesAsync();
+        checkoutMetadata[Keys.PaymentRequestId] = request.Id.ToString();
+    }
+
+    private void DirectCheckoutIn(string country, string cardCountry)
+    {
+        checkoutMetadata[Keys.Country] = country;
+        checkoutMetadata[Keys.PriceCents] = "1153";
+        remote = Snapshot(priceCents: 1153);
+        stripe.Setup(s => s.GetCardCountry("in_1")).ReturnsAsync(cardCountry);
+        stripe.Setup(s => s.CancelNow("sub_1")).ReturnsAsync(() => remote = Snapshot("canceled", priceCents: 1153));
+    }
+
+    /// <summary>
+    /// Regression: a buyer who checked out as German (VAT 19%) but whose billing address and card are both Austrian
+    /// was granted with the German VAT. Both signals agreeing on another country rejects the sale like an unsellable one.
+    /// </summary>
+    [Test]
+    public async Task BillingAddressAndCardInAnotherCountryThanTheCheckoutRejectTheSale()
+    {
+        DirectCheckoutIn("DE", "AT");
+
+        Assert.That(await Service(stripe.Object).StripeInvoicePaid(Invoice(total: 1153, country: "AT")), Is.Null);
+
+        Assert.That(await Grants("stripe-invoice-in_1"), Is.Zero);
+        stripe.Verify(s => s.CancelNow("sub_1"), Times.Once);
+        Assert.That(await RefundMark("stripe", "in_1"), Is.EqualTo(PaymentRequest.Status.REFUND_PENDING));
+    }
+
+    [TestCase("FR", Description = "the card is from a third country: no agreement, no proof")]
+    [TestCase("DE", Description = "the card matches the checkout")]
+    [TestCase(null, Description = "a payment method without a card country")]
+    public async Task OneSignalAloneDoesNotRejectTheSale(string cardCountry)
+    {
+        DirectCheckoutIn("DE", cardCountry);
+
+        Assert.That(await Service(stripe.Object).StripeInvoicePaid(Invoice(total: 1153, country: "AT")), Is.Not.Null);
+        stripe.Verify(s => s.CancelNow(It.IsAny<string>()), Times.Never);
+    }
+
+    [Test]
+    public async Task BillingCardAndCheckoutCountriesAndIpAreKeptWithThePayment()
+    {
+        await SeedCheckoutRequest("203.0.113.7");
+        DirectCheckoutIn("DE", "FR");
+
+        await PostStripe(Service(stripe.Object), "invoice.paid", InvoiceJson(total: 1153, country: "AT"));
+
+        var record = await db.PaymentRecords.SingleAsync();
+        Assert.That((record.CheckoutCountry, record.BillingCountry, record.PaymentMethodCountry, record.IpAddress),
+            Is.EqualTo(("DE", "AT", "FR", "203.0.113.7")));
+    }
+
+    [Test]
+    public async Task ManagedPaymentsDoesNotLookUpTheCard()
+    {
+        remote = Snapshot(managed: true, priceCents: 969);
+
+        Assert.That(await Service(stripe.Object).StripeInvoicePaid(Invoice(total: 5890, currency: "brl")), Is.Not.Null);
+        stripe.Verify(s => s.GetCardCountry(It.IsAny<string>()), Times.Never);
+    }
+
+    private async Task RefundScenario()
+    {
+        db.CreatorCodes.Add(new CreatorCode { Code = "CREATOR", CreatorUserId = "creator", DiscountPercent = 0,
+            RevenueSharePercent = 10, IsActive = true });
+        await db.SaveChangesAsync();
+        checkoutMetadata[Keys.CreatorCode] = "CREATOR";
+        remote = Snapshot();
+        var service = Service(stripe.Object);
+        stripe.Setup(s => s.FindInvoiceByPaymentIntent("pi_1")).ReturnsAsync(Invoice());
+        await PostStripe(service, "invoice.paid", InvoiceJson());
+    }
+
+    private Task PostChargeRefund(long refunded) => PostStripe(Service(stripe.Object), "charge.refunded",
+        $$"""{"id":"ch_1","object":"charge","payment_intent":"pi_1","amount":969,"amount_refunded":{{refunded}},"currency":"eur"}""");
+
+    private Task<List<decimal>> Reversals() => db.CreatorCodeRevenues.Where(r => r.CreatorRevenue < 0)
+        .Select(r => r.CreatorRevenue).ToListAsync();
+
+    /// <summary>
+    /// Regression: the creator share was booked with the payment and never taken back, so refunded payments were still paid
+    /// out. A full refund reverses all of it, a partial refund its proportion, and a redelivery changes nothing.
+    /// </summary>
+    [Test]
+    public async Task FullRefundReversesTheCreatorShareOnce()
+    {
+        await RefundScenario();
+
+        await PostChargeRefund(969);
+        await PostChargeRefund(969);
+
+        Assert.That(await Reversals(), Is.EqualTo(new[] { -0.969m }));
+        Assert.That(await db.CreatorCodeRevenues.SumAsync(r => r.CreatorRevenue), Is.Zero);
+    }
+
+    [Test]
+    public async Task PartialRefundsReverseTheShareProportionallyAndNeverMoreThanTheShare()
+    {
+        await RefundScenario();
+
+        await PostChargeRefund(485);
+        Assert.That(await Reversals(), Is.EqualTo(new[] { -0.485m }));
+        await PostChargeRefund(485);
+        Assert.That(await Reversals(), Is.EqualTo(new[] { -0.485m }), "a redelivery changes nothing");
+        await PostChargeRefund(969);
+
+        Assert.That(await Reversals(), Is.EqualTo(new[] { -0.485m, -0.484m }), "the growing cumulative refund adds its increase");
+        Assert.That(await db.CreatorCodeRevenues.SumAsync(r => r.CreatorRevenue), Is.Zero);
+        await PostChargeRefund(969);
+        Assert.That(await db.CreatorCodeRevenues.CountAsync(), Is.EqualTo(3), "a redelivery changes nothing");
+    }
+
+    /// <summary>
+    /// Regression: a growing Stripe refund rewrote the existing reversal row. Once that row was paid out (deducted from a
+    /// payout), the further refund was hidden in a row already marked paid out, so the creator kept that part of the share.
+    /// </summary>
+    [Test]
+    public async Task FurtherRefundAfterAPaidOutReversalIsANewUnpaidRow()
+    {
+        await RefundScenario();
+        await PostChargeRefund(485);
+        var paidOut = await db.CreatorCodeRevenues.SingleAsync(r => r.CreatorRevenue < 0);
+        paidOut.IsPaidOut = true;
+        await db.SaveChangesAsync();
+
+        await PostChargeRefund(969);
+
+        db.ChangeTracker.Clear();
+        Assert.That((await db.CreatorCodeRevenues.SingleAsync(r => r.Id == paidOut.Id)).CreatorRevenue, Is.EqualTo(-0.485m));
+        Assert.That(await db.CreatorCodeRevenues.Where(r => !r.IsPaidOut && r.CreatorRevenue < 0).Select(r => r.CreatorRevenue)
+            .ToListAsync(), Is.EqualTo(new[] { -0.484m }));
     }
 
     private static string InvoiceJson(string id = "in_1", string reason = "subscription_create", long total = 969,

@@ -15,12 +15,24 @@ ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "DiscountCode" character va
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "ManagedPayments" boolean NOT NULL DEFAULT false;
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "PriceCents" bigint;
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "ProviderPlanId" character varying(64);
+-- The buyer country of the checkout (VAT country of direct sales); the US direct subscription cap counts by it
+ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "CheckoutCountry" character varying(2);
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "RecurringAmount" numeric;
 -- The buyer country a subscription checkout was priced for (the VAT country of direct sales)
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "Country" character varying(2);
 -- PayPal subscriptions: the codes of the checkout, copied to the subscription on activation
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "CreatorCode" character varying(50);
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "DiscountCode" character varying(50);
+-- Subscription checkouts: sold through Stripe Managed Payments (not reused for a direct checkout of the same amount)
+ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "ManagedPayments" boolean NOT NULL DEFAULT false;
+
+-- Place of supply evidence per payment (the IP address column already exists): the VAT country of the checkout,
+-- Stripe: billing address country / PayPal: payer country, Stripe: card issuing country. Existing tables keep their grants.
+ALTER TABLE "PaymentRecords" ADD COLUMN IF NOT EXISTS "CheckoutCountry" character varying(2);
+ALTER TABLE "PaymentRecords" ADD COLUMN IF NOT EXISTS "BillingCountry" character varying(2);
+ALTER TABLE "PaymentRecords" ADD COLUMN IF NOT EXISTS "PaymentMethodCountry" character varying(2);
+-- The subscription checkout (PaymentRequest) an early performance declaration was given for
+ALTER TABLE "ServicePerformanceDeclarations" ADD COLUMN IF NOT EXISTS "PaymentRequestId" integer;
 
 CREATE TABLE IF NOT EXISTS "DiscountCodes" (
     -- INT4 explicitly: the model maps Id to a 32 bit integer (CockroachDB's plain INTEGER is 64 bit).
@@ -78,6 +90,18 @@ WHERE s."ProviderSlug" = newer."ProviderSlug" AND s."ExternalId" = newer."Extern
   AND (s."UpdatedAt" < newer."UpdatedAt" OR (s."UpdatedAt" = newer."UpdatedAt" AND s."Id" < newer."Id"));
 
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_Subscriptions_ProviderSlug_ExternalId" ON "Subscriptions" ("ProviderSlug", "ExternalId");
+CREATE INDEX IF NOT EXISTS "IX_Subscriptions_CheckoutCountry_Status" ON "Subscriptions" ("CheckoutCountry", "Status");
+
+-- Concurrent refund webhooks must not both reverse a creator share: reversal rows ("<payment>#refund:<key>") are unique.
+-- The index is partial on purpose. Reversal rows are new with this release, so none can be duplicated yet, but sale rows
+-- written by earlier releases were never checked for duplicate TransactionReference values; a full unique index could
+-- fail on them, and they must not be deleted (revenue rows are never removed silently).
+-- Stop (failing cast) if reversal-like rows are already duplicated, e.g. by a half applied earlier attempt.
+SELECT CAST('STOP: duplicate creator revenue reversal ' || "TransactionReference" || '; resolve by hand before migrating' AS INT8)
+FROM "CreatorCodeRevenues" WHERE "TransactionReference" LIKE '%#refund:%'
+GROUP BY "TransactionReference" HAVING count(*) > 1 LIMIT 1;
+CREATE UNIQUE INDEX IF NOT EXISTS "UX_CreatorCodeRevenues_Reversal" ON "CreatorCodeRevenues" ("TransactionReference")
+WHERE "TransactionReference" LIKE '%#refund:%';
 
 -- Grant access to the new table and its identity sequence before marking the migration complete.
 GRANT SELECT, INSERT, UPDATE ON TABLE "DiscountCodes" TO sky_payments;

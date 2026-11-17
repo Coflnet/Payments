@@ -15,7 +15,40 @@ public class PayPalSubscription
     [DataMember(Name = "custom_id")] public string CustomId { get; set; }
     [DataMember(Name = "create_time")] public string CreateTime { get; set; }
     [DataMember(Name = "billing_info")] public PayPalBillingInfo BillingInfo { get; set; }
+    [DataMember(Name = "subscriber")] public PayPalSubscriber Subscriber { get; set; }
     [DataMember(Name = "links")] public List<PayPalLink> Links { get; set; }
+}
+
+[DataContract]
+public class PayPalSubscriber
+{
+    [DataMember(Name = "shipping_address")] public PayPalShippingAddress ShippingAddress { get; set; }
+    [DataMember(Name = "payment_source")] public PayPalPaymentSource PaymentSource { get; set; }
+}
+
+/// <summary>Only present when the subscription is funded by a card (not by a PayPal wallet)</summary>
+[DataContract]
+public class PayPalPaymentSource
+{
+    [DataMember(Name = "card")] public PayPalCard Card { get; set; }
+}
+
+[DataContract]
+public class PayPalCard
+{
+    [DataMember(Name = "billing_address")] public PayPalAddress BillingAddress { get; set; }
+}
+
+[DataContract]
+public class PayPalShippingAddress
+{
+    [DataMember(Name = "address")] public PayPalAddress Address { get; set; }
+}
+
+[DataContract]
+public class PayPalAddress
+{
+    [DataMember(Name = "country_code")] public string CountryCode { get; set; }
 }
 
 [DataContract]

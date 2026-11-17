@@ -107,6 +107,24 @@ public class SubscriptionCheckoutTests
     }
 
     /// <summary>
+    /// Direct buyers always pay EUR: the wire body carries adaptive_pricing[enabled]=false, Managed Payments sessions
+    /// (which reject the parameter) do not carry it.
+    /// </summary>
+    [Test]
+    public async Task DirectSessionsDisableAdaptivePricingAndManagedOnesDoNotSendIt()
+    {
+        var direct = StripeSubscriptionCheckoutBuilder.Build(
+            new StripeSubscriptionCheckout(new User { ExternalId = "buyer" }, Plan, 2492, 13, StripeCheckoutMode.Direct, "DE",
+                "https://ok", "https://cancel", "a@b.c", null, null, 42),
+            StripeManagedSettings.From(new ConfigurationBuilder().Build()));
+
+        var sent = await SentToStripe(direct);
+
+        Assert.That(Uri.UnescapeDataString(sent.Body), Does.Contain("adaptive_pricing[enabled]=false"));
+        Assert.That(Build(StripeCheckoutMode.Managed).AdaptivePricing, Is.Null);
+    }
+
+    /// <summary>
     /// Creates the session through Stripe.net against a fake HTTP handler and returns the form body and API version
     /// exactly as they would go over the wire.
     /// </summary>
@@ -132,6 +150,204 @@ public class SubscriptionCheckoutTests
                 Content = new StringContent("""{"id":"cs_test","object":"checkout.session"}""", Encoding.UTF8, "application/json")
             };
         }
+    }
+
+    private static StripeSubscriptionCheckout Checkout(StripeCheckoutMode mode, long unit = 1153, long? first = null,
+        string coupon = null, string taxRate = null) =>
+        new(new User { ExternalId = "buyer" }, Plan, unit, 13, mode, "DE", "https://ok", "https://cancel", "a@b.c", "SAVE10", null, 42,
+            first, coupon, taxRate);
+
+    private static SessionCreateOptions Build(StripeSubscriptionCheckout checkout) =>
+        StripeSubscriptionCheckoutBuilder.Build(checkout, StripeManagedSettings.From(new ConfigurationBuilder().Build()));
+
+    [Test]
+    public void FirstPaymentCouponIsOneTimeAndTheRecurringPriceStaysFull()
+    {
+        var options = Build(Checkout(StripeCheckoutMode.Direct, 1153, 576, "coflnet_once_577_eur"));
+
+        Assert.That(options.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1153), "Stripe shows this as the renewal price");
+        Assert.That(options.Discounts.Single().Coupon, Is.EqualTo("coflnet_once_577_eur"));
+        Assert.That(options.SubscriptionData.Metadata["priceCents"], Is.EqualTo("1153"));
+        Assert.That(options.SubscriptionData.Metadata["firstPriceCents"], Is.EqualTo("576"));
+    }
+
+    [Test]
+    public void SessionsWithoutAFirstPaymentCodeHaveNoCouponOrFirstPrice()
+    {
+        var options = Build(Checkout(StripeCheckoutMode.Direct, 1153, 1153));
+        Assert.That(options.Discounts, Is.Null);
+        Assert.That(options.SubscriptionData.Metadata.ContainsKey("firstPriceCents"), Is.False);
+    }
+
+    [Test]
+    public void FirstPaymentCouponIsAllowedOnManagedPaymentsSessions()
+    {
+        var options = Build(Checkout(StripeCheckoutMode.Managed, 2492, 1246, "coflnet_once_pct_5000"));
+        var paths = Paths(Params(options)).ToList();
+
+        Assert.That(options.Discounts.Single().Coupon, Is.EqualTo("coflnet_once_pct_5000"));
+        Assert.That(paths.Intersect(ManagedPaymentsDisallowed.Concat(ManagedPaymentsForbidden)), Is.Empty);
+    }
+
+    [TestCase(StripeCheckoutMode.Direct, 1153L, 576L, "coflnet_once_577_eur", 577L, null)]
+    [TestCase(StripeCheckoutMode.Managed, 969L, 485L, "coflnet_once_pct_4995", null, 49.95)]
+    [TestCase(StripeCheckoutMode.Managed, 2492L, 1869L, "coflnet_once_pct_2500", null, 25.0)]
+    public void FirstPaymentCouponsHaveDeterministicIds(StripeCheckoutMode mode, long recurring, long first, string id, long? amount, double? percent)
+    {
+        var coupon = StripeFirstPaymentCoupon.For(mode, recurring, first, "EUR");
+        Assert.That((coupon.Id, coupon.AmountOffCents, coupon.PercentOff), Is.EqualTo((id, amount, (decimal?)(percent == null ? null : (decimal)percent))));
+        Assert.That(coupon.Currency, Is.EqualTo("eur"));
+        Assert.That(StripeFirstPaymentCoupon.For(mode, recurring, first, "eur"), Is.EqualTo(coupon));
+    }
+
+    [Test]
+    public void NoCouponWhenTheFirstPaymentIsNotDiscounted() =>
+        Assert.That(StripeFirstPaymentCoupon.For(StripeCheckoutMode.Direct, 1153, 1153, "eur"), Is.Null);
+
+    private static readonly StripeCouponSpec FixedCoupon = new("coflnet_once_200_eur", 200, null, "eur");
+
+    private static Stripe.Coupon Coupon(string duration = "once", long? amountOff = 200, decimal? percentOff = null,
+        string currency = "eur", bool valid = true) =>
+        new() { Duration = duration, AmountOff = amountOff, PercentOff = percentOff, Currency = currency, Valid = valid };
+
+    private static async Task<(string id, List<string> created, List<string> errors)> Resolve(StripeCouponSpec spec,
+        Dictionary<string, Stripe.Coupon> existing)
+    {
+        var created = new List<string>();
+        var logger = new ListLogger();
+        var id = await StripeFirstPaymentCoupon.Resolve(spec, key => Task.FromResult(existing.GetValueOrDefault(key)),
+            versioned => { created.Add(versioned.Id); return Task.FromResult(versioned.Id); }, logger);
+        return (id, created, logger.Errors);
+    }
+
+    private sealed class ListLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        public List<string> Errors { get; } = [];
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state,
+            Exception exception, Func<TState, Exception, string> formatter)
+        {
+            if (logLevel == Microsoft.Extensions.Logging.LogLevel.Error)
+                Errors.Add(formatter(state, exception));
+        }
+    }
+
+    [Test]
+    public async Task ACouponWithMatchingTermsIsReusedWithoutCreatingOne()
+    {
+        var (id, created, errors) = await Resolve(FixedCoupon, new() { [FixedCoupon.Id] = Coupon() });
+
+        Assert.That(id, Is.EqualTo(FixedCoupon.Id));
+        Assert.That(created, Is.Empty);
+        Assert.That(errors, Is.Empty);
+    }
+
+    [Test]
+    public async Task AMissingCouponIsCreatedUnderTheBaseId()
+    {
+        var (id, created, _) = await Resolve(FixedCoupon, new());
+
+        Assert.That(id, Is.EqualTo(FixedCoupon.Id));
+        Assert.That(created, Is.EqualTo(new[] { FixedCoupon.Id }));
+    }
+
+    /// <summary>
+    /// Regression: a coupon found by id was applied without looking at its terms, so one edited or created by hand
+    /// under our id gave a wrong discount. Every wrong term logs an error and moves to the _v2 id.
+    /// </summary>
+    [TestCase("forever", 200L, null, "eur", true, TestName = "WrongDuration")]
+    [TestCase("once", 100L, null, "eur", true, TestName = "WrongAmount")]
+    [TestCase("once", 200L, null, "usd", true, TestName = "WrongCurrency")]
+    [TestCase("once", null, 10, "eur", true, TestName = "PercentCouponForAFixedSpec")]
+    [TestCase("once", 200L, null, "eur", false, TestName = "InvalidCoupon")]
+    public async Task ACouponWithOtherTermsIsNeverReusedAndAVersionedIdIsUsed(string duration, long? amount, int? percent, string currency, bool valid)
+    {
+        var existing = new Dictionary<string, Stripe.Coupon> { [FixedCoupon.Id] = Coupon(duration, amount, percent, currency, valid) };
+
+        var (id, created, errors) = await Resolve(FixedCoupon, existing);
+
+        Assert.That(id, Is.EqualTo(FixedCoupon.Id + "_v2"));
+        Assert.That(created, Is.EqualTo(new[] { FixedCoupon.Id + "_v2" }));
+        Assert.That(errors, Has.Count.EqualTo(1));
+    }
+
+    [Test]
+    public async Task AVersionedCouponWithMatchingTermsIsReused()
+    {
+        var (id, created, _) = await Resolve(FixedCoupon, new()
+        {
+            [FixedCoupon.Id] = Coupon(amountOff: 999), [FixedCoupon.Id + "_v2"] = Coupon()
+        });
+
+        Assert.That(id, Is.EqualTo(FixedCoupon.Id + "_v2"));
+        Assert.That(created, Is.Empty);
+    }
+
+    [Test]
+    public async Task APercentCouponIsComparedByPercentage()
+    {
+        var spec = new StripeCouponSpec("coflnet_once_pct_2500", null, 25m, "eur");
+
+        Assert.That((await Resolve(spec, new() { [spec.Id] = Coupon(amountOff: null, percentOff: 25m) })).created, Is.Empty);
+        Assert.That((await Resolve(spec, new() { [spec.Id] = Coupon(amountOff: null, percentOff: 20m) })).id, Is.EqualTo(spec.Id + "_v2"));
+    }
+
+    /// <summary>
+    /// Both modes tell the buyer the renewal terms next to the button (Managed Payments adds the reseller notice)
+    /// and use the "pay" button label.
+    /// </summary>
+    [Test]
+    public void SubmitTextStatesTheRenewalTermsAndTheResellerForManagedPayments()
+    {
+        var direct = Build(Checkout(StripeCheckoutMode.Direct, 1153, taxRate: "txr_de"));
+        var managed = Build(Checkout(StripeCheckoutMode.Managed, 969));
+
+        Assert.That(direct.CustomText.Submit.Message, Does.StartWith("Renews every 13 weeks at 11.53 EUR until cancelled."));
+        Assert.That(direct.CustomText.Submit.Message, Does.Contain("sky.coflnet.com/account").And.Contain("includes VAT"));
+        Assert.That(direct.CustomText.Submit.Message, Does.Not.Contain("reseller"));
+        Assert.That(managed.CustomText.Submit.Message, Does.Contain("9.69 EUR").And.Contain("Sold through Link (Stripe's reseller), which charges any applicable taxes."));
+        Assert.That(new[] { direct.SubmitType, managed.SubmitType }, Is.All.EqualTo("pay"));
+        Assert.That(direct.CustomText.Submit.Message.Length, Is.LessThan(StripeSubscriptionDisclosure.MaxLength));
+    }
+
+    /// <summary>
+    /// Regression: a direct US sale (VAT rate 0, no VAT charged) was told "The price includes VAT."
+    /// </summary>
+    [Test]
+    public void DirectSaleWithoutVatDoesNotClaimToIncludeVat()
+    {
+        var message = Build(Checkout(StripeCheckoutMode.Direct, 969)).CustomText.Submit.Message;
+
+        Assert.That(message, Does.StartWith("Renews every 13 weeks at 9.69 EUR until cancelled."));
+        Assert.That(message, Does.Not.Contain("VAT"));
+    }
+
+    /// <summary>
+    /// Direct sessions attach the inclusive VAT rate to the gross price line (receipts show rate and amount, the amount is
+    /// unchanged); Managed Payments does not allow tax rates, Stripe taxes there.
+    /// </summary>
+    [Test]
+    public void InclusiveVatRateIsOnlyAttachedToDirectSessions()
+    {
+        var direct = Build(Checkout(StripeCheckoutMode.Direct, 1153, taxRate: "txr_de"));
+        var managed = Build(Checkout(StripeCheckoutMode.Managed, 969, taxRate: "txr_de"));
+
+        Assert.That(direct.LineItems.Single().TaxRates, Is.EqualTo(new[] { "txr_de" }));
+        Assert.That(direct.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1153));
+        Assert.That(managed.LineItems.Single().TaxRates, Is.Null);
+    }
+
+    [Test]
+    public async Task ManagedSessionWithCouponAndTextSendsThemAndNoDisallowedParameter()
+    {
+        var sent = await SentToStripe(Build(Checkout(StripeCheckoutMode.Managed, 2492, 1246, "coflnet_once_pct_5000")));
+        var pairs = sent.Body.Split('&').Select(p => Uri.UnescapeDataString(p.Replace('+', ' '))).ToList();
+
+        Assert.That(pairs, Does.Contain("discounts[0][coupon]=coflnet_once_pct_5000"));
+        Assert.That(pairs, Does.Contain("submit_type=pay"));
+        Assert.That(pairs.Any(p => p.StartsWith("custom_text[submit][message]=Renews every 13 weeks")), Is.True);
+        Assert.That(pairs, Does.Contain("managed_payments[enabled]=true"));
     }
 
     [Test]
@@ -251,13 +467,49 @@ public class SubscriptionCheckoutTests
     [TestCase("DE", StripeCheckoutMode.Direct)]
     [TestCase("gb", StripeCheckoutMode.Direct)]
     [TestCase("US", StripeCheckoutMode.Direct)]
-    [TestCase("BR", StripeCheckoutMode.Managed)]
+    [TestCase("NO", StripeCheckoutMode.Managed)]
     [TestCase("CH", StripeCheckoutMode.Managed)]
-    [TestCase("TR", StripeCheckoutMode.Managed)]
+    [TestCase("AU", StripeCheckoutMode.Managed)]
     public void CountriesOutsideTheDirectListUseManagedPayments(string country, StripeCheckoutMode mode)
     {
         Assert.That(Routing().StripeMode(country), Is.EqualTo(mode));
         Assert.That(Routing().PayPalAvailable(country), Is.EqualTo(mode == StripeCheckoutMode.Direct));
+    }
+
+    /// <summary>
+    /// Regression: every country outside the direct list got Managed Payments, also where Stripe does not take over the
+    /// tax (AE, CL, PE, BR, AR, CO) or where Coflnet blocks sales (TR, SA, KR, VN, MX, MD are covered by Stripe but listed in
+    /// <see cref="SalesRestrictions.BlockedCountries"/>, which applies to every subscription provider).
+    /// </summary>
+    [TestCase("AE")]
+    [TestCase("CL")]
+    [TestCase("PE")]
+    [TestCase("BR")]
+    [TestCase("AR")]
+    [TestCase("CO")]
+    [TestCase("TR")]
+    [TestCase("SA")]
+    [TestCase("KR")]
+    [TestCase("VN")]
+    [TestCase("MX")]
+    [TestCase("MD")]
+    public void ManagedPaymentsIsNotOfferedWhereStripeDoesNotCoverTheTaxOrSalesAreBlocked(string country)
+    {
+        var routing = Routing();
+        Assert.That(routing.StripeMode(country), Is.Null);
+        Assert.That(routing.ProvidersFor(country).Select(p => p.Provider), Is.Empty.Or.EqualTo(new[] { "lemonsqueezy" }));
+        Assert.That(routing.DirectProvidersFor(country), Is.Empty, "discount/auto and the provider list read this");
+    }
+
+    [Test]
+    public void ManagedPaymentsStillCoversCountriesStripeDocumentsAndIsConfigurable()
+    {
+        Assert.That(new[] { "CH", "LI", "NO", "AU", "JP", "CA", "IN", "ZA" }.Select(c => Routing().StripeMode(c)),
+            Is.All.EqualTo(StripeCheckoutMode.Managed));
+        var narrowed = Routing(new() { ["SUBSCRIPTIONS:MANAGED_COUNTRIES"] = "NO" });
+        Assert.That(narrowed.StripeMode("NO"), Is.EqualTo(StripeCheckoutMode.Managed));
+        Assert.That(narrowed.StripeMode("AU"), Is.Null);
+        Assert.That(narrowed.ProvidersFor("AU").Select(p => p.Provider), Is.EqualTo(new[] { "lemonsqueezy" }));
     }
 
     [Test]
@@ -280,7 +532,7 @@ public class SubscriptionCheckoutTests
     public void DefaultsKeepLemonSqueezyEverywhereUntilProvidersAreEnabled()
     {
         var routing = new SubscriptionRouting(new ConfigurationBuilder().Build());
-        foreach (var country in new[] { "DE", "BR", null })
+        foreach (var country in new[] { "DE", "BR", "NO", null })
         {
             Assert.That(routing.ProvidersFor(country).Select(p => p.Provider), Is.EqualTo(new[] { "lemonsqueezy" }));
             Assert.That(routing.AllowsLemonSqueezyCheckout(country), Is.True);
@@ -293,9 +545,9 @@ public class SubscriptionCheckoutTests
         var routing = Routing(new() { ["SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED"] = "false" });
         Assert.That(routing.ProvidersFor("DE").Select(p => p.Provider + ":" + p.Mode), Is.EqualTo(new[] { "stripe:direct", "paypal:direct" }));
         Assert.That(routing.AllowsLemonSqueezyCheckout("DE"), Is.False);
-        Assert.That(routing.ProvidersFor("BR").Select(p => p.Provider), Is.EqualTo(new[] { "lemonsqueezy" }));
-        Assert.That(routing.AllowsLemonSqueezyCheckout("BR"), Is.True);
-        Assert.That(Routing().ProvidersFor("BR").Select(p => p.Provider + ":" + p.Mode), Is.EqualTo(new[] { "stripe:managed" }));
+        Assert.That(routing.ProvidersFor("NO").Select(p => p.Provider), Is.EqualTo(new[] { "lemonsqueezy" }));
+        Assert.That(routing.AllowsLemonSqueezyCheckout("NO"), Is.True);
+        Assert.That(Routing().ProvidersFor("NO").Select(p => p.Provider + ":" + p.Mode), Is.EqualTo(new[] { "stripe:managed" }));
     }
 
     [Test]
@@ -305,7 +557,7 @@ public class SubscriptionCheckoutTests
         {
             ["SUBSCRIPTIONS:LEMONSQUEEZY_CHECKOUT_ENABLED"] = "false"
         }).Build());
-        Assert.That(routing.ProvidersFor("BR"), Is.Empty);
+        Assert.That(routing.ProvidersFor("NO"), Is.Empty);
         Assert.That(routing.AllowsLemonSqueezyCheckout(null), Is.False);
     }
 }

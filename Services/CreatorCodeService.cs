@@ -180,6 +180,107 @@ namespace Coflnet.Payments.Services
             return revenue;
         }
 
+        private const string ReversalMarker = "#refund:";
+
+        private static bool IsReversal(CreatorCodeRevenue revenue) =>
+            revenue.TransactionReference?.Contains(ReversalMarker, StringComparison.Ordinal) == true;
+
+        /// <summary>Separates the rows of one refund key when its refunded amount grows (e.g. "#refund:charge+1")</summary>
+        private const string IncrementMarker = "+";
+
+        /// <summary>
+        /// Takes back the creator share of a (partially) refunded payment: negative revenue rows next to the original,
+        /// so reports and payouts net them out (an already paid out share shows as a negative unpaid balance).
+        /// Idempotent per <paramref name="refundKey"/> (an event may be delivered again; the cumulative refund of a Stripe
+        /// charge grows with every refund) and never takes back more than the share in total.
+        /// Rows are never changed once written: a growing refund adds a row for the increase, dated when it happened, so a
+        /// reversal that was already paid out (deducted) or reported is not altered after the fact.
+        /// </summary>
+        /// <param name="transactionReference">The payment reference the revenue was recorded under</param>
+        /// <param name="refundKey">Identifies the refund (a refund id) or the payment's cumulative refund</param>
+        /// <param name="refundedFraction">Refunded part of the payment, 0 to 1</param>
+        public async Task ReverseRevenueAsync(string transactionReference, string refundKey, decimal refundedFraction)
+        {
+            if (refundedFraction <= 0)
+                return;
+            var fraction = Math.Min(1m, refundedFraction);
+            for (var attempt = 0; attempt < MaxReversalAttempts; attempt++)
+            {
+                if (await TryReverseRevenue(transactionReference, refundKey, fraction))
+                    return;
+            }
+            throw new InvalidOperationException(
+                $"The creator revenue reversal of {transactionReference} kept conflicting with concurrent requests; retry the refund event");
+        }
+
+        /// <summary>
+        /// A conflicting concurrent reversal is re-read and the remaining increase written on the next attempt (two refunds of
+        /// one Stripe charge arrive as two events with different cumulative amounts; the larger one must not be dropped)
+        /// </summary>
+        private const int MaxReversalAttempts = 3;
+
+        /// <summary>
+        /// Writes the missing part of the reversal; false when a concurrent request wrote the same row first, so the state
+        /// has to be read again
+        /// </summary>
+        private async Task<bool> TryReverseRevenue(string transactionReference, string refundKey, decimal fraction)
+        {
+            var original = await _context.CreatorCodeRevenues
+                .FirstOrDefaultAsync(r => r.TransactionReference == transactionReference);
+            if (original == null)
+                return true;
+            var keyReference = transactionReference + ReversalMarker + refundKey;
+            var reversals = await _context.CreatorCodeRevenues
+                .Where(r => r.TransactionReference.StartsWith(transactionReference + ReversalMarker)).ToListAsync();
+            var own = reversals.Where(r => IsRowOfKey(r, keyReference)).ToList();
+            var reversedByOthers = reversals.Except(own).Sum(r => -r.CreatorRevenue);
+            var target = Math.Min(Math.Round(original.CreatorRevenue * fraction, 4), Math.Max(0, original.CreatorRevenue - reversedByOthers));
+            var increase = target - own.Sum(r => -r.CreatorRevenue);
+            if (increase <= 0)
+                return true;
+            var finalPriceIncrease = Math.Round(original.FinalPrice * fraction, 4) - own.Sum(r => -r.FinalPrice);
+            var reversal = new CreatorCodeRevenue
+            {
+                CreatorCodeId = original.CreatorCodeId, UserId = original.UserId, ProductId = original.ProductId,
+                Currency = original.Currency, PurchasedAt = DateTime.UtcNow,
+                TransactionReference = own.Count == 0 ? keyReference : keyReference + IncrementMarker + own.Count,
+                CreatorRevenue = -increase, FinalPrice = -Math.Max(0, finalPriceIncrease)
+            };
+            _context.CreatorCodeRevenues.Add(reversal);
+            if (!await TrySaveReversal(reversal))
+                return false;
+            _logger.LogInformation("Reversed {Amount} {Currency} creator revenue of payment {Reference} ({Fraction:P0} refunded)",
+                increase, original.Currency, transactionReference, fraction);
+            return true;
+        }
+
+        /// <summary>
+        /// A concurrent webhook for the same refund already wrote this reversal row (unique index on reversal references):
+        /// not an error; the caller reads the state again and writes what is still missing, if anything.
+        /// </summary>
+        private async Task<bool> TrySaveReversal(CreatorCodeRevenue reversal)
+        {
+            try
+            {
+                await _context.SaveChangesAsync();
+                return true;
+            }
+            catch (DbUpdateException e) when (IsUniqueViolation(e))
+            {
+                _context.Entry(reversal).State = EntityState.Detached;
+                _logger.LogInformation("Creator revenue reversal {Reference} was already recorded by a concurrent request; re-reading", reversal.TransactionReference);
+                return false;
+            }
+        }
+
+        internal static bool IsUniqueViolation(DbUpdateException e) =>
+            e.InnerException is Npgsql.PostgresException { SqlState: "23505" }
+            || e.InnerException?.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase) == true;
+
+        private static bool IsRowOfKey(CreatorCodeRevenue revenue, string keyReference) =>
+            revenue.TransactionReference == keyReference
+            || revenue.TransactionReference.StartsWith(keyReference + IncrementMarker, StringComparison.Ordinal);
+
         /// <summary>
         /// Gets net revenue for a creator code in a specific time period
         /// </summary>
@@ -212,7 +313,7 @@ namespace Coflnet.Payments.Services
                 {
                     Currency = g.Key,
                     TotalRevenue = g.Sum(r => r.CreatorRevenue),
-                    TotalTransactions = g.Count(),
+                    TotalTransactions = g.Count(r => !IsReversal(r)),
                     PaidOut = g.Where(r => r.IsPaidOut).Sum(r => r.CreatorRevenue),
                     Unpaid = g.Where(r => !r.IsPaidOut).Sum(r => r.CreatorRevenue)
                 })
@@ -225,7 +326,7 @@ namespace Coflnet.Payments.Services
                 StartDate = startDate,
                 EndDate = endDate,
                 RevenueByCurrency = groupedByCurrency,
-                TotalTransactions = revenues.Count
+                TotalTransactions = revenues.Count(r => !IsReversal(r))
             };
         }
 

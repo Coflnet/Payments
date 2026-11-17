@@ -24,15 +24,23 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     private SessionCreateOptions created;
     private PayPalSubscriptionRequest paypalRequest;
     private readonly List<PayPalPlanRequest> paypalPlans = [];
+    private readonly List<StripeCouponSpec> coupons = [];
+    private readonly List<(string Country, int BasisPoints)> taxRates = [];
 
     [SetUp]
     public void SetUpGateways()
     {
         paypalPlans.Clear();
+        coupons.Clear();
+        taxRates.Clear();
         stripe = new Mock<IStripeSubscriptionGateway>();
         stripe.Setup(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()))
             .Callback<SessionCreateOptions>(o => created = o)
             .ReturnsAsync(new Session { Id = "cs_1", Url = "https://checkout.stripe.com/c/cs_1" });
+        stripe.Setup(s => s.EnsureFirstPaymentCoupon(It.IsAny<StripeCouponSpec>()))
+            .Callback<StripeCouponSpec>(coupons.Add).ReturnsAsync((StripeCouponSpec c) => c.Id);
+        stripe.Setup(s => s.EnsureVatTaxRate(It.IsAny<string>(), It.IsAny<int>()))
+            .Callback<string, int>((c, bp) => taxRates.Add((c, bp))).ReturnsAsync((string c, int bp) => $"txr_{c}_{bp}");
         lemonSqueezy = new Mock<LemonSqueezyService>(new ConfigurationBuilder().Build(), NullLogger<LemonSqueezyService>.Instance,
             db, new VariantCacheService(NullLogger<VariantCacheService>.Instance));
         lemonSqueezy.Setup(l => l.ValidateDiscountCodeAsync(It.IsAny<string>(), It.IsAny<bool?>()))
@@ -54,7 +62,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
             });
     }
 
-    private TopUpController Controller(string ipCountry, Dictionary<string, string> settings = null)
+    private TopUpController Controller(string ipCountry, Dictionary<string, string> settings = null, int? activeDirectUs = null)
     {
         var values = new Dictionary<string, string>(VatRates)
         {
@@ -69,8 +77,16 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         ip.Setup(l => l.GetCountry(It.IsAny<string>())).ReturnsAsync(ipCountry);
         return new TopUpController(NullLogger<TopUpController>.Instance, db, products, transactions, config, users,
             null, lemonSqueezy.Object, new CreatorCodeService(NullLogger<CreatorCodeService>.Instance, db), null, ip.Object,
-            new DiscountCodeService(db, NullLogger<DiscountCodeService>.Instance), new SubscriptionRouting(config),
+            new DiscountCodeService(db, NullLogger<DiscountCodeService>.Instance),
+            new SubscriptionRouting(config, activeDirectUs is int active ? new UsDirectSubscriptionCap(config, new FixedCounter(active)) : null),
             stripe.Object, paypal.Object);
+    }
+
+    /// <summary>A negative count fails (the count stays unknown)</summary>
+    private sealed class FixedCounter(int count) : IDirectSubscriptionCounter
+    {
+        public Task<int> CountActiveDirect(string country) =>
+            count < 0 ? throw new InvalidOperationException("db down") : Task.FromResult(count);
     }
 
     private static TopUpOptions Options(string country, string discount = null) => new()
@@ -93,10 +109,52 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         Assert.That((await Buyer()).Country, Is.EqualTo("DE"));
     }
 
+    /// <summary>
+    /// Owner decision: from the 10th active direct US subscription on, US buyers get Stripe Managed Payments (Stripe collects
+    /// the sales tax) and no direct Stripe or PayPal checkout; providers, discount/auto and the checkouts all agree.
+    /// </summary>
+    [Test]
+    public async Task UsBuyersGoToManagedPaymentsOnceTheDirectCapIsReached()
+    {
+        var controller = Controller("US", activeDirectUs: 10);
+
+        var providers = await controller.GetSubscriptionProviders("US");
+        await controller.StripeSubscribe("buyer", "l_premium", Options("US"));
+
+        Assert.That(providers.Select(p => (p.Provider, p.Mode)), Is.EqualTo(new[] { ("stripe", "managed") }));
+        Assert.That(created.ManagedPayments?.Enabled, Is.True);
+        Assert.That(created.LineItems.Single().PriceData.TaxBehavior, Is.EqualTo("exclusive"));
+        Assert.That(created.SubscriptionData.Metadata["mode"], Is.EqualTo("managed"));
+        Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_premium", Options("US")));
+    }
+
+    [Test]
+    public async Task TheCapOnlyAffectsTheUsAndDiscountAutoAgreesWithTheProviders()
+    {
+        db.DiscountCodes.Add(new DiscountCode { Code = "BF", AmountType = "percent", Amount = 25, SubscriptionOnly = true, AutoApply = true, IsActive = true });
+        await db.SaveChangesAsync();
+        var controller = Controller("US", activeDirectUs: 10);
+
+        var us = (await controller.GetAutoDiscount("US")).Result as OkObjectResult;
+        var de = (await controller.GetAutoDiscount("DE")).Result as OkObjectResult;
+
+        Assert.That(((AutoDiscount)us.Value).Providers, Is.EqualTo(new[] { "stripe" }));
+        Assert.That(((AutoDiscount)de.Value).Providers, Is.EqualTo(new[] { "stripe", "paypal" }));
+        Assert.That((await controller.GetSubscriptionProviders("DE")).Select(p => p.Mode), Is.All.EqualTo("direct"));
+    }
+
+    [Test]
+    public async Task UsBuyersStayDirectBelowTheCapAndTheLimitIsConfigurable()
+    {
+        Assert.That((await Controller("US", activeDirectUs: 9).GetSubscriptionProviders("US")).Select(p => p.Mode), Is.All.EqualTo("direct"));
+        var limited = Controller("US", new() { ["SUBSCRIPTIONS:US_DIRECT_LIMIT"] = "3" }, activeDirectUs: 3);
+        Assert.That((await limited.GetSubscriptionProviders("US")).Select(p => p.Mode), Is.EqualTo(new[] { "managed" }));
+    }
+
     [Test]
     public async Task ManagedPaymentsSendsTheNetPriceWithExclusiveTax()
     {
-        await Controller("BR").StripeSubscribe("buyer", "l_premium", Options("BR"));
+        await Controller("NO").StripeSubscribe("buyer", "l_premium", Options("NO"));
         var price = created.LineItems.Single().PriceData;
         Assert.That(price.UnitAmount, Is.EqualTo(969));
         Assert.That(price.TaxBehavior, Is.EqualTo("exclusive"));
@@ -179,7 +237,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     [Test]
     public async Task BuyerOutsideTheDirectCountriesGetsManagedPayments()
     {
-        await Controller("BR").StripeSubscribe("buyer", "l_premium", Options("BR"));
+        await Controller("NO").StripeSubscribe("buyer", "l_premium", Options("NO"));
         Assert.That(created.ManagedPayments.Enabled, Is.True);
         Assert.That(created.LineItems.Single().PriceData.ProductData.TaxCode, Is.EqualTo("txcd_10103000"));
         Assert.That(created.SubscriptionData.Metadata["mode"], Is.EqualTo("managed"));
@@ -188,8 +246,8 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     [Test]
     public void ManagedPaymentsCanBeSwitchedOff()
     {
-        var controller = Controller("BR", new() { ["SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED"] = "false" });
-        Assert.ThrowsAsync<ApiException>(() => controller.StripeSubscribe("buyer", "l_premium", Options("BR")));
+        var controller = Controller("NO", new() { ["SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED"] = "false" });
+        Assert.ThrowsAsync<ApiException>(() => controller.StripeSubscribe("buyer", "l_premium", Options("NO")));
         stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Never);
     }
 
@@ -351,7 +409,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     /// keeps Stripe's default lifetime (24 hours) instead of ending with the code; the code's expiry is recorded.
     /// </summary>
     [TestCase("DE")]
-    [TestCase("BR")]
+    [TestCase("NO")]
     public async Task StripeSessionWithAnExpiringCodeKeepsStripesDefaultLifetime(string country)
     {
         var expires = DateTime.UtcNow.AddMinutes(5);
@@ -382,12 +440,43 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     {
         await Controller("US").StripeSubscribe("buyer", "l_premium", Options("US"));
 
-        await Controller("BR").StripeSubscribe("buyer", "l_premium", Options("BR"));
+        await Controller("NO").StripeSubscribe("buyer", "l_premium", Options("NO"));
 
         stripe.Verify(s => s.GetCheckoutSession(It.IsAny<string>()), Times.Never);
         Assert.That(created.ManagedPayments.Enabled, Is.True);
         var requests = await db.PaymentRequests.OrderBy(r => r.Id).Select(r => new { r.Amount, r.Country }).ToListAsync();
-        Assert.That(requests.Select(r => (r.Amount, r.Country)), Is.EqualTo(new[] { (9.69m, "US"), (9.69m, "BR") }));
+        Assert.That(requests.Select(r => (r.Amount, r.Country)), Is.EqualTo(new[] { (9.69m, "US"), (9.69m, "NO") }));
+    }
+
+    /// <summary>
+    /// Regression: a direct and a Managed Payments US checkout have the same amount, country and provider, so an open direct
+    /// US session was reused after the cap flipped and the buyer stayed on the direct (untaxed) checkout.
+    /// </summary>
+    [Test]
+    public async Task OpenDirectUsCheckoutIsNotReusedOnceTheCapSendsUsBuyersToManagedPayments()
+    {
+        await Controller("US", activeDirectUs: 9).StripeSubscribe("buyer", "l_premium", Options("US"));
+        Assert.That(created.ManagedPayments, Is.Null);
+
+        await Controller("US", activeDirectUs: 10).StripeSubscribe("buyer", "l_premium", Options("US"));
+
+        stripe.Verify(s => s.GetCheckoutSession(It.IsAny<string>()), Times.Never);
+        Assert.That(created.ManagedPayments.Enabled, Is.True);
+        var requests = await db.PaymentRequests.OrderBy(r => r.Id).Select(r => r.ManagedPayments).ToListAsync();
+        Assert.That(requests, Is.EqualTo(new[] { false, true }));
+    }
+
+    /// <summary>
+    /// Until the first count succeeded the cap counts as reached: US buyers get Managed Payments, not a direct checkout.
+    /// </summary>
+    [Test]
+    public async Task UsBuyersGoToManagedPaymentsWhileTheCountIsUnknown()
+    {
+        var controller = Controller("US", activeDirectUs: -1);
+
+        var providers = await controller.GetSubscriptionProviders("US");
+
+        Assert.That(providers.Select(p => (p.Provider, p.Mode)), Is.EqualTo(new[] { ("stripe", "managed") }));
     }
 
     /// <summary>
@@ -427,7 +516,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     [Test]
     public void PayPalSubscriptionsAreDirectSalesOnly()
     {
-        Assert.ThrowsAsync<ApiException>(() => Controller("BR").PayPalSubscribe("buyer", "l_premium", Options("BR")));
+        Assert.ThrowsAsync<ApiException>(() => Controller("NO").PayPalSubscribe("buyer", "l_premium", Options("NO")));
         paypal.Verify(p => p.Create(It.IsAny<PayPalSubscriptionRequest>()), Times.Never);
     }
 
@@ -445,7 +534,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         Assert.That((await controller.GetSubscriptionProviders("DE", "l_premium")).Select(p => p.Provider), Is.EqualTo(new[] { "stripe", "paypal" }));
         Assert.That((await controller.GetSubscriptionProviders("DE", "l_prem_plus")).Select(p => p.Provider), Is.EqualTo(new[] { "stripe", "paypal" }));
         Assert.That((await controller.GetSubscriptionProviders("DE", "unknown")).Select(p => p.Provider), Is.EqualTo(new[] { "stripe" }));
-        Assert.That((await controller.GetSubscriptionProviders("BR")).Single().Mode, Is.EqualTo("managed"));
+        Assert.That((await controller.GetSubscriptionProviders("NO")).Single().Mode, Is.EqualTo("managed"));
     }
 
     [Test]
@@ -504,7 +593,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     public async Task PeriodAmountAlsoAppliesToManagedPayments()
     {
         await AddBlackFridayCode();
-        await Controller("BR").StripeSubscribe("buyer", "l_premium", Options("BR", "BF2026"));
+        await Controller("NO").StripeSubscribe("buyer", "l_premium", Options("NO", "BF2026"));
         Assert.That(created.ManagedPayments.Enabled, Is.True);
         Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(727), "net: Stripe adds the tax");
     }
@@ -618,6 +707,221 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", offered.Code));
         Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(865));
         Assert.That((await db.DiscountCodes.AsNoTracking().SingleAsync()).TimesRedeemed, Is.EqualTo(1));
+    }
+
+    private async Task AddOnceCode()
+    {
+        db.DiscountCodes.Add(new DiscountCode { Code = "INTRO", AmountType = "percent", Amount = 50, Duration = DiscountCode.FirstPaymentOnly });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Regression: the recurring unit amount of the session was the discounted first price (raised after the first invoice),
+    /// so Stripe's page showed the discount as the renewal price. Now the full gross price recurs and a one-time coupon of the
+    /// difference lowers the first invoice.
+    /// </summary>
+    [Test]
+    public async Task DirectFirstPaymentOnlyCodeRecursAtTheFullGrossPriceWithAOneTimeCoupon()
+    {
+        await AddOnceCode();
+
+        await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "INTRO"));
+
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1153));
+        Assert.That(created.Discounts.Single().Coupon, Is.EqualTo("coflnet_once_577_eur"));
+        Assert.That(coupons.Single(), Is.EqualTo(new StripeCouponSpec("coflnet_once_577_eur", 577, null, "eur")));
+        Assert.That(created.SubscriptionData.Metadata["priceCents"], Is.EqualTo("1153"));
+        Assert.That(created.SubscriptionData.Metadata["firstPriceCents"], Is.EqualTo("576"), "4.84 net + 19% VAT");
+        var request = await db.PaymentRequests.SingleAsync();
+        Assert.That((request.Amount, request.RecurringAmount), Is.EqualTo((5.76m, (decimal?)11.53m)));
+    }
+
+    [Test]
+    public async Task ManagedFirstPaymentOnlyCodeUsesAPercentageCouponOnTheFullNetPrice()
+    {
+        await AddOnceCode();
+
+        await Controller("NO").StripeSubscribe("buyer", "l_premium", Options("NO", "INTRO"));
+
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(969));
+        Assert.That(coupons.Single(), Is.EqualTo(new StripeCouponSpec("coflnet_once_pct_5005", null, 50.05m, "eur")));
+        Assert.That(created.Discounts.Single().Coupon, Is.EqualTo("coflnet_once_pct_5005"));
+    }
+
+    [Test]
+    public async Task EveryRenewalCodeAndNoCodeCreateNoCoupon()
+    {
+        db.DiscountCodes.Add(new DiscountCode { Code = "ALWAYS", AmountType = "percent", Amount = 50 });
+        await db.SaveChangesAsync();
+
+        await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "ALWAYS"));
+
+        Assert.That(created.Discounts, Is.Null);
+        Assert.That(coupons, Is.Empty);
+    }
+
+    [Test]
+    public async Task DirectSessionCarriesTheInclusiveVatRateOfTheCountry()
+    {
+        await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE"));
+
+        Assert.That(taxRates.Single(), Is.EqualTo(("DE", 1900)));
+        Assert.That(created.LineItems.Single().TaxRates, Is.EqualTo(new[] { "txr_DE_1900" }));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1153), "the charged gross is unchanged");
+    }
+
+    [TestCase("NO", Description = "Managed Payments: Stripe taxes, tax rates are not allowed")]
+    [TestCase("US", Description = "no VAT, no tax rate")]
+    public async Task ManagedAndVatFreeSessionsCarryNoTaxRate(string country)
+    {
+        await Controller(country).StripeSubscribe("buyer", "l_premium", Options(country));
+
+        Assert.That(taxRates, Is.Empty);
+        Assert.That(created.LineItems.Single().TaxRates, Is.Null);
+    }
+
+    /// <summary>
+    /// Regression: every non-direct country was sold Managed Payments, also where Stripe does not take over the tax.
+    /// </summary>
+    [TestCase("BR")]
+    [TestCase("AE")]
+    [TestCase("TR")]
+    public async Task UncoveredOrBlockedCountriesGetNoStripeOrPayPalCheckout(string country)
+    {
+        var controller = Controller(country);
+
+        Assert.ThrowsAsync<ApiException>(() => controller.StripeSubscribe("buyer", "l_premium", Options(country)));
+        Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_premium", Options(country)));
+        Assert.That((await controller.GetSubscriptionProviders(country)).Select(p => p.Provider), Is.EqualTo(new[] { "lemonsqueezy" }));
+        await AddBlackFridayCode();
+        Assert.That((await controller.GetAutoDiscount(country)).Result, Is.TypeOf<NoContentResult>());
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Regression: the Managed Payments country is the buyer's unverified selection, so a buyer in an uncovered (BR) or
+    /// blocked (TR) country got a Managed Payments checkout by selecting a covered one (CH).
+    /// </summary>
+    [TestCase("BR")]
+    [TestCase("TR")]
+    public void ManagedPaymentsIsRefusedWhenTheIpCountryIsNotCovered(string ipCountry)
+    {
+        var error = Assert.ThrowsAsync<ApiException>(() => Controller(ipCountry).StripeSubscribe("buyer", "l_premium", Options("CH")));
+
+        Assert.That(error.Message, Does.Contain(ipCountry));
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Never);
+    }
+
+    [TestCase("CH")]
+    [TestCase("DE")]
+    [TestCase(null, Description = "IP country unknown: Stripe locates the buyer itself")]
+    public async Task ManagedPaymentsIsSoldWhenTheIpCountryIsCoveredOrUnknown(string ipCountry)
+    {
+        await Controller(ipCountry).StripeSubscribe("buyer", "l_premium", Options("CH"));
+
+        stripe.Verify(s => s.CreateCheckoutSession(It.Is<SessionCreateOptions>(o => o.ManagedPayments.Enabled == true)), Times.Once);
+    }
+
+    [Test]
+    public async Task UncoveredCountryHasNoProviderAtAllWithoutLemonSqueezy()
+    {
+        var controller = Controller("BR", new() { ["SUBSCRIPTIONS:LEMONSQUEEZY_CHECKOUT_ENABLED"] = "false" });
+        Assert.That(await controller.GetSubscriptionProviders("BR"), Is.Empty);
+    }
+
+    private static string Sha(string text) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+
+    private static SubscriptionDeclaration Declaration(string requestId = null) => new()
+    {
+        RequestId = requestId ?? Guid.NewGuid().ToString(), ImmediatePerformanceRequested = true,
+        WithdrawalConsequenceAcknowledged = true, Locale = "de", DeclarationVersion = "v1", DeclarationText = "I agree",
+        DeclarationSha256 = Sha("I agree"), AgreementId = "agreement", AgreementHash = Sha("agreement"),
+        WithdrawalVersion = "w1", WithdrawalSha256 = Sha("withdrawal"), TaxCountry = "DE", VatRateBasisPoints = 1900,
+        GrossEurCents = 1153, VatEurCents = 184
+    };
+
+    [TestCase("stripe")]
+    [TestCase("paypal")]
+    public async Task EarlyPerformanceDeclarationIsStoredWithTheCheckout(string provider)
+    {
+        var options = Options("DE");
+        options.ServicePerformanceDeclaration = Declaration("3d7a6c4e-0d3a-4a43-9d2b-0f1d1d1c9b10");
+
+        if (provider == "stripe")
+            await Controller("DE").StripeSubscribe("buyer", "l_premium", options);
+        else
+            await Controller("DE").PayPalSubscribe("buyer", "l_premium", options);
+
+        var stored = await db.ServicePerformanceDeclarations.SingleAsync();
+        var request = await db.PaymentRequests.SingleAsync();
+        Assert.That(stored.PaymentRequestId, Is.EqualTo(request.Id));
+        Assert.That((stored.UserId, stored.ProductSlug, stored.DeclarationSha256, stored.Locale, stored.GrossEurCents),
+            Is.EqualTo(("buyer", "l_premium", Sha("I agree"), "de", 1153L)));
+        Assert.That(stored.EndsAtUtc - stored.StartsAtUtc, Is.EqualTo(TimeSpan.FromSeconds(FourWeeks)));
+    }
+
+    [Test]
+    public async Task InvalidDeclarationIsRejectedBeforeAnyCheckoutIsCreated()
+    {
+        var options = Options("DE");
+        options.ServicePerformanceDeclaration = Declaration();
+        options.ServicePerformanceDeclaration.DeclarationSha256 = Sha("another text");
+
+        var error = Assert.ThrowsAsync<ApiException>(() => Controller("DE").StripeSubscribe("buyer", "l_premium", options));
+
+        Assert.That(error.Message, Does.Contain("invalid_service_performance_declaration"));
+        Assert.That(await db.PaymentRequests.CountAsync(), Is.Zero);
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Never);
+    }
+
+    /// <summary>The same switch as the prepaid flow: only enforced when LEGAL:ENFORCE_SERVICE_PERFORMANCE_DECLARATION is set</summary>
+    [Test]
+    public async Task MissingDeclarationIsOnlyRefusedWhenEnforced()
+    {
+        await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE"));
+        Assert.That(await db.ServicePerformanceDeclarations.CountAsync(), Is.Zero);
+
+        var enforced = Controller("DE", new() { ["LEGAL:ENFORCE_SERVICE_PERFORMANCE_DECLARATION"] = "true" });
+        var error = Assert.ThrowsAsync<ApiException>(() => enforced.StripeSubscribe("buyer2", "l_premium", Options("DE")));
+        Assert.That(error.Message, Does.Contain("service_performance_declaration_required"));
+    }
+
+    [Test]
+    public async Task DeclarationIdOfAnotherUserIsRefused()
+    {
+        var id = Guid.NewGuid().ToString();
+        var first = Options("DE");
+        first.ServicePerformanceDeclaration = Declaration(id);
+        await Controller("DE").StripeSubscribe("buyer", "l_premium", first);
+        var second = Options("DE");
+        second.ServicePerformanceDeclaration = Declaration(id);
+
+        var error = Assert.ThrowsAsync<ApiException>(() => Controller("DE").StripeSubscribe("other", "l_premium", second));
+        Assert.That(error.Message, Does.Contain("already used"));
+    }
+
+    /// <summary>
+    /// Regression: a declaration id sent again with a later checkout was moved to it, also away from a paid subscription,
+    /// which then had no declaration left.
+    /// </summary>
+    [Test]
+    public async Task DeclarationOfAPaidCheckoutStaysWithIt()
+    {
+        var id = Guid.NewGuid().ToString();
+        var first = Options("DE");
+        first.ServicePerformanceDeclaration = Declaration(id);
+        await Controller("DE").StripeSubscribe("buyer", "l_premium", first);
+        var paid = await db.PaymentRequests.SingleAsync();
+        paid.State = PaymentRequest.Status.PAID;
+        await db.SaveChangesAsync();
+        var second = Options("DE");
+        second.ServicePerformanceDeclaration = Declaration(id);
+
+        var error = Assert.ThrowsAsync<ApiException>(() => Controller("DE").StripeSubscribe("buyer", "l_premium", second));
+
+        Assert.That(error.Message, Does.Contain("already used"));
+        Assert.That((await db.ServicePerformanceDeclarations.SingleAsync()).PaymentRequestId, Is.EqualTo(paid.Id));
     }
 
     private static DiscountCode Auto(string code, DateTime? createdAt = null, DateTime? startsAt = null, DateTime? expiresAt = null,

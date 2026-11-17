@@ -12,7 +12,7 @@ namespace Coflnet.Payments.Services.Subscriptions;
 public record StripeSubscriptionCheckout(
     User User,
     TopUpProduct Plan,
-    long UnitAmountCents, // direct: gross incl. VAT, final; managed: net, Stripe adds the tax
+    long UnitAmountCents, // the recurring price. direct: gross incl. VAT, final; managed: net, Stripe adds the tax
     int IntervalWeeks,
     StripeCheckoutMode Mode,
     string Country,
@@ -21,7 +21,10 @@ public record StripeSubscriptionCheckout(
     string Email,
     string DiscountCode,
     string CreatorCode,
-    int PaymentRequestId);
+    int PaymentRequestId,
+    long? FirstPaymentCents = null, // "first payment only" code: price of the first invoice, below UnitAmountCents
+    string CouponId = null, // one-time Stripe coupon that lowers the first invoice to FirstPaymentCents
+    string TaxRateId = null); // direct sales: inclusive manual VAT rate shown on Stripe's receipts
 
 /// <summary>
 /// Managed Payments settings (STRIPE:MANAGED_TAX_CODE, STRIPE:MANAGED_TAX_BEHAVIOR)
@@ -42,8 +45,9 @@ public record StripeManagedSettings(string TaxCode, string TaxBehavior)
 /// Builds subscription-mode checkout sessions. Direct and Managed Payments sessions have separate builders:
 /// Managed Payments rejects many parameters (tax collection, payment method selection, address collection,
 /// invoice settings, ...), so it only gets the small set it accepts plus tax_code/tax_behavior.
-/// The price is always inline price_data (discounts lower the unit amount, no Stripe coupons), so both modes
-/// charge exactly what this service priced.
+/// The price is always inline price_data holding the recurring price; a "first payment only" code is a one-time
+/// coupon (<see cref="StripeFirstPaymentCoupon"/>), every other code lowers the unit amount.
+/// Both modes charge exactly what this service priced.
 /// </summary>
 public static class StripeSubscriptionCheckoutBuilder
 {
@@ -54,9 +58,15 @@ public static class StripeSubscriptionCheckoutBuilder
     {
         var options = BaseOptions(checkout);
         // The amount is final: no tax_behavior, tax_code or automatic_tax, so Stripe adds nothing.
-        options.LineItems = [LineItem(checkout, null, null)];
+        var item = LineItem(checkout, null, null);
+        if (checkout.TaxRateId != null)
+            item.TaxRates = [checkout.TaxRateId]; // inclusive: the receipt shows rate and amount, the total stays the gross price
+        options.LineItems = [item];
         // Billing country is the evidence for the VAT we charge and remit ourselves.
         options.BillingAddressCollection = "required";
+        // Direct buyers always pay the EUR price: Adaptive Pricing would show and charge a local currency, which the
+        // amount checks (EUR cents) and the VAT records do not expect. Not allowed on Managed Payments sessions.
+        options.AdaptivePricing = new SessionAdaptivePricingOptions { Enabled = false };
         return options;
     }
 
@@ -74,6 +84,12 @@ public static class StripeSubscriptionCheckoutBuilder
         return new SessionCreateOptions
         {
             Mode = "subscription",
+            SubmitType = StripeSubscriptionDisclosure.SubmitType,
+            CustomText = new SessionCustomTextOptions
+            {
+                Submit = new SessionCustomTextSubmitOptions { Message = StripeSubscriptionDisclosure.SubmitMessage(checkout) }
+            },
+            Discounts = checkout.CouponId == null ? null : [new SessionDiscountOptions { Coupon = checkout.CouponId }],
             Metadata = metadata,
             SubscriptionData = new SessionSubscriptionDataOptions { Metadata = new Dictionary<string, string>(metadata) },
             ClientReferenceId = checkout.User.ExternalId,
@@ -113,6 +129,8 @@ public static class StripeSubscriptionCheckoutBuilder
             [Keys.Mode] = checkout.Mode == StripeCheckoutMode.Managed ? "managed" : "direct",
             [Keys.PaymentRequestId] = checkout.PaymentRequestId.ToString()
         };
+        if (checkout.FirstPaymentCents < checkout.UnitAmountCents)
+            metadata[Keys.FirstPriceCents] = checkout.FirstPaymentCents.ToString();
         AddIfSet(metadata, Keys.Country, checkout.Country);
         AddIfSet(metadata, Keys.DiscountCode, checkout.DiscountCode);
         AddIfSet(metadata, Keys.CreatorCode, checkout.CreatorCode);

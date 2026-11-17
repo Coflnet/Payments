@@ -142,5 +142,54 @@ namespace Coflnet.Payments.Models
         /// Buyer email
         /// </summary>
         public string BuyerEmail { get; set; }
+
+        /// <summary>
+        /// Subscription payments: the country whose VAT the price contains (place of supply evidence)
+        /// </summary>
+        public string CheckoutCountry { get; set; }
+
+        /// <summary>
+        /// Stripe: country of the billing address entered at checkout
+        /// </summary>
+        public string BillingCountry { get; set; }
+
+        /// <summary>
+        /// Stripe: issuing country of the card
+        /// </summary>
+        public string PaymentMethodCountry { get; set; }
+
+        /// <summary>
+        /// PayPal: the payer's country when PayPal returns one (card funded subscriptions only), otherwise empty
+        /// </summary>
+        public string PayerCountry { get; set; }
+
+        /// <summary>
+        /// IP address of the checkout request
+        /// </summary>
+        public string IpAddress { get; set; }
+
+        /// <summary>
+        /// "direct" (Stripe/PayPal, Coflnet remits the VAT), "managed" (Stripe Managed Payments), the provider for other subscription
+        /// payments ("lemonsqueezy", "googlepay") or empty (not a subscription payment)
+        /// </summary>
+        public string SubscriptionMode { get; set; }
+    }
+
+    /// <summary>
+    /// The Status values of the revenue export. Payment records map by their <see cref="PaymentRecordStatus"/> name
+    /// (Confirmed, Refunded, PartiallyRefunded, Disputed); payments that have no record are mapped from the
+    /// <see cref="PaymentRequest.Status"/> they were left in: REFUND_PENDING to RefundPending, REJECTED to Rejected.
+    /// </summary>
+    public static class ExportStatus
+    {
+        public const string RefundPending = "RefundPending";
+        public const string Rejected = "Rejected";
+
+        public static string FromRequest(PaymentRequest.Status status) => status switch
+        {
+            PaymentRequest.Status.REFUND_PENDING => RefundPending,
+            PaymentRequest.Status.REJECTED => Rejected,
+            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Only unfulfilled payments are exported by request status")
+        };
     }
 }

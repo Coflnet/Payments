@@ -15,10 +15,13 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
 {
     private static readonly List<string> ExpandPrice = ["items.data.price"];
     private readonly string taxCode;
+    private readonly Microsoft.Extensions.Logging.ILogger<StripeSubscriptionGateway> logger;
 
     /// <param name="config">STRIPE:MANAGED_TAX_CODE is set on the plan products (required for Managed Payments)</param>
-    public StripeSubscriptionGateway(Microsoft.Extensions.Configuration.IConfiguration config = null)
+    public StripeSubscriptionGateway(Microsoft.Extensions.Configuration.IConfiguration config = null,
+        Microsoft.Extensions.Logging.ILogger<StripeSubscriptionGateway> logger = null)
     {
+        this.logger = logger;
         taxCode = StripeManagedSettings.From(config).TaxCode;
     }
 
@@ -122,6 +125,87 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
         if (invoiceId == null)
             return null;
         return StripeInvoiceInfo.From(await new InvoiceService().GetAsync(invoiceId));
+    }
+
+    public Task<string> EnsureFirstPaymentCoupon(StripeCouponSpec spec)
+    {
+        var coupons = new CouponService();
+        return StripeFirstPaymentCoupon.Resolve(spec, id => GetCoupon(coupons, id), versioned => CreateCoupon(coupons, versioned), logger);
+    }
+
+    private static async Task<Coupon> GetCoupon(CouponService coupons, string id)
+    {
+        try
+        {
+            return await coupons.GetAsync(id);
+        }
+        catch (StripeException e) when (e.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<string> CreateCoupon(CouponService coupons, StripeCouponSpec spec)
+    {
+        try
+        {
+            var created = await coupons.CreateAsync(new CouponCreateOptions
+            {
+                Id = spec.Id,
+                Duration = "once",
+                AmountOff = spec.AmountOffCents,
+                PercentOff = spec.PercentOff,
+                Currency = spec.AmountOffCents == null ? null : spec.Currency,
+                Name = "First payment discount"
+            });
+            return created.Id;
+        }
+        catch (StripeException e) when (e.StripeError?.Code == "resource_already_exists")
+        {
+            return spec.Id; // a concurrent checkout created the same coupon
+        }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> VatTaxRates = new();
+    private const string VatRateMetadataKey = "coflnet_vat";
+
+    public async Task<string> EnsureVatTaxRate(string country, int basisPoints)
+    {
+        var key = $"{country.ToUpperInvariant()}_{basisPoints}";
+        if (VatTaxRates.TryGetValue(key, out var cached))
+            return cached;
+        var rates = new TaxRateService();
+        var existing = await FindVatTaxRate(rates, key);
+        var id = existing ?? (await rates.CreateAsync(new TaxRateCreateOptions
+        {
+            DisplayName = "VAT",
+            Jurisdiction = country.ToUpperInvariant(),
+            Percentage = basisPoints / 100m,
+            Inclusive = true,
+            Metadata = new Dictionary<string, string> { [VatRateMetadataKey] = key }
+        })).Id;
+        VatTaxRates[key] = id;
+        return id;
+    }
+
+    private static async Task<string> FindVatTaxRate(TaxRateService rates, string key)
+    {
+        await foreach (var rate in rates.ListAutoPagingAsync(new TaxRateListOptions { Active = true, Inclusive = true, Limit = 100 }))
+        {
+            if (rate.Metadata?.GetValueOrDefault(VatRateMetadataKey) == key)
+                return rate.Id;
+        }
+        return null;
+    }
+
+    public async Task<string> GetCardCountry(string invoiceId)
+    {
+        var payments = await new InvoicePaymentService().ListAsync(new InvoicePaymentListOptions { Invoice = invoiceId });
+        var paymentIntent = payments.Data.FirstOrDefault(p => p.Status == "paid")?.Payment?.PaymentIntentId;
+        if (paymentIntent == null)
+            return null;
+        var intent = await new PaymentIntentService().GetAsync(paymentIntent, new PaymentIntentGetOptions { Expand = ["latest_charge"] });
+        return intent.LatestCharge?.PaymentMethodDetails?.Card?.Country?.ToUpperInvariant();
     }
 
     private static SubscriptionInvoice ToSubscriptionInvoice(Invoice invoice)

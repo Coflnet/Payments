@@ -137,6 +137,11 @@ namespace Payments.Migrations
 
                     b.HasIndex("PurchasedAt");
 
+                    b.HasIndex("TransactionReference")
+                        .IsUnique()
+                        .HasDatabaseName("UX_CreatorCodeRevenues_Reversal")
+                        .HasFilter("\"TransactionReference\" LIKE '%#refund:%'");
+
                     b.HasIndex("CreatorCodeId", "PurchasedAt");
 
                     b.ToTable("CreatorCodeRevenues");
@@ -447,6 +452,10 @@ namespace Payments.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
+                    b.Property<string>("BillingCountry")
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)");
+
                     b.Property<string>("BuyerEmail")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
@@ -454,6 +463,10 @@ namespace Payments.Migrations
                     b.Property<string>("BuyerName")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
+
+                    b.Property<string>("CheckoutCountry")
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)");
 
                     b.Property<string>("City")
                         .HasMaxLength(80)
@@ -519,6 +532,10 @@ namespace Payments.Migrations
                     b.Property<string>("PaymentMethod")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
+
+                    b.Property<string>("PaymentMethodCountry")
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)");
 
                     b.Property<decimal>("ProcessorFee")
                         .HasColumnType("numeric");
@@ -635,6 +652,9 @@ namespace Payments.Migrations
                     b.Property<string>("Locale")
                         .HasMaxLength(5)
                         .HasColumnType("character varying(5)");
+
+                    b.Property<bool>("ManagedPayments")
+                        .HasColumnType("boolean");
 
                     b.Property<int?>("ProductIdId")
                         .HasColumnType("integer");
@@ -875,6 +895,9 @@ namespace Payments.Migrations
 
                     b.Property<string>("OrderDetailsJson")
                         .HasColumnType("text");
+
+                    b.Property<int?>("PaymentRequestId")
+                        .HasColumnType("integer");
 
                     b.Property<int>("ProductId")
                         .HasColumnType("integer");
@@ -1128,6 +1151,10 @@ namespace Payments.Migrations
                     b.Property<DateTime?>("ChangeLockUntil")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("CheckoutCountry")
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1199,6 +1226,8 @@ namespace Payments.Migrations
                     b.HasIndex("ProductId");
 
                     b.HasIndex("UserId");
+
+                    b.HasIndex("CheckoutCountry", "Status");
 
                     b.HasIndex("ProviderSlug", "ExternalId")
                         .IsUnique();

@@ -768,7 +768,7 @@ namespace Coflnet.Payments.Services
         /// ROW (rest of world) legal texts only exist in English, so ROW
         /// declarations are always recorded and compared as "en".
         /// </summary>
-        private static string NormalizeLocale(string locale, string regime = null) =>
+        internal static string NormalizeLocale(string locale, string regime = null) =>
             regime == "ROW"
                 ? "en"
                 : locale?.StartsWith(
@@ -976,7 +976,7 @@ namespace Coflnet.Payments.Services
                 throw new ApiException("expert_config_not_available");
         }
 
-        private static void ValidateDeclaration(ServicePurchaseRequest request)
+        internal static void ValidateDeclaration(ServicePurchaseRequest request)
         {
             if (string.IsNullOrWhiteSpace(request.DeclarationVersion)
                 || string.IsNullOrWhiteSpace(request.DeclarationText)

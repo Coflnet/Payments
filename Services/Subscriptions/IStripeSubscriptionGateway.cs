@@ -30,6 +30,15 @@ public interface IStripeSubscriptionGateway
     Task<RefundResponse> RefundInvoice(string invoiceId, long? amountCents);
     /// <summary>The invoice paid by a payment intent, null for one-time payments</summary>
     Task<StripeInvoiceInfo> FindInvoiceByPaymentIntent(string paymentIntentId);
+    /// <summary>
+    /// Returns the id of a coupon with exactly the spec's terms: the deterministic id when it is missing (created) or matches,
+    /// otherwise a versioned id (<see cref="StripeFirstPaymentCoupon.VersionedId"/>) with an error logged
+    /// </summary>
+    Task<string> EnsureFirstPaymentCoupon(StripeCouponSpec spec);
+    /// <summary>The inclusive manual "VAT" tax rate of a country (created once, then reused), for the receipts of direct sales</summary>
+    Task<string> EnsureVatTaxRate(string country, int basisPoints);
+    /// <summary>Issuing country of the card that paid an invoice (ISO code), null for other payment methods</summary>
+    Task<string> GetCardCountry(string invoiceId);
 }
 
 /// <summary>

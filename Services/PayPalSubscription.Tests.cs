@@ -316,6 +316,95 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
         Assert.That((await db.PaymentRecords.SingleAsync()).Status, Is.EqualTo(PaymentRecordStatus.Refunded));
     }
 
+    private async Task ReverseScenario(string refundState, string refundAmount)
+    {
+        db.CreatorCodes.Add(new CreatorCode { Code = "CREATOR", CreatorUserId = "creator", DiscountPercent = 0,
+            RevenueSharePercent = 10, IsActive = true });
+        var request = await SeedCheckout("paypal", "I-SUB", premium, 9.69m);
+        request.CreatorCode = "CREATOR";
+        await db.SaveChangesAsync();
+        SetSubscription();
+        await Post(SaleCompleted());
+        SetSale(state: refundState);
+        var refund = """
+            {"id":"WH-REF","event_type":"PAYMENT.SALE.REFUNDED","resource":{"id":"REFUND-1","state":"completed",
+             "sale_id":"SALE-1","amount":{"total":"AMOUNT","currency":"EUR"}}}
+            """.Replace("AMOUNT", refundAmount);
+        await Post(refund);
+        await Post(refund);
+    }
+
+    /// <summary>
+    /// Regression: PayPal refunds never took back the creator share booked with the sale.
+    /// </summary>
+    [Test]
+    public async Task FullRefundReversesTheCreatorShareOnce()
+    {
+        await ReverseScenario("refunded", "9.69");
+
+        Assert.That(await db.CreatorCodeRevenues.Where(r => r.CreatorRevenue < 0).Select(r => r.CreatorRevenue).ToListAsync(),
+            Is.EqualTo(new[] { -0.969m }));
+        Assert.That(await db.CreatorCodeRevenues.SumAsync(r => r.CreatorRevenue), Is.Zero);
+    }
+
+    /// <summary>
+    /// Regression (negative case): PayPal's refund resource may carry the amount negative, which reversed nothing.
+    /// </summary>
+    [TestCase("4.845")]
+    [TestCase("-4.845")]
+    public async Task PartialRefundReversesItsProportionOfTheShareAndKeepsAccess(string refundAmount)
+    {
+        await ReverseScenario("partially_refunded", refundAmount);
+
+        Assert.That(await db.CreatorCodeRevenues.Where(r => r.CreatorRevenue < 0).Select(r => r.CreatorRevenue).ToListAsync(),
+            Is.EqualTo(new[] { -0.4845m }));
+        Assert.That((await Access("I-SUB")).Expires, Is.GreaterThan(DateTime.UtcNow.AddDays(20)));
+    }
+
+    /// <summary>
+    /// A payer in another country than the checkout is recorded (and logged), the sale is still granted.
+    /// </summary>
+    [Test]
+    public async Task PayerCountryAndCheckoutIpAreRecordedAndADifferingPayerIsNotRejected()
+    {
+        var request = await SeedCheckout("paypal", "I-SUB", premium, 11.53m);
+        request.Country = "DE";
+        request.CreateOnIp = IPAddress.Parse("203.0.113.7");
+        await db.SaveChangesAsync();
+        SetSubscription();
+        paypal.Replies["/v1/billing/subscriptions/I-SUB"]["subscriber"] =
+            JObject.Parse("""{"shipping_address":{"address":{"country_code":"at"}}}""");
+        SetSale(total: "11.53");
+
+        await Post(SaleCompleted(total: "11.53"));
+
+        var record = await db.PaymentRecords.SingleAsync();
+        Assert.That((await Subscription("I-SUB")).CheckoutCountry, Is.EqualTo("DE"), "the US direct cap counts by it");
+        Assert.That((record.CheckoutCountry, record.BillingCountry, record.PaymentMethodCountry, record.IpAddress),
+            Is.EqualTo(("DE", "AT", (string)null, "203.0.113.7")));
+        Assert.That(await Grants("paypal-sale-SALE-1"), Is.EqualTo(1));
+    }
+
+    /// <summary>
+    /// With NO_SHIPPING PayPal returns no shipping address; a card funded subscription still carries the card's
+    /// billing country, a wallet funded one has no country evidence at all.
+    /// </summary>
+    [TestCase("""{"payment_source":{"card":{"billing_address":{"country_code":"fr"}}}}""", "FR")]
+    [TestCase("""{"payer_id":"PAYER","email_address":"a@b.c"}""", null)]
+    public async Task PayerCountryComesFromTheCardBillingAddressOrStaysEmpty(string subscriber, string expected)
+    {
+        var request = await SeedCheckout("paypal", "I-SUB", premium, 11.53m);
+        request.Country = "DE";
+        await db.SaveChangesAsync();
+        SetSubscription();
+        paypal.Replies["/v1/billing/subscriptions/I-SUB"]["subscriber"] = JObject.Parse(subscriber);
+        SetSale(total: "11.53");
+
+        await Post(SaleCompleted(total: "11.53"));
+
+        Assert.That((await db.PaymentRecords.SingleAsync()).BillingCountry, Is.EqualTo(expected));
+    }
+
     [Test]
     public async Task CancelIsImmediateAtPayPalButAccessRunsToThePaidEndAndCannotResume()
     {

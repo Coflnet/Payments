@@ -23,7 +23,10 @@ public partial class SubscriptionService
         public const string UserId = "userId";
         public const string ProductSlug = "productSlug";
         public const string ProductId = "productId";
+        /// <summary>The recurring price</summary>
         public const string PriceCents = "priceCents";
+        /// <summary>The price of the first invoice, set when a "first payment only" code lowers it (a one-time coupon)</summary>
+        public const string FirstPriceCents = "firstPriceCents";
         public const string Mode = "mode";
         public const string Country = "country";
         public const string DiscountCode = "discountCode";
@@ -108,34 +111,53 @@ public partial class SubscriptionService
     {
         var reference = SubscriptionProviders.GrantReference(SubscriptionProviders.Stripe, invoice.Id);
         if (await IsGranted(subscription.User.ExternalId, reference))
-        {
-            var granted = StripeOutcome(subscription, snapshot, invoice, subscription.PriceCents / 100m);
-            await AfterStripeGrant(subscription, snapshot, invoice);
-            return granted;
-        }
+            return await GrantedStripeOutcome(subscription, snapshot, invoice, false); // a redelivery: recording is retried
         if (!await ReconcileStripePlan(subscription, snapshot))
             return await RejectStripeInvoice(subscription, invoice,
                 $"Stripe bills plan {StripePlans.SlugOf(snapshot)}, which is no valid change from {subscription.Product.Slug}");
-        var rejection = StripeAmountRejection(subscription, invoice);
+        var rejection = StripeAmountRejection(subscription, snapshot, invoice);
         if (rejection != null)
             return await RejectStripeInvoice(subscription, invoice, rejection);
-        if (invoice.NormalizedBillingReason == "initial" && !await AcceptsDirectBuyer(subscription, invoice))
+        var evidence = await StripeEvidence(subscription, snapshot, invoice, invoice.NormalizedBillingReason == "initial");
+        if (invoice.NormalizedBillingReason == "initial" && !await AcceptsDirectBuyer(subscription, invoice, evidence))
             return null;
         await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
-        var outcome = StripeOutcome(subscription, snapshot, invoice, subscription.PriceCents / 100m);
         subscription.PaymentAmount = (invoice.AmountPaid / 100m).ToString("0.00", CultureInfo.InvariantCulture) + " " + invoice.Currency?.ToUpperInvariant();
-        await AfterStripeGrant(subscription, snapshot, invoice);
-        return outcome;
+        await context.SaveChangesAsync();
+        return StripeOutcome(subscription, snapshot, invoice, AgreedCents(subscription, snapshot, invoice) / 100m) with { Evidence = evidence };
+    }
+
+    private async Task<SubscriptionPaymentOutcome> GrantedStripeOutcome(UserSubscription subscription,
+        StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice, bool cardCountryRequired)
+    {
+        var evidence = await StripeEvidence(subscription, snapshot, invoice, cardCountryRequired);
+        return StripeOutcome(subscription, snapshot, invoice, AgreedCents(subscription, snapshot, invoice) / 100m) with { Evidence = evidence };
     }
 
     /// <summary>
-    /// Idempotent follow-up of a granted invoice; a redelivery retries it if it failed before.
+    /// Place of supply evidence of a Stripe payment. Managed Payments is taxed by Stripe, so the card is only looked up for
+    /// direct sales; there it is required for the first invoice (its verdict decides the grant) and best effort afterwards.
     /// </summary>
-    private async Task AfterStripeGrant(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice)
+    private async Task<PaymentEvidence> StripeEvidence(UserSubscription subscription, StripeSubscriptionSnapshot snapshot,
+        StripeInvoiceInfo invoice, bool cardCountryRequired)
     {
-        if (invoice.NormalizedBillingReason == "initial")
-            await EndFirstPaymentDiscount(subscription, snapshot);
-        await context.SaveChangesAsync();
+        var card = subscription.ManagedPayments ? null : await CardCountry(invoice, cardCountryRequired);
+        var requestId = int.TryParse(snapshot.Metadata.GetValueOrDefault(StripeMetadata.PaymentRequestId), out var id) ? id : 0;
+        var ip = await context.PaymentRequests.Where(r => r.Id == requestId).Select(r => r.CreateOnIp).FirstOrDefaultAsync();
+        return new PaymentEvidence(ip?.ToString(), MetadataCountry(snapshot), invoice.CustomerCountry, card);
+    }
+
+    private async Task<string> CardCountry(StripeInvoiceInfo invoice, bool required)
+    {
+        try
+        {
+            return await StripeApi.GetCardCountry(invoice.Id);
+        }
+        catch (Exception e) when (!required)
+        {
+            logger.LogWarning(e, "Could not read the card country of Stripe invoice {InvoiceId}", invoice.Id);
+            return null;
+        }
     }
 
     /// <summary>
@@ -190,15 +212,29 @@ public partial class SubscriptionService
     }
 
     /// <summary>
+    /// What an invoice must charge: the recurring price, except the first invoice of a "first payment only" code,
+    /// which the checkout's one-time coupon lowers to the discounted price (checkout metadata).
+    /// </summary>
+    private static long? AgreedCents(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice)
+    {
+        if (invoice.NormalizedBillingReason == "initial"
+            && long.TryParse(snapshot.Metadata.GetValueOrDefault(StripeMetadata.FirstPriceCents), out var first)
+            && first < subscription.PriceCents)
+            return first;
+        return subscription.PriceCents;
+    }
+
+    /// <summary>
     /// Direct invoices must charge exactly the price this service set. Managed Payments may charge in the
     /// buyer's local currency (Adaptive Pricing), so only the plan is verified for those.
     /// </summary>
-    private static string StripeAmountRejection(UserSubscription subscription, StripeInvoiceInfo invoice)
+    private static string StripeAmountRejection(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice)
     {
         if (subscription.ManagedPayments)
             return null;
-        if (subscription.PriceCents == null || invoice.Total != subscription.PriceCents)
-            return $"total {invoice.Total} differs from the agreed price {subscription.PriceCents}";
+        var agreed = AgreedCents(subscription, snapshot, invoice);
+        if (agreed == null || invoice.Total != agreed)
+            return $"total {invoice.Total} differs from the agreed price {agreed}";
         if (!string.Equals(invoice.Currency, subscription.Currency, StringComparison.OrdinalIgnoreCase))
             return $"currency {invoice.Currency} differs from {subscription.Currency}";
         return null;
@@ -206,43 +242,34 @@ public partial class SubscriptionService
 
     /// <summary>
     /// Like one-time payments, a direct sale to a country we can not sell to is not fulfilled:
-    /// the subscription ends immediately and the payment is marked for a manual refund.
+    /// the subscription ends immediately and the payment is marked for a manual refund. So is a sale whose billing address
+    /// and card agree on a country other than the one whose VAT the price contains (the buyer is not where the checkout
+    /// claimed, so the VAT charged would be wrong).
     /// </summary>
-    private async Task<bool> AcceptsDirectBuyer(UserSubscription subscription, StripeInvoiceInfo invoice)
+    private async Task<bool> AcceptsDirectBuyer(UserSubscription subscription, StripeInvoiceInfo invoice, PaymentEvidence evidence)
     {
         if (subscription.ManagedPayments)
             return true;
         var country = invoice.CustomerCountry ?? subscription.User.Country;
-        if (country != null && SalesRestrictions.DoWeSellTo(country, invoice.CustomerPostalCode))
+        if (country == null || !SalesRestrictions.DoWeSellTo(country, invoice.CustomerPostalCode))
+            return await RejectDirectBuyer(subscription, invoice, $"buyer country {country ?? "UNKNOWN"} is not sold to directly; subscription cancelled");
+        if (!ContradictsCheckoutCountry(evidence))
             return true;
-        ApplyStripeState(subscription, await StripeApi.CancelNow(subscription.ExternalId));
-        await RejectStripeInvoice(subscription, invoice, $"buyer country {country ?? "UNKNOWN"} is not sold to directly; subscription cancelled");
-        return false;
+        logger.LogError("Stripe invoice {InvoiceId}: billing address and card are in {Country} but the VAT country of the checkout is {CheckoutCountry}",
+            invoice.Id, evidence.BillingCountry, evidence.CheckoutCountry);
+        return await RejectDirectBuyer(subscription, invoice,
+            $"billing address and card country {evidence.BillingCountry} differ from the checkout (VAT) country {evidence.CheckoutCountry}; subscription cancelled");
     }
 
-    /// <summary>
-    /// A "first payment only" discount code: after the first invoice the price returns to the plan price
-    /// (with the creator code), effective from the next renewal.
-    /// </summary>
-    private async Task EndFirstPaymentDiscount(UserSubscription subscription, StripeSubscriptionSnapshot snapshot)
+    private static bool ContradictsCheckoutCountry(PaymentEvidence evidence) =>
+        evidence.CheckoutCountry != null && evidence.BillingCountry != null && evidence.PaymentMethodCountry != null
+        && evidence.BillingCountry == evidence.PaymentMethodCountry && evidence.BillingCountry != evidence.CheckoutCountry;
+
+    private async Task<bool> RejectDirectBuyer(UserSubscription subscription, StripeInvoiceInfo invoice, string reason)
     {
-        var terms = await DiscountTerms(subscription.DiscountCode);
-        if (terms?.Duration != DiscountCode.FirstPaymentOnly)
-            return;
-        var plan = (TopUpProduct)subscription.Product;
-        var full = await RecurringPriceCents(subscription, plan, MetadataCountry(snapshot));
-        if (full == null)
-        {
-            logger.LogError("No VAT rate for {Country}: the price of {SubscriptionId} stays at its first payment price after a \"first payment only\" code",
-                MetadataCountry(snapshot), subscription.ExternalId);
-            return;
-        }
-        if (snapshot.UnitAmount == full)
-            return;
-        var change = await StripeApi.ChangePrice(snapshot, new StripePriceChangeRequest(full.Value,
-            plan.CurrencyCode.ToLowerInvariant(), IntervalWeeks(plan.OwnershipSeconds).Value, false,
-            snapshot.TaxBehavior, plan.Slug, plan.Title));
-        ApplyStripePrice(subscription, change.Subscription);
+        ApplyStripeState(subscription, await StripeApi.CancelNow(subscription.ExternalId));
+        await RejectStripeInvoice(subscription, invoice, reason);
+        return false;
     }
 
     /// <summary>
@@ -318,6 +345,7 @@ public partial class SubscriptionService
             ExternalId = snapshot.Id,
             CreatedAt = snapshot.Created,
             ManagedPayments = snapshot.ManagedPayments || metadata.GetValueOrDefault(StripeMetadata.Mode) == "managed",
+            CheckoutCountry = MetadataCountry(snapshot)?.ToUpperInvariant(),
             PriceCents = long.TryParse(metadata.GetValueOrDefault(StripeMetadata.PriceCents), out var cents) ? cents : null,
             Currency = product.CurrencyCode?.ToUpperInvariant(),
             DiscountCode = metadata.GetValueOrDefault(StripeMetadata.DiscountCode),

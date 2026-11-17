@@ -139,6 +139,7 @@ namespace Payments.Controllers
         public async Task<ActionResult<AutoDiscount>> GetAutoDiscount([FromQuery] string country = null)
         {
             var code = await discountCodes.GetActiveAutoApply();
+            await subscriptionRouting.RefreshAsync();
             var providers = subscriptionRouting.DirectProvidersFor(country);
             if (code == null || providers.Count == 0)
                 return NoContent();
@@ -264,7 +265,8 @@ namespace Payments.Controllers
 
         /// <param name="recurringAmount">Subscriptions: the renewal price when it differs from <paramref name="eurPrice"/></param>
         /// <param name="country">Subscriptions: the country the price was made for (its VAT for direct sales)</param>
-        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null, decimal? recurringAmount = null, string country = null)
+        /// <param name="managedPayments">Subscriptions: sold through Stripe Managed Payments; only checkouts of the same mode are reused</param>
+        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null, decimal? recurringAmount = null, string country = null, bool managedPayments = false)
         {
             PaymentRequest request = null;
             request = await transactionService.WithTransactionAsync<PaymentRequest>(async (transaction, owns) =>
@@ -284,9 +286,11 @@ namespace Payments.Controllers
                 throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
 
             // Only a checkout of the same prices is reused: one opened with another (or without a) discount code charges other prices,
-            // one opened for another country contains another VAT (or none, Managed Payments) even if the amount happens to match.
+            // one opened for another country contains another VAT (or none, Managed Payments) even if the amount happens to match,
+            // and a direct and a Managed Payments checkout of the same country (US: no VAT) are never mixed up.
             var match = existingRequests.FirstOrDefault(r => r.User.Id == user.Id && r.ProductId.Id == product.Id && r.State < PaymentRequest.Status.PAID && r.CreatedAt > DateTime.UtcNow.AddMinutes(-10) && r.SessionId != null
-                && r.Provider == (provider ?? product.ProviderSlug) && r.Amount == eurPrice && r.RecurringAmount == recurringAmount && r.Country == country);
+                && r.Provider == (provider ?? product.ProviderSlug) && r.Amount == eurPrice && r.RecurringAmount == recurringAmount && r.Country == country
+                && r.ManagedPayments == managedPayments);
             if (match != null)
                 return match; // already existing request, return it
 
@@ -299,6 +303,7 @@ namespace Payments.Controllers
                 Amount = eurPrice,
                 RecurringAmount = recurringAmount,
                 Country = country,
+                ManagedPayments = managedPayments,
                 CreateOnIp = userIp,
                 DeviceFingerprint = topupotions.Fingerprint,
                 Locale = topupotions?.Locale,
@@ -450,6 +455,7 @@ namespace Payments.Controllers
             Console.WriteLine(JsonConvert.SerializeObject(product));
             if (!product.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("Product is not a service, can't be subscribed to");
+            await subscriptionRouting.RefreshAsync();
             EnsureLemonSqueezySubscriptionAllowed(options?.Country);
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true, checkoutProvider: SubscriptionProviders.LemonSqueezy);
             

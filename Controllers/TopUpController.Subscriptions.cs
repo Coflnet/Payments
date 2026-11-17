@@ -27,7 +27,8 @@ public partial class TopUpController
     [Route("subscribe/providers")]
     public async Task<IEnumerable<SubscriptionProviderOption>> GetSubscriptionProviders([FromQuery] string country, [FromQuery] string productSlug = null)
     {
-        var options = subscriptionRouting.ProvidersFor(country);
+        await subscriptionRouting.RefreshAsync();
+        var options = subscriptionRouting.Capture().ProvidersFor(country);
         if (productSlug == null || paypalSubscriptions == null)
             return options;
         var plan = await productService.GetTopupProduct(productSlug, false);
@@ -47,22 +48,25 @@ public partial class TopUpController
     public async Task<TopUpIdResponse> StripeSubscribe(string userId, string productId, [FromBody] TopUpOptions options = null)
     {
         var stripe = stripeSubscriptions ?? throw new ApiException("Stripe subscriptions are not available.");
+        await subscriptionRouting.RefreshAsync();
         var user = await userService.GetOrCreate(userId);
         var plan = await GetSubscriptionPlan(productId);
-        var (country, mode, vatBasisPoints) = await StripeCountryAndMode(options);
+        declarations.Validate(options, plan, userId);
+        var (country, mode, vatBasisPoints) = await StripeCountryAndMode(options, subscriptionRouting.Capture());
         var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.Stripe, vatBasisPoints);
         var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.Stripe,
-            RecurringIfDifferent(price, recurringPrice), country);
+            RecurringIfDifferent(price, recurringPrice), country, mode == StripeCheckoutMode.Managed);
         if (request.SessionId != null)
             return await ExistingStripeCheckout(stripe, request.SessionId);
         await RememberCountry(user, country, options);
+        await declarations.Record(options, user, plan, request);
 
-        var checkout = new StripeSubscriptionCheckout(user, plan, SubscriptionPricing.ToCents(price),  // gross for direct sales, net for Managed Payments (see SubscriptionPrice)
+        var checkout = new StripeSubscriptionCheckout(user, plan,
+            SubscriptionPricing.ToCents(recurringPrice), // gross for direct sales, net for Managed Payments (see SubscriptionPrice)
             SubscriptionService.IntervalWeeks(plan.OwnershipSeconds).Value, mode, country,
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id);
-        var session = await CreateStripeSubscriptionSession(stripe,
-            StripeSubscriptionCheckoutBuilder.Build(checkout, StripeManagedSettings.From(config)));
+            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(price));
+        var session = await CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints);
         request.SessionId = session.Id;
         request.CoinAmount = plan.Cost;
         request.ExpiresAt = discount?.ExpiresAt;
@@ -81,13 +85,16 @@ public partial class TopUpController
     public async Task<TopUpIdResponse> PayPalSubscribe(string userId, string productId, [FromBody] TopUpOptions options = null)
     {
         var paypal = paypalSubscriptions ?? throw new ApiException("PayPal subscriptions are not available.");
+        await subscriptionRouting.RefreshAsync();
         var user = await userService.GetOrCreate(userId);
         var plan = await GetSubscriptionPlan(productId);
         if (!PayPalPlanCatalog.IsSellable(plan))
             throw new ApiException("This plan is not available via PayPal.");
+        declarations.Validate(options, plan, userId);
+        var routing = subscriptionRouting.Capture();
         var country = await GetMatchingCountry(options, false, "PayPal");
         EnsureCountryAllowed(country);
-        if (!subscriptionRouting.PayPalAvailable(country))
+        if (!routing.PayPalAvailable(country))
             throw new ApiException($"PayPal subscriptions are not available in your country ({country}).");
         var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.PayPal,
             DirectVatBasisPoints(country, "PayPal"));
@@ -96,6 +103,7 @@ public partial class TopUpController
         if (request.SessionId != null)
             return await ExistingPayPalApproval(paypal, request.SessionId);
         await RememberCountry(user, country, options);
+        await declarations.Record(options, user, plan, request);
         var planId = await PayPalPlans.GetOrCreate(plan);
 
         var created = await paypal.Create(new PayPalSubscriptionRequest(planId,
@@ -112,6 +120,10 @@ public partial class TopUpController
         await db.SaveChangesAsync();
         return new TopUpIdResponse { Id = created.Id, DirectLink = approve };
     }
+
+    private SubscriptionDeclarationService declarations => subscriptionDeclarations ??=
+        new SubscriptionDeclarationService(db, config, _logger);
+    private SubscriptionDeclarationService subscriptionDeclarations;
 
     private void EnsureLemonSqueezySubscriptionAllowed(string country)
     {
@@ -134,20 +146,36 @@ public partial class TopUpController
     /// Direct countries get the one-time payment checks (selected country must match the IP country) and the VAT rate
     /// added to their price; Managed Payments buyers are taxed by Stripe (rate 0 here), so their country only selects the mode.
     /// </summary>
-    private async Task<(string country, StripeCheckoutMode mode, int vatBasisPoints)> StripeCountryAndMode(TopUpOptions options)
+    private async Task<(string country, StripeCheckoutMode mode, int vatBasisPoints)> StripeCountryAndMode(
+        TopUpOptions options, SubscriptionRouting.Snapshot routing)
     {
         var selected = options?.Country?.Trim().ToUpperInvariant()
             ?? options?.Locale?.Split(',').FirstOrDefault()?.Split('-').LastOrDefault()?.ToUpperInvariant();
         var country = selected?.Length == 2 ? selected : await ipCountryLookup.GetCountry(options?.UserIp);
-        if (subscriptionRouting.IsDirectCountry(country))
+        var direct = routing.IsDirectCountry(country);
+        if (direct)
         {
             country = await GetMatchingCountry(options, false, "Stripe");
             EnsureCountryAllowed(country);
         }
-        var vatBasisPoints = subscriptionRouting.IsDirectCountry(country) ? DirectVatBasisPoints(country, "Stripe") : 0;
-        var mode = subscriptionRouting.StripeMode(country)
+        var vatBasisPoints = direct ? DirectVatBasisPoints(country, "Stripe") : 0;
+        var mode = routing.StripeMode(country)
             ?? throw new ApiException($"Stripe subscriptions are not available in your country ({country ?? "unknown"}).");
+        if (mode == StripeCheckoutMode.Managed)
+            await EnsureManagedCoversIpCountry(options?.UserIp);
         return (country, mode, vatBasisPoints);
+    }
+
+    /// <summary>
+    /// The selected country of a Managed Payments buyer is not verified, so a buyer located in a country Stripe does not
+    /// cover for tax, or one we block, could pick a covered one. The IP country, when known, must be covered as well.
+    /// </summary>
+    private async Task EnsureManagedCoversIpCountry(string userIp)
+    {
+        var ipCountry = await ipCountryLookup.GetCountry(userIp);
+        if (ipCountry == null || subscriptionRouting.ManagedCovers(ipCountry))
+            return;
+        throw new ApiException($"Stripe subscriptions are not available in your country ({ipCountry}).");
     }
 
     /// <summary>
@@ -198,11 +226,13 @@ public partial class TopUpController
         await db.SaveChangesAsync();
     }
 
-    private async Task<Session> CreateStripeSubscriptionSession(IStripeSubscriptionGateway stripe, SessionCreateOptions options)
+    private async Task<Session> CreateStripeSubscriptionSession(IStripeSubscriptionGateway stripe, StripeSubscriptionCheckout checkout,
+        int vatBasisPoints)
     {
         try
         {
-            return await stripe.CreateCheckoutSession(options);
+            checkout = await WithStripeObjects(stripe, checkout, vatBasisPoints);
+            return await stripe.CreateCheckoutSession(StripeSubscriptionCheckoutBuilder.Build(checkout, StripeManagedSettings.From(config)));
         }
         catch (Stripe.StripeException e) when (StripeErrorClassifier.IsCredentialError(e.HttpStatusCode))
         {
@@ -216,6 +246,21 @@ public partial class TopUpController
             _logger.LogError(e, "Stripe subscription checkout session could not be created");
             throw new ApiException("Stripe payment is temporarily unavailable. Please try again later.");
         }
+    }
+
+    /// <summary>
+    /// The Stripe objects a session refers to: the one-time coupon of a "first payment only" code and, for direct sales,
+    /// the inclusive VAT rate of the buyer's country (for the receipt; the charged amount is the gross price either way).
+    /// </summary>
+    private static async Task<StripeSubscriptionCheckout> WithStripeObjects(IStripeSubscriptionGateway stripe,
+        StripeSubscriptionCheckout checkout, int vatBasisPoints)
+    {
+        var coupon = StripeFirstPaymentCoupon.For(checkout.Mode, checkout.UnitAmountCents,
+            checkout.FirstPaymentCents ?? checkout.UnitAmountCents, checkout.Plan.CurrencyCode);
+        var couponId = coupon == null ? null : await stripe.EnsureFirstPaymentCoupon(coupon);
+        var taxRateId = checkout.Mode == StripeCheckoutMode.Direct && vatBasisPoints > 0
+            ? await stripe.EnsureVatTaxRate(checkout.Country, vatBasisPoints) : null;
+        return checkout with { CouponId = couponId, TaxRateId = taxRateId };
     }
 
     private static async Task<TopUpIdResponse> ExistingStripeCheckout(IStripeSubscriptionGateway stripe, string sessionId)

@@ -75,7 +75,7 @@ public partial class SubscriptionService
                     $"PayPal sale {sale.Id} of subscription {remote.Id}, which was not sold by this service");
                 return null;
             }
-            var outcome = await GrantPayPalSale(subscription, sale);
+            var outcome = await GrantPayPalSale(subscription, sale, PayerCountry(remote));
             // After the grant, so a cancelled subscription ends with the period this sale paid for.
             await ApplyPayPalState(subscription, remote);
             await context.SaveChangesAsync();
@@ -86,7 +86,7 @@ public partial class SubscriptionService
     /// <summary>
     /// PAYMENT.SALE.REFUNDED/REVERSED: the sale state from PayPal's API decides whether the period is revoked.
     /// </summary>
-    public async Task<string> PayPalSaleRefunded(string saleId)
+    public async Task<PayPalSale> PayPalSaleRefunded(string saleId)
     {
         var sale = await PayPalApi.GetSale(saleId);
         if (sale?.Id != saleId || string.IsNullOrEmpty(sale.BillingAgreementId))
@@ -103,7 +103,7 @@ public partial class SubscriptionService
                 sale.State is "refunded" or "reversed");
             return true;
         });
-        return sale.State;
+        return sale;
     }
 
     private async Task<IReadOnlyList<SubscriptionPaymentOutcome>> GrantListedPayPalSales(UserSubscription subscription, PayPalSubscription remote)
@@ -115,7 +115,7 @@ public partial class SubscriptionService
             var transactions = await PayPalApi.Transactions(subscription.ExternalId, start, DateTime.UtcNow.AddDays(1));
             foreach (var transaction in transactions.Where(t => t.Status == "COMPLETED"))
             {
-                var outcome = await GrantListedPayPalSale(subscription, transaction);
+                var outcome = await GrantListedPayPalSale(subscription, transaction, PayerCountry(remote));
                 if (outcome != null)
                     outcomes.Add(outcome);
             }
@@ -128,7 +128,8 @@ public partial class SubscriptionService
         return outcomes;
     }
 
-    private async Task<SubscriptionPaymentOutcome> GrantListedPayPalSale(UserSubscription subscription, PayPalTransaction transaction)
+    private async Task<SubscriptionPaymentOutcome> GrantListedPayPalSale(UserSubscription subscription, PayPalTransaction transaction,
+        string payerCountry)
     {
         var reference = SubscriptionProviders.GrantReference(SubscriptionProviders.PayPal, transaction.Id);
         if (await IsGranted(subscription.User.ExternalId, reference))
@@ -141,17 +142,18 @@ public partial class SubscriptionService
                 transaction.Id, subscription.ExternalId);
             return null;
         }
-        return await GrantPayPalSale(subscription, sale);
+        return await GrantPayPalSale(subscription, sale, payerCountry);
     }
 
-    private async Task<SubscriptionPaymentOutcome> GrantPayPalSale(UserSubscription subscription, PayPalSale sale)
+    private async Task<SubscriptionPaymentOutcome> GrantPayPalSale(UserSubscription subscription, PayPalSale sale,
+        string payerCountry)
     {
         if (await context.RefundedSubscriptionInvoices.AnyAsync(i => i.InvoiceId == sale.Id))
             return null;
         var reference = SubscriptionProviders.GrantReference(SubscriptionProviders.PayPal, sale.Id);
         // A redelivery of a granted sale returns it again so its recording can be retried.
         if (await IsGranted(subscription.User.ExternalId, reference))
-            return await PayPalOutcome(subscription, sale);
+            return await PayPalOutcome(subscription, sale, payerCountry);
         var paid = ParseMoney(sale.Amount?.Total) ?? 0;
         if (!PayPalSaleMatchesPrice(subscription, sale))
         {
@@ -163,7 +165,21 @@ public partial class SubscriptionService
         subscription.PaymentAmount = sale.Amount.Total + " " + sale.Amount.Currency;
         await SwitchToRecurringPrice(subscription);
         await context.SaveChangesAsync();
-        return await PayPalOutcome(subscription, sale);
+        return await PayPalOutcome(subscription, sale, payerCountry);
+    }
+
+    /// <summary>
+    /// The only payer country PayPal returns without extra permissions. Subscription details carry no payer address:
+    /// `subscriber` has name, email, payer_id, shipping_address (never returned with shipping_preference NO_SHIPPING,
+    /// which we use) and payment_source.card.billing_address (only for card funded subscriptions). The PAYMENT.SALE.*
+    /// resource has no payer fields either. Wallet funded subscriptions therefore have no country evidence from PayPal
+    /// (null); the Transaction Search API would need an extra permission and is deliberately not used.
+    /// </summary>
+    private static string PayerCountry(PayPalSubscription remote)
+    {
+        var code = remote.Subscriber?.ShippingAddress?.Address?.CountryCode
+            ?? remote.Subscriber?.PaymentSource?.Card?.BillingAddress?.CountryCode;
+        return code?.Trim().ToUpperInvariant();
     }
 
     /// <summary>
@@ -183,14 +199,30 @@ public partial class SubscriptionService
     /// PayPal sales are direct sales: the paid gross contains the VAT of the checkout country, which is reported
     /// separately; the EUR amount (creator shares) is the net part.
     /// </summary>
-    private async Task<SubscriptionPaymentOutcome> PayPalOutcome(UserSubscription subscription, PayPalSale sale)
+    private async Task<SubscriptionPaymentOutcome> PayPalOutcome(UserSubscription subscription, PayPalSale sale, string payerCountry)
     {
         var paid = ParseMoney(sale.Amount?.Total) ?? 0;
         var country = await PayPalVatCountry(subscription);
         var (net, vat, rate) = VatSplit(paid, country);
         return new SubscriptionPaymentOutcome(subscription, (TopUpProduct)subscription.Product, sale.Id, paid,
             sale.Amount?.Currency?.ToUpperInvariant(), country, null, null, null,
-            ParseTime(sale.CreateTime) ?? DateTime.UtcNow, net, false, vat, rate);
+            ParseTime(sale.CreateTime) ?? DateTime.UtcNow, net, false, vat, rate,
+            await PayPalEvidence(subscription, country, payerCountry, sale.Id));
+    }
+
+    /// <summary>
+    /// PayPal does not let us refuse a payer by country after the fact, so a payer country that differs from the
+    /// checkout (VAT) country is recorded and logged, not rejected.
+    /// </summary>
+    private async Task<PaymentEvidence> PayPalEvidence(UserSubscription subscription, string checkoutCountry, string payerCountry, string saleId)
+    {
+        if (payerCountry != null && checkoutCountry != null && payerCountry != checkoutCountry)
+            logger.LogWarning("PayPal sale {SaleId} of {SubscriptionId}: payer country {PayerCountry} differs from the checkout (VAT) country {CheckoutCountry}",
+                saleId, subscription.ExternalId, payerCountry, checkoutCountry);
+        var ip = await context.PaymentRequests
+            .Where(r => r.Provider == SubscriptionProviders.PayPal && r.SessionId == subscription.ExternalId)
+            .OrderByDescending(r => r.Id).Select(r => r.CreateOnIp).FirstOrDefaultAsync();
+        return new PaymentEvidence(ip?.ToString(), checkoutCountry, payerCountry, null);
     }
 
     /// <summary>
@@ -250,6 +282,7 @@ public partial class SubscriptionService
             PriceCents = SubscriptionPricing.ToCents(request.Amount),
             Currency = plan.CurrencyCode?.ToUpperInvariant(),
             ProviderPlanId = remote.PlanId,
+            CheckoutCountry = request.Country,
             CreatorCode = request.CreatorCode,
             DiscountCode = request.DiscountCode
         };
@@ -329,7 +362,7 @@ public partial class SubscriptionService
         DateTime.TryParse(time, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed)
             ? parsed : null;
 
-    private static decimal? ParseMoney(string value) =>
+    internal static decimal? ParseMoney(string value) =>
         decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
 
     private sealed class PayPalProvider(SubscriptionService service) : ISubscriptionProvider

@@ -57,6 +57,12 @@ public class UserSubscription
     [MaxLength(50)]
     public string CreatorCode { get; set; }
     /// <summary>
+    /// The buyer country the checkout was priced for (the VAT country of direct sales), fixed for the subscription's lifetime.
+    /// Null for Lemon Squeezy subscriptions. The US direct subscription cap counts by it.
+    /// </summary>
+    [MaxLength(2)]
+    public string CheckoutCountry { get; set; }
+    /// <summary>
     /// Whether a cancelled subscription can be resumed with its provider (response only)
     /// </summary>
     [NotMapped]

@@ -35,6 +35,11 @@ public class PaymentRequest : HasId
     [MaxLength(50)]
     public string DiscountCode { get; set; }
     /// <summary>
+    /// Subscriptions: the checkout is sold through Stripe Managed Payments (Stripe collects the tax) instead of directly.
+    /// Both can have the same amount (US), so an open checkout is only reused for the same mode.
+    /// </summary>
+    public bool ManagedPayments { get; set; }
+    /// <summary>
     /// The coins this request buys. Null for requests created before the column existed;
     /// providers that fulfil from this record require it.
     /// </summary>

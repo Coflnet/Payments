@@ -48,6 +48,10 @@ public class ServicePerformanceDeclaration
     public long VatEurCents { get; set; }
     public string OrderDetailsJson { get; set; }
     public DateTime CreatedAtUtc { get; set; }
+    /// <summary>
+    /// Subscription checkouts: the payment request (checkout) the declaration was given for
+    /// </summary>
+    public int? PaymentRequestId { get; set; }
 }
 
 /// <summary>
@@ -98,4 +102,42 @@ public sealed class ServicePurchaseQuote
     public int VatRateBasisPoints { get; set; }
     public long GrossEurCents { get; set; }
     public long VatEurCents { get; set; }
+}
+
+/// <summary>
+/// The early performance / withdrawal declaration a buyer gave at a subscription checkout. Same evidence as
+/// <see cref="ServicePurchaseRequest"/> of the prepaid flow, without the fields that only make sense for purchases
+/// with coins (reference, count, slots).
+/// </summary>
+public sealed class SubscriptionDeclaration
+{
+    public bool ImmediatePerformanceRequested { get; set; }
+    public bool WithdrawalConsequenceAcknowledged { get; set; }
+    [Required, MaxLength(5)]
+    public string Locale { get; set; }
+    [MaxLength(64)]
+    public string DeclarationVersion { get; set; }
+    [MaxLength(2048)]
+    public string DeclarationText { get; set; }
+    [MaxLength(64)]
+    public string DeclarationSha256 { get; set; }
+    [MaxLength(64)]
+    public string AgreementId { get; set; }
+    [MaxLength(64)]
+    public string AgreementHash { get; set; }
+    [MaxLength(64)]
+    public string WithdrawalVersion { get; set; }
+    [MaxLength(64)]
+    public string WithdrawalSha256 { get; set; }
+    [MaxLength(2)]
+    public string TaxCountry { get; set; }
+    [MaxLength(3)]
+    public string ConsumerRightsRegime { get; set; }
+    public int VatRateBasisPoints { get; set; }
+    public long GrossEurCents { get; set; }
+    public long VatEurCents { get; set; }
+    public string OrderDetailsJson { get; set; }
+    /// <summary>A GUID chosen by the client for this declaration, unique per declaration</summary>
+    [Required, MaxLength(64)]
+    public string RequestId { get; set; }
 }

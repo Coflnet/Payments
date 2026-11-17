@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -279,36 +280,7 @@ namespace Payments.Controllers
                     .OrderByDescending(r => r.PaidAt)
                     .Skip(offset)
                     .Take(limit)
-                    .Select(r => new DetailedTransactionExport
-                    {
-                        TransactionId = r.Id.ToString(),
-                        UserId = r.ExternalUserId,
-                        UserCountry = r.Country ?? "UNKNOWN",
-                        ZipCode = r.ZipCode,
-                        State = r.State,
-                        Provider = r.Provider,
-                        Amount = r.GrossAmount,
-                        Subtotal = r.Subtotal,
-                        DiscountAmount = r.DiscountAmount,
-                        TaxAmount = r.TaxAmount,
-                        TaxRate = r.TaxRate,
-                        TaxRemittedByProcessor = r.TaxRemittedByProcessor,
-                        NetAmount = r.NetAmount,
-                        ProcessorFee = r.ProcessorFee,
-                        CreatorCode = r.CreatorCode,
-                        CreatorCodeDiscount = r.CreatorCodeDiscount,
-                        Currency = r.Currency,
-                        ProductId = r.ProductSlug,
-                        CoinAmount = r.CoinAmount,
-                        Timestamp = r.PaidAt,
-                        Status = r.Status.ToString(),
-                        ExternalReference = r.ExternalOrderId,
-                        ExternalTransactionId = r.ExternalTransactionId,
-                        Locale = r.Locale,
-                        PaymentMethod = r.PaymentMethod,
-                        IsSubscriptionPayment = r.IsSubscriptionPayment,
-                        BuyerEmail = r.BuyerEmail
-                    })
+                    .Select(ExportProjection)
                     .ToListAsync();
 
                 _logger.LogInformation(
@@ -332,6 +304,8 @@ namespace Payments.Controllers
         /// <param name="provider">Filter by provider</param>
         /// <param name="country">Filter by country</param>
         /// <param name="format">Export format: "json" (default) or "csv"</param>
+        /// <param name="includeAllStatuses">false (default): confirmed payments only. true: payment records of every status
+        /// (Confirmed, Refunded, PartiallyRefunded, Disputed) plus captured payments marked RefundPending that have no record</param>
         /// <returns>Transactions in requested format</returns>
         [HttpGet]
         [Route("transactions/export")]
@@ -340,7 +314,8 @@ namespace Payments.Controllers
             [FromQuery] DateTime endDate,
             [FromQuery] string provider = null,
             [FromQuery] string country = null,
-            [FromQuery] string format = "json"
+            [FromQuery] string format = "json",
+            [FromQuery] bool includeAllStatuses = false
         )
         {
             startDate = AsUtc(startDate);
@@ -352,7 +327,7 @@ namespace Payments.Controllers
             try
             {
                 var query = _db.PaymentRecords
-                    .Where(r => r.Status == PaymentRecordStatus.Confirmed
+                    .Where(r => (includeAllStatuses || r.Status == PaymentRecordStatus.Confirmed)
                         && r.PaidAt >= startDate
                         && r.PaidAt <= endDate);
 
@@ -363,37 +338,10 @@ namespace Payments.Controllers
 
                 var results = await query
                     .OrderByDescending(r => r.PaidAt)
-                    .Select(r => new DetailedTransactionExport
-                    {
-                        TransactionId = r.Id.ToString(),
-                        UserId = r.ExternalUserId,
-                        UserCountry = r.Country ?? "UNKNOWN",
-                        ZipCode = r.ZipCode,
-                        State = r.State,
-                        Provider = r.Provider,
-                        Amount = r.GrossAmount,
-                        Subtotal = r.Subtotal,
-                        DiscountAmount = r.DiscountAmount,
-                        TaxAmount = r.TaxAmount,
-                        TaxRate = r.TaxRate,
-                        TaxRemittedByProcessor = r.TaxRemittedByProcessor,
-                        NetAmount = r.NetAmount,
-                        ProcessorFee = r.ProcessorFee,
-                        CreatorCode = r.CreatorCode,
-                        CreatorCodeDiscount = r.CreatorCodeDiscount,
-                        Currency = r.Currency,
-                        ProductId = r.ProductSlug,
-                        CoinAmount = r.CoinAmount,
-                        Timestamp = r.PaidAt,
-                        Status = r.Status.ToString(),
-                        ExternalReference = r.ExternalOrderId,
-                        ExternalTransactionId = r.ExternalTransactionId,
-                        Locale = r.Locale,
-                        PaymentMethod = r.PaymentMethod,
-                        IsSubscriptionPayment = r.IsSubscriptionPayment,
-                        BuyerEmail = r.BuyerEmail
-                    })
+                    .Select(ExportProjection)
                     .ToListAsync();
+                if (includeAllStatuses)
+                    results.AddRange(await PendingRefundExports(startDate, endDate, provider, country));
 
                 if (format.ToLower() == "csv")
                     return ExportAsCsv(results);
@@ -405,6 +353,105 @@ namespace Payments.Controllers
                 _logger.LogError(ex, "Error exporting transactions");
                 return StatusCode(500, new { error = "Failed to export transactions" });
             }
+        }
+
+        /// <summary>
+        /// The export row of a payment record. Subscription mode: Stripe/PayPal sales are "direct" (Coflnet remits the
+        /// VAT) or "managed" (Stripe Managed Payments, tax remitted by Stripe); subscription payments of other providers carry
+        /// the provider ("lemonsqueezy", "googlepay": their merchant of record remits the tax); not a subscription payment: empty.
+        /// PayPal stores the payer's country in BillingCountry; it is exported as PayerCountry (BillingCountry is Stripe's billing
+        /// address only). Status is the PaymentRecordStatus name.
+        /// </summary>
+        private static readonly System.Linq.Expressions.Expression<Func<PaymentRecord, DetailedTransactionExport>> ExportProjection = r =>
+            new DetailedTransactionExport
+            {
+                TransactionId = r.Id.ToString(),
+                UserId = r.ExternalUserId,
+                UserCountry = r.Country ?? "UNKNOWN",
+                ZipCode = r.ZipCode,
+                State = r.State,
+                Provider = r.Provider,
+                Amount = r.GrossAmount,
+                Subtotal = r.Subtotal,
+                DiscountAmount = r.DiscountAmount,
+                TaxAmount = r.TaxAmount,
+                TaxRate = r.TaxRate,
+                TaxRemittedByProcessor = r.TaxRemittedByProcessor,
+                NetAmount = r.NetAmount,
+                ProcessorFee = r.ProcessorFee,
+                CreatorCode = r.CreatorCode,
+                CreatorCodeDiscount = r.CreatorCodeDiscount,
+                Currency = r.Currency,
+                ProductId = r.ProductSlug,
+                CoinAmount = r.CoinAmount,
+                Timestamp = r.PaidAt,
+                Status = r.Status.ToString(),
+                ExternalReference = r.ExternalOrderId,
+                ExternalTransactionId = r.ExternalTransactionId,
+                Locale = r.Locale,
+                PaymentMethod = r.PaymentMethod,
+                IsSubscriptionPayment = r.IsSubscriptionPayment,
+                BuyerEmail = r.BuyerEmail,
+                CheckoutCountry = r.CheckoutCountry,
+                BillingCountry = r.Provider == "paypal" ? null : r.BillingCountry,
+                PaymentMethodCountry = r.PaymentMethodCountry,
+                PayerCountry = r.Provider == "paypal" ? r.BillingCountry : null,
+                IpAddress = r.IpAddress,
+                SubscriptionMode = !r.IsSubscriptionPayment ? null
+                    : r.Provider == "stripe" ? (r.TaxRemittedByProcessor ? "managed" : "direct")
+                    : r.Provider == "paypal" ? "direct"
+                    : r.Provider
+            };
+
+        /// <summary>
+        /// Payments the provider captured but this service refused to fulfil (state REFUND_PENDING, e.g. a direct sale to a
+        /// country we do not sell to, a first invoice whose billing address and card contradict the checkout country, a sale
+        /// of an unknown subscription) have no PaymentRecord: they are only stored as PaymentRequests keyed by the provider's
+        /// payment (sale/invoice) id. Listed as status RefundPending when no record exists for that payment id.
+        /// The request does not store the provider's sale time: Timestamp (and the date filter) is when the payment was marked,
+        /// normally by the payment's webhook right after the sale. One-time checkouts marked by earlier releases kept no
+        /// update time (UpdatedAt unset), so their creation (checkout start) is used instead.
+        /// Rejected checkouts (state REJECTED) never took money themselves (their sales appear here as RefundPending), so
+        /// they are not exported.
+        /// </summary>
+        private async Task<List<DetailedTransactionExport>> PendingRefundExports(DateTime startDate, DateTime endDate,
+            string provider, string country)
+        {
+            var query = _db.PaymentRequests
+                .Where(r => r.State == PaymentRequest.Status.REFUND_PENDING
+                    && !_db.PaymentRecords.Any(p => p.Provider == r.Provider && p.ExternalOrderId == r.SessionId))
+                .Select(r => new { Request = r, MarkedAt = r.UpdatedAt > r.CreatedAt ? r.UpdatedAt : r.CreatedAt })
+                .Where(r => r.MarkedAt >= startDate && r.MarkedAt <= endDate)
+                .Select(r => r.Request);
+            if (!string.IsNullOrWhiteSpace(provider))
+                query = query.Where(r => r.Provider == provider);
+            if (!string.IsNullOrWhiteSpace(country))
+                query = query.Where(r => r.Country == country);
+            var requests = await query
+                .Select(r => new
+                {
+                    r.Id, r.Provider, r.SessionId, r.Amount, r.Country, r.Locale,
+                    MarkedAt = r.UpdatedAt > r.CreatedAt ? r.UpdatedAt : r.CreatedAt,
+                    Ip = r.CreateOnIp, User = r.User == null ? null : r.User.ExternalId,
+                    Product = r.ProductId == null ? null : r.ProductId.Slug,
+                    Currency = r.ProductId == null ? null : r.ProductId.CurrencyCode
+                }).OrderByDescending(r => r.MarkedAt).ToListAsync();
+            return requests.Select(r => new DetailedTransactionExport
+            {
+                TransactionId = "refund-pending-" + r.Id,
+                UserId = r.User,
+                UserCountry = r.Country ?? "UNKNOWN",
+                Provider = r.Provider,
+                Amount = r.Amount,
+                Currency = r.Currency?.ToUpperInvariant(),
+                ProductId = r.Product,
+                Timestamp = r.MarkedAt,
+                Status = ExportStatus.FromRequest(PaymentRequest.Status.REFUND_PENDING),
+                ExternalReference = r.SessionId,
+                Locale = r.Locale,
+                CheckoutCountry = r.Country,
+                IpAddress = r.Ip?.ToString()
+            }).ToList();
         }
 
         /// <summary>
@@ -433,44 +480,35 @@ namespace Payments.Controllers
                 "Amount,Subtotal,DiscountAmount,TaxAmount,TaxRate,TaxRemittedByProcessor," +
                 "NetAmount,ProcessorFee,CreatorCode,CreatorCodeDiscount," +
                 "Currency,ProductId,CoinAmount,Timestamp,Status," +
-                "ExternalReference,ExternalTransactionId,Locale,IsSubscription,BuyerEmail");
+                "ExternalReference,ExternalTransactionId,Locale,IsSubscription,BuyerEmail," +
+                "CheckoutCountry,BillingCountry,PaymentMethodCountry,PayerCountry,IpAddress,SubscriptionMode");
 
             foreach (var tx in transactions)
-            {
-                var line = $"\"{tx.TransactionId}\"," +
-                          $"\"{tx.UserId}\"," +
-                          $"\"{tx.UserCountry}\"," +
-                          $"\"{tx.ZipCode}\"," +
-                          $"\"{tx.State}\"," +
-                          $"\"{tx.Provider}\"," +
-                          $"\"{tx.PaymentMethod}\"," +
-                          $"{tx.Amount}," +
-                          $"{tx.Subtotal}," +
-                          $"{tx.DiscountAmount}," +
-                          $"{tx.TaxAmount}," +
-                          $"{tx.TaxRate}," +
-                          $"{tx.TaxRemittedByProcessor}," +
-                          $"{tx.NetAmount}," +
-                          $"{tx.ProcessorFee}," +
-                          $"\"{tx.CreatorCode}\"," +
-                          $"{tx.CreatorCodeDiscount}," +
-                          $"\"{tx.Currency}\"," +
-                          $"\"{tx.ProductId}\"," +
-                          $"{tx.CoinAmount}," +
-                          $"\"{tx.Timestamp:yyyy-MM-dd HH:mm:ss}\"," +
-                          $"\"{tx.Status}\"," +
-                          $"\"{tx.ExternalReference}\"," +
-                          $"\"{tx.ExternalTransactionId}\"," +
-                          $"\"{tx.Locale}\"," +
-                          $"{tx.IsSubscriptionPayment}," +
-                          $"\"{tx.BuyerEmail}\"";
-                csv.AppendLine(line);
-            }
+                csv.AppendLine(CsvLine(tx));
 
             var content = csv.ToString();
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
 
             return File(bytes, "text/csv", $"transactions_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv");
         }
+
+        /// <summary>
+        /// One CSV row. Numbers and the timestamp are culture invariant (decimal point; "yyyy-MM-dd HH:mm:ss" UTC, unchanged
+        /// layout), so a server or test culture such as de-DE can not turn "11.53" into "11,53" and shift every column.
+        /// </summary>
+        private static string CsvLine(DetailedTransactionExport tx) => string.Join(",",
+            Quote(tx.TransactionId), Quote(tx.UserId), Quote(tx.UserCountry), Quote(tx.ZipCode), Quote(tx.State), Quote(tx.Provider),
+            Quote(tx.PaymentMethod), Number(tx.Amount), Number(tx.Subtotal), Number(tx.DiscountAmount), Number(tx.TaxAmount),
+            Number(tx.TaxRate), tx.TaxRemittedByProcessor.ToString(), Number(tx.NetAmount), Number(tx.ProcessorFee), Quote(tx.CreatorCode),
+            Number(tx.CreatorCodeDiscount), Quote(tx.Currency), Quote(tx.ProductId), Number(tx.CoinAmount),
+            Quote(tx.Timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)), Quote(tx.Status),
+            Quote(tx.ExternalReference), Quote(tx.ExternalTransactionId), Quote(tx.Locale), tx.IsSubscriptionPayment.ToString(),
+            Quote(tx.BuyerEmail), Quote(tx.CheckoutCountry), Quote(tx.BillingCountry), Quote(tx.PaymentMethodCountry),
+            Quote(tx.PayerCountry), Quote(tx.IpAddress), Quote(tx.SubscriptionMode));
+
+        private static string Number(IFormattable value) => value.ToString(null, CultureInfo.InvariantCulture);
+
+        /// <summary>A quoted CSV field; quotes inside are doubled (RFC 4180)</summary>
+        private static string Quote(string value) => "\"" + value?.Replace("\"", "\"\"") + "\"";
     }
 }

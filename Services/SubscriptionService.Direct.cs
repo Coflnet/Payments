@@ -9,6 +9,15 @@ using Microsoft.Extensions.Logging;
 namespace Coflnet.Payments.Services;
 
 /// <summary>
+/// The signals of where a buyer is, kept per payment as place of supply evidence (VAT)
+/// </summary>
+/// <param name="IpAddress">IP the checkout was started from</param>
+/// <param name="CheckoutCountry">The verified country whose VAT the price contains</param>
+/// <param name="BillingCountry">Stripe: the country of the billing address entered at checkout; PayPal: the payer's country</param>
+/// <param name="PaymentMethodCountry">Stripe: the issuing country of the card</param>
+public record PaymentEvidence(string IpAddress, string CheckoutCountry, string BillingCountry, string PaymentMethodCountry);
+
+/// <summary>
 /// A provider payment that granted a paid period; the caller records it for tax reporting.
 /// </summary>
 /// <param name="Subscription">The local subscription (with user and product loaded)</param>
@@ -26,9 +35,11 @@ namespace Coflnet.Payments.Services;
 /// <param name="IsProration">An upgrade's proration, not a paid period</param>
 /// <param name="TaxAmount">VAT contained in <paramref name="Amount"/> (direct sales: our VAT; Managed Payments: what Stripe remitted)</param>
 /// <param name="TaxRate">VAT rate in percent, 0 when unknown</param>
+/// <param name="Evidence">Where the buyer was (place of supply evidence), null for prorations</param>
 public record SubscriptionPaymentOutcome(UserSubscription Subscription, TopUpProduct Product, string PaymentId,
     decimal Amount, string Currency, string Country, string PostalCode, string Email, string Name, DateTime PaidAt,
-    decimal? EurAmount = null, bool IsProration = false, decimal TaxAmount = 0, double TaxRate = 0)
+    decimal? EurAmount = null, bool IsProration = false, decimal TaxAmount = 0, double TaxRate = 0,
+    PaymentEvidence Evidence = null)
 {
     /// <summary>Merchant of record (Stripe Managed Payments) remits the tax</summary>
     public bool TaxRemittedByProcessor => Subscription.ManagedPayments;
@@ -128,7 +139,8 @@ public partial class SubscriptionService
 
     /// <summary>
     /// A provider took money this service can not fulfil. It is logged as an error and recorded as a
-    /// REFUND_PENDING payment request (keyed by the provider payment id), which the pending refund metric reports.
+    /// REFUND_PENDING payment request (keyed by the provider payment id, with the checkout country), which the pending refund
+    /// metric reports and the revenue export lists (includeAllStatuses) as RefundPending.
     /// </summary>
     private async Task MarkForManualRefund(string provider, string paymentId, UserSubscription subscription, decimal amount, string reason)
     {
@@ -144,6 +156,8 @@ public partial class SubscriptionService
             };
             context.PaymentRequests.Add(request);
         }
+        // The VAT country of the sale, so the revenue export can list it without a PaymentRecord
+        request.Country ??= subscription?.CheckoutCountry;
         request.State = PaymentRequest.Status.REFUND_PENDING;
         request.UpdatedAt = DateTime.UtcNow;
         await context.SaveChangesAsync();

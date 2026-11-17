@@ -175,6 +175,8 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => e.ExternalId);
                 // Several providers share this table; one provider subscription maps to one row.
                 entity.HasIndex(e => new { e.ProviderSlug, e.ExternalId }).IsUnique();
+                // Counting the active direct subscriptions of a checkout country (US cap)
+                entity.HasIndex(e => new { e.CheckoutCountry, e.Status });
             });
 
             modelBuilder.Entity<DiscountCode>(entity =>
@@ -221,6 +223,11 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => e.PurchasedAt);
                 entity.HasIndex(e => e.IsPaidOut);
                 entity.HasIndex(e => new { e.CreatorCodeId, e.PurchasedAt });
+                // Concurrent refund webhooks must not both add the same reversal. Partial: sale rows written before this index
+                // existed could hold duplicate references, reversal rows (reference contains "#refund:") are new.
+                entity.HasIndex(e => e.TransactionReference).IsUnique()
+                    .HasDatabaseName("UX_CreatorCodeRevenues_Reversal")
+                    .HasFilter("\"TransactionReference\" LIKE '%#refund:%'");
             });
 
             modelBuilder.Entity<PaymentRecord>(entity =>

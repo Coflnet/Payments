@@ -111,6 +111,8 @@ namespace Coflnet.Payments
             services.AddScoped<CreatorCodeService>();
             services.AddScoped<DiscountCodeService>();
             services.AddScoped<Services.Subscriptions.PayPalPlanCatalog>();
+            services.AddSingleton<Services.Subscriptions.IDirectSubscriptionCounter, Services.Subscriptions.DbDirectSubscriptionCounter>();
+            services.AddSingleton<Services.Subscriptions.UsDirectSubscriptionCap>();
             services.AddSingleton<Services.Subscriptions.SubscriptionRouting>();
             services.AddSingleton<Services.Subscriptions.SubscriptionTax>();
             services.AddSingleton<Services.Subscriptions.IStripeSubscriptionGateway, Services.Subscriptions.StripeSubscriptionGateway>();

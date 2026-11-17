@@ -62,4 +62,10 @@ public class TopUpOptions
     /// Trial length in days (1-3). Only used if EnableTrial is true. Defaults to 3.
     /// </summary>
     public int TrialLengthDays { get; set; } = 3;
+    /// <summary>
+    /// Subscription checkouts: the declaration that the service is performed before the withdrawal period ends and that the
+    /// withdrawal right is lost accordingly. Stored with the checkout as evidence. Required when
+    /// LEGAL:ENFORCE_SERVICE_PERFORMANCE_DECLARATION is set, as for purchases with coins.
+    /// </summary>
+    public SubscriptionDeclaration ServicePerformanceDeclaration { get; set; }
 }

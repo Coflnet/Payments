@@ -245,6 +245,24 @@ public class PaymentRecord
     public string IpAddress { get; set; }
 
     /// <summary>
+    /// Subscription payments: the verified country whose VAT the price contains (place of supply evidence)
+    /// </summary>
+    [MaxLength(2)]
+    public string CheckoutCountry { get; set; }
+
+    /// <summary>
+    /// Subscription payments: Stripe: country of the billing address entered at checkout; PayPal: the payer's country
+    /// </summary>
+    [MaxLength(2)]
+    public string BillingCountry { get; set; }
+
+    /// <summary>
+    /// Subscription payments: Stripe: the issuing country of the card (direct sales)
+    /// </summary>
+    [MaxLength(2)]
+    public string PaymentMethodCountry { get; set; }
+
+    /// <summary>
     /// Whether this is a subscription renewal vs one-time purchase
     /// </summary>
     public bool IsSubscriptionPayment { get; set; }

@@ -55,9 +55,33 @@ public partial class CallbackController
             return false;
         // Includes refunds Stripe issues on its own as merchant of record (Managed Payments).
         await subscriptionService.StripeInvoiceRefunded(invoice, charge.Amount, charge.AmountRefunded);
+        await ReverseCreatorRevenue(invoice.Id, "charge", charge.Amount > 0 ? charge.AmountRefunded / (decimal)charge.Amount : 0);
         await MarkPaymentRefunded(invoice.Id, "stripe", charge.AmountRefunded / 100m, charge.AmountRefunded >= charge.Amount);
         return true;
     }
+
+    /// <summary>
+    /// A refund resource (PAYMENT.SALE.REFUNDED) carries the refunded amount and its own id; a reversal or a sale
+    /// in state refunded takes back the whole share. PayPal's refund samples show the amount negative ("-0.01"), so
+    /// only its magnitude is used.
+    /// </summary>
+    private Task ReversePayPalCreatorRevenue(PayPalSale original, PayPalSale webhookResource)
+    {
+        if (original.State is "refunded" or "reversed")
+            return ReverseCreatorRevenue(original.Id, "full", 1);
+        var total = Coflnet.Payments.Services.SubscriptionService.ParseMoney(original.Amount?.Total);
+        var refunded = webhookResource.SaleId != null ? Coflnet.Payments.Services.SubscriptionService.ParseMoney(webhookResource.Amount?.Total) : null;
+        if (total is not > 0 || refunded == null)
+            return Task.CompletedTask;
+        return ReverseCreatorRevenue(original.Id, webhookResource.Id, Math.Abs(refunded.Value) / total.Value);
+    }
+
+    /// <summary>
+    /// Takes the creator share of a refunded subscription payment back. Idempotent, so a failure fails the webhook
+    /// and the provider's retry repeats it.
+    /// </summary>
+    private Task ReverseCreatorRevenue(string paymentId, string refundKey, decimal refundedFraction) =>
+        _creatorCodeService?.ReverseRevenueAsync(paymentId, refundKey, refundedFraction) ?? Task.CompletedTask;
 
     private static bool IsPayPalSubscriptionEvent(string eventType) =>
         eventType != null && (eventType.StartsWith("BILLING.SUBSCRIPTION.", StringComparison.Ordinal)
@@ -83,9 +107,11 @@ public partial class CallbackController
                 var saleId = sale.SaleId ?? sale.Id;
                 if (!ValidPayPalId(saleId))
                     return BadRequest();
-                var state = await subscriptionService.PayPalSaleRefunded(saleId);
-                if (state != null)
-                    await MarkPaymentRefunded(saleId, "paypal", null, state is "refunded" or "reversed");
+                var refunded = await subscriptionService.PayPalSaleRefunded(saleId);
+                if (refunded == null)
+                    return Ok();
+                await ReversePayPalCreatorRevenue(refunded, sale);
+                await MarkPaymentRefunded(saleId, "paypal", null, refunded.State is "refunded" or "reversed");
                 return Ok();
             case not null when eventType.StartsWith("BILLING.SUBSCRIPTION.", StringComparison.Ordinal):
                 foreach (var outcome in await subscriptionService.PayPalSubscriptionChanged(sale.Id))
@@ -149,6 +175,10 @@ public partial class CallbackController
             Status = PaymentRecordStatus.Confirmed,
             BuyerEmail = outcome.Email,
             BuyerName = outcome.Name,
+            IpAddress = outcome.Evidence?.IpAddress,
+            CheckoutCountry = outcome.Evidence?.CheckoutCountry,
+            BillingCountry = outcome.Evidence?.BillingCountry,
+            PaymentMethodCountry = outcome.Evidence?.PaymentMethodCountry,
             IsSubscriptionPayment = true
         });
     }
