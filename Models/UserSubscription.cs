@@ -63,6 +63,13 @@ public class UserSubscription
     [MaxLength(2)]
     public string CheckoutCountry { get; set; }
     /// <summary>
+    /// The buyer's state or province at checkout (ISO 3166-2 subdivision code without the country prefix, e.g. "CA"), from the edge
+    /// at checkout time, fixed for the subscription's lifetime. Null when unknown (and for subscriptions made before it existed).
+    /// The US direct subscription cap counts by it (indexed together with the country and status).
+    /// </summary>
+    [MaxLength(3)]
+    public string CheckoutRegion { get; set; }
+    /// <summary>
     /// Whether a cancelled subscription can be resumed with its provider (response only)
     /// </summary>
     [NotMapped]

@@ -132,15 +132,16 @@ namespace Payments.Controllers
         /// Lemon Squeezy checkouts do not honor local codes, so buyers routed there must not be shown promotion prices.
         /// </summary>
         /// <param name="country">Optional buyer country; 204 when only Lemon Squeezy would apply to it</param>
+        /// <param name="region">Optional buyer state (ISO 3166-2 code without country prefix, e.g. "CA"); the US direct cap applies per state</param>
         [HttpGet]
         [Route("discount/auto")]
         [ProducesResponseType(typeof(AutoDiscount), 200)]
         [ProducesResponseType(204)]
-        public async Task<ActionResult<AutoDiscount>> GetAutoDiscount([FromQuery] string country = null)
+        public async Task<ActionResult<AutoDiscount>> GetAutoDiscount([FromQuery] string country = null, [FromQuery] string region = null)
         {
             var code = await discountCodes.GetActiveAutoApply();
             await subscriptionRouting.RefreshAsync();
-            var providers = subscriptionRouting.DirectProvidersFor(country);
+            var providers = subscriptionRouting.Capture(region).DirectProvidersFor(country);
             if (code == null || providers.Count == 0)
                 return NoContent();
             return Ok(new AutoDiscount
@@ -266,7 +267,8 @@ namespace Payments.Controllers
         /// <param name="recurringAmount">Subscriptions: the renewal price when it differs from <paramref name="eurPrice"/></param>
         /// <param name="country">Subscriptions: the country the price was made for (its VAT for direct sales)</param>
         /// <param name="managedPayments">Subscriptions: sold through Stripe Managed Payments; only checkouts of the same mode are reused</param>
-        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null, decimal? recurringAmount = null, string country = null, bool managedPayments = false)
+        /// <param name="region">Subscriptions: the normalized checkout state; only checkouts of the same state are reused</param>
+        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null, decimal? recurringAmount = null, string country = null, bool managedPayments = false, string region = null)
         {
             PaymentRequest request = null;
             request = await transactionService.WithTransactionAsync<PaymentRequest>(async (transaction, owns) =>
@@ -290,7 +292,7 @@ namespace Payments.Controllers
             // and a direct and a Managed Payments checkout of the same country (US: no VAT) are never mixed up.
             var match = existingRequests.FirstOrDefault(r => r.User.Id == user.Id && r.ProductId.Id == product.Id && r.State < PaymentRequest.Status.PAID && r.CreatedAt > DateTime.UtcNow.AddMinutes(-10) && r.SessionId != null
                 && r.Provider == (provider ?? product.ProviderSlug) && r.Amount == eurPrice && r.RecurringAmount == recurringAmount && r.Country == country
-                && r.ManagedPayments == managedPayments);
+                && r.ManagedPayments == managedPayments && r.CheckoutRegion == region);
             if (match != null)
                 return match; // already existing request, return it
 
@@ -303,6 +305,7 @@ namespace Payments.Controllers
                 Amount = eurPrice,
                 RecurringAmount = recurringAmount,
                 Country = country,
+                CheckoutRegion = region,
                 ManagedPayments = managedPayments,
                 CreateOnIp = userIp,
                 DeviceFingerprint = topupotions.Fingerprint,
@@ -456,7 +459,7 @@ namespace Payments.Controllers
             if (!product.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("Product is not a service, can't be subscribed to");
             await subscriptionRouting.RefreshAsync();
-            EnsureLemonSqueezySubscriptionAllowed(options?.Country);
+            EnsureLemonSqueezySubscriptionAllowed(options?.Country, options?.Region);
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true, checkoutProvider: SubscriptionProviders.LemonSqueezy);
             
             // Handle trial options - validate user hasn't already used trial for this product

@@ -29,6 +29,8 @@ public partial class SubscriptionService
         public const string FirstPriceCents = "firstPriceCents";
         public const string Mode = "mode";
         public const string Country = "country";
+        /// <summary>The buyer's state at checkout (ISO 3166-2 code without country prefix)</summary>
+        public const string Region = "region";
         public const string DiscountCode = "discountCode";
         public const string CreatorCode = "creatorCode";
         public const string PaymentRequestId = "paymentRequestId";
@@ -144,7 +146,8 @@ public partial class SubscriptionService
         var card = subscription.ManagedPayments ? null : await CardCountry(invoice, cardCountryRequired);
         var requestId = int.TryParse(snapshot.Metadata.GetValueOrDefault(StripeMetadata.PaymentRequestId), out var id) ? id : 0;
         var ip = await context.PaymentRequests.Where(r => r.Id == requestId).Select(r => r.CreateOnIp).FirstOrDefaultAsync();
-        return new PaymentEvidence(ip?.ToString(), MetadataCountry(snapshot), invoice.CustomerCountry, card);
+        return new PaymentEvidence(ip?.ToString(), MetadataCountry(snapshot), invoice.CustomerCountry, card,
+            subscription.CheckoutRegion, invoice.CustomerState);
     }
 
     private async Task<string> CardCountry(StripeInvoiceInfo invoice, bool required)
@@ -346,6 +349,7 @@ public partial class SubscriptionService
             CreatedAt = snapshot.Created,
             ManagedPayments = snapshot.ManagedPayments || metadata.GetValueOrDefault(StripeMetadata.Mode) == "managed",
             CheckoutCountry = MetadataCountry(snapshot)?.ToUpperInvariant(),
+            CheckoutRegion = UsDirectSubscriptionCap.NormalizeRegion(snapshot.Metadata.GetValueOrDefault(StripeMetadata.Region)),
             PriceCents = long.TryParse(metadata.GetValueOrDefault(StripeMetadata.PriceCents), out var cents) ? cents : null,
             Currency = product.CurrencyCode?.ToUpperInvariant(),
             DiscountCode = metadata.GetValueOrDefault(StripeMetadata.DiscountCode),

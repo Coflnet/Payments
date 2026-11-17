@@ -762,6 +762,58 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
             Is.EqualTo(("DE", "AT", "FR", "203.0.113.7")));
     }
 
+    /// <summary>
+    /// The checkout state (from the edge) is kept on the subscription (the per-state US cap counts by it) and with the payment;
+    /// the billing address state is only evidence: a mismatch does not reject the sale.
+    /// </summary>
+    [Test]
+    public async Task CheckoutStateAndBillingStateAreKeptAsEvidenceWithoutRejecting()
+    {
+        await SeedCheckoutRequest("203.0.113.7");
+        DirectCheckoutIn("DE", "DE");
+        checkoutMetadata[Keys.Region] = "ca";
+        remote = Snapshot(priceCents: 1153);
+
+        await PostStripe(Service(stripe.Object), "invoice.paid", InvoiceJson(total: 1153, country: "DE", state: "nv"));
+
+        var record = await db.PaymentRecords.SingleAsync();
+        Assert.That((record.CheckoutRegion, record.BillingRegion), Is.EqualTo(("CA", "NV")));
+        Assert.That((await Subscription("sub_1")).CheckoutRegion, Is.EqualTo("CA"));
+        stripe.Verify(s => s.CancelNow(It.IsAny<string>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Regression: a sale marked for a manual refund (no PaymentRecord) kept its checkout country but not its state, so the
+    /// revenue export listed it with an empty CheckoutRegion.
+    /// </summary>
+    [Test]
+    public async Task AManualRefundKeepsTheCheckoutState()
+    {
+        checkoutMetadata[Keys.FirstPriceCents] = "485";
+        checkoutMetadata[Keys.Region] = "CA";
+        remote = Snapshot();
+
+        Assert.That(await Service(stripe.Object).StripeInvoicePaid(Invoice(total: 969)), Is.Null);
+
+        var request = await db.PaymentRequests.SingleAsync(r => r.SessionId == "in_1");
+        Assert.That((request.State, request.Country, request.CheckoutRegion), Is.EqualTo((PaymentRequest.Status.REFUND_PENDING, "US", "CA")));
+    }
+
+    /// <summary>
+    /// TR (tax-blocked for sales by Coflnet) is sold through Managed Payments, where Stripe is the seller: its first invoice is
+    /// granted, not rejected like a direct sale to a blocked country.
+    /// </summary>
+    [Test]
+    public async Task ManagedPaymentsFirstInvoiceFromATaxBlockedCountryIsGranted()
+    {
+        remote = Snapshot(managed: true, priceCents: 969);
+
+        Assert.That(await Service(stripe.Object).StripeInvoicePaid(Invoice(total: 5890, currency: "try", country: "TR")), Is.Not.Null);
+
+        Assert.That(await Grants("stripe-invoice-in_1"), Is.EqualTo(1));
+        stripe.Verify(s => s.CancelNow(It.IsAny<string>()), Times.Never);
+    }
+
     [Test]
     public async Task ManagedPaymentsDoesNotLookUpTheCard()
     {
@@ -844,9 +896,10 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
     }
 
     private static string InvoiceJson(string id = "in_1", string reason = "subscription_create", long total = 969,
-        string currency = "eur", string country = "DE")
+        string currency = "eur", string country = "DE", string state = null)
     {
-        var address = country == null ? "" : $$""","customer_address":{"country":"{{country}}","postal_code":"10115"}""";
+        var stateJson = state == null ? "" : $$""","state":"{{state}}" """;
+        var address = country == null ? "" : $$""","customer_address":{"country":"{{country}}","postal_code":"10115"{{stateJson}}}""";
         return $$$"""
             {"id":"{{{id}}}","object":"invoice","billing_reason":"{{{reason}}}","status":"paid","total":{{{total}}},"amount_paid":{{{total}}},
              "currency":"{{{currency}}}","created":1763380800{{{address}}},

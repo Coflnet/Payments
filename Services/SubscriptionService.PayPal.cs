@@ -222,7 +222,7 @@ public partial class SubscriptionService
         var ip = await context.PaymentRequests
             .Where(r => r.Provider == SubscriptionProviders.PayPal && r.SessionId == subscription.ExternalId)
             .OrderByDescending(r => r.Id).Select(r => r.CreateOnIp).FirstOrDefaultAsync();
-        return new PaymentEvidence(ip?.ToString(), checkoutCountry, payerCountry, null);
+        return new PaymentEvidence(ip?.ToString(), checkoutCountry, payerCountry, null, subscription.CheckoutRegion);
     }
 
     /// <summary>
@@ -283,6 +283,7 @@ public partial class SubscriptionService
             Currency = plan.CurrencyCode?.ToUpperInvariant(),
             ProviderPlanId = remote.PlanId,
             CheckoutCountry = request.Country,
+            CheckoutRegion = request.CheckoutRegion,
             CreatorCode = request.CreatorCode,
             DiscountCode = request.DiscountCode
         };

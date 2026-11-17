@@ -369,6 +369,7 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
     {
         var request = await SeedCheckout("paypal", "I-SUB", premium, 11.53m);
         request.Country = "DE";
+        request.CheckoutRegion = "BY";
         request.CreateOnIp = IPAddress.Parse("203.0.113.7");
         await db.SaveChangesAsync();
         SetSubscription();
@@ -380,6 +381,8 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
 
         var record = await db.PaymentRecords.SingleAsync();
         Assert.That((await Subscription("I-SUB")).CheckoutCountry, Is.EqualTo("DE"), "the US direct cap counts by it");
+        Assert.That((await Subscription("I-SUB")).CheckoutRegion, Is.EqualTo("BY"), "and the per-state cap by this");
+        Assert.That(record.CheckoutRegion, Is.EqualTo("BY"));
         Assert.That((record.CheckoutCountry, record.BillingCountry, record.PaymentMethodCountry, record.IpAddress),
             Is.EqualTo(("DE", "AT", (string)null, "203.0.113.7")));
         Assert.That(await Grants("paypal-sale-SALE-1"), Is.EqualTo(1));

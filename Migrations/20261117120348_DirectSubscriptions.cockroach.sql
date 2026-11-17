@@ -15,11 +15,14 @@ ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "DiscountCode" character va
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "ManagedPayments" boolean NOT NULL DEFAULT false;
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "PriceCents" bigint;
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "ProviderPlanId" character varying(64);
--- The buyer country of the checkout (VAT country of direct sales); the US direct subscription cap counts by it
+-- The buyer country of the checkout (VAT country of direct sales); the US direct subscription cap counts by it (together with CheckoutRegion below)
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "CheckoutCountry" character varying(2);
+-- The buyer's state/province at checkout (ISO 3166-2 subdivision code without country prefix, from the edge); the US direct cap counts per state
+ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "CheckoutRegion" character varying(3);
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "RecurringAmount" numeric;
 -- The buyer country a subscription checkout was priced for (the VAT country of direct sales)
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "Country" character varying(2);
+ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "CheckoutRegion" character varying(3);
 -- PayPal subscriptions: the codes of the checkout, copied to the subscription on activation
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "CreatorCode" character varying(50);
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "DiscountCode" character varying(50);
@@ -31,6 +34,9 @@ ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "ManagedPayments" boolean
 ALTER TABLE "PaymentRecords" ADD COLUMN IF NOT EXISTS "CheckoutCountry" character varying(2);
 ALTER TABLE "PaymentRecords" ADD COLUMN IF NOT EXISTS "BillingCountry" character varying(2);
 ALTER TABLE "PaymentRecords" ADD COLUMN IF NOT EXISTS "PaymentMethodCountry" character varying(2);
+-- Checkout state/province and (Stripe) billing address state as evidence for the per-state US cap; never used to reject a payment
+ALTER TABLE "PaymentRecords" ADD COLUMN IF NOT EXISTS "CheckoutRegion" character varying(3);
+ALTER TABLE "PaymentRecords" ADD COLUMN IF NOT EXISTS "BillingRegion" character varying(16);
 -- The subscription checkout (PaymentRequest) an early performance declaration was given for
 ALTER TABLE "ServicePerformanceDeclarations" ADD COLUMN IF NOT EXISTS "PaymentRequestId" integer;
 
@@ -90,7 +96,10 @@ WHERE s."ProviderSlug" = newer."ProviderSlug" AND s."ExternalId" = newer."Extern
   AND (s."UpdatedAt" < newer."UpdatedAt" OR (s."UpdatedAt" = newer."UpdatedAt" AND s."Id" < newer."Id"));
 
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_Subscriptions_ProviderSlug_ExternalId" ON "Subscriptions" ("ProviderSlug", "ExternalId");
-CREATE INDEX IF NOT EXISTS "IX_Subscriptions_CheckoutCountry_Status" ON "Subscriptions" ("CheckoutCountry", "Status");
+-- Per-state counting of active direct US subscriptions (grouped by region). It replaces the (CheckoutCountry, Status) index
+-- an earlier draft of this script created: drop that one in case such a draft already ran here.
+DROP INDEX IF EXISTS "Subscriptions"@"IX_Subscriptions_CheckoutCountry_Status";
+CREATE INDEX IF NOT EXISTS "IX_Subscriptions_CheckoutCountry_CheckoutRegion_Status" ON "Subscriptions" ("CheckoutCountry", "CheckoutRegion", "Status");
 
 -- Concurrent refund webhooks must not both reverse a creator share: reversal rows ("<payment>#refund:<key>") are unique.
 -- The index is partial on purpose. Reversal rows are new with this release, so none can be duplicated yet, but sale rows

@@ -397,6 +397,7 @@ namespace Payments.Controllers
                 PaymentMethodCountry = r.PaymentMethodCountry,
                 PayerCountry = r.Provider == "paypal" ? r.BillingCountry : null,
                 IpAddress = r.IpAddress,
+                CheckoutRegion = r.CheckoutRegion,
                 SubscriptionMode = !r.IsSubscriptionPayment ? null
                     : r.Provider == "stripe" ? (r.TaxRemittedByProcessor ? "managed" : "direct")
                     : r.Provider == "paypal" ? "direct"
@@ -430,7 +431,7 @@ namespace Payments.Controllers
             var requests = await query
                 .Select(r => new
                 {
-                    r.Id, r.Provider, r.SessionId, r.Amount, r.Country, r.Locale,
+                    r.Id, r.Provider, r.SessionId, r.Amount, r.Country, r.CheckoutRegion, r.Locale,
                     MarkedAt = r.UpdatedAt > r.CreatedAt ? r.UpdatedAt : r.CreatedAt,
                     Ip = r.CreateOnIp, User = r.User == null ? null : r.User.ExternalId,
                     Product = r.ProductId == null ? null : r.ProductId.Slug,
@@ -450,6 +451,7 @@ namespace Payments.Controllers
                 ExternalReference = r.SessionId,
                 Locale = r.Locale,
                 CheckoutCountry = r.Country,
+                CheckoutRegion = r.CheckoutRegion,
                 IpAddress = r.Ip?.ToString()
             }).ToList();
         }
@@ -481,7 +483,7 @@ namespace Payments.Controllers
                 "NetAmount,ProcessorFee,CreatorCode,CreatorCodeDiscount," +
                 "Currency,ProductId,CoinAmount,Timestamp,Status," +
                 "ExternalReference,ExternalTransactionId,Locale,IsSubscription,BuyerEmail," +
-                "CheckoutCountry,BillingCountry,PaymentMethodCountry,PayerCountry,IpAddress,SubscriptionMode");
+                "CheckoutCountry,BillingCountry,PaymentMethodCountry,PayerCountry,IpAddress,SubscriptionMode,CheckoutRegion");
 
             foreach (var tx in transactions)
                 csv.AppendLine(CsvLine(tx));
@@ -504,7 +506,7 @@ namespace Payments.Controllers
             Quote(tx.Timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)), Quote(tx.Status),
             Quote(tx.ExternalReference), Quote(tx.ExternalTransactionId), Quote(tx.Locale), tx.IsSubscriptionPayment.ToString(),
             Quote(tx.BuyerEmail), Quote(tx.CheckoutCountry), Quote(tx.BillingCountry), Quote(tx.PaymentMethodCountry),
-            Quote(tx.PayerCountry), Quote(tx.IpAddress), Quote(tx.SubscriptionMode));
+            Quote(tx.PayerCountry), Quote(tx.IpAddress), Quote(tx.SubscriptionMode), Quote(tx.CheckoutRegion));
 
         private static string Number(IFormattable value) => value.ToString(null, CultureInfo.InvariantCulture);
 

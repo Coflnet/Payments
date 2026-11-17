@@ -453,6 +453,10 @@ namespace Payments.Migrations
                         .HasMaxLength(2)
                         .HasColumnType("character varying(2)");
 
+                    b.Property<string>("BillingRegion")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
                     b.Property<string>("BuyerEmail")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
@@ -464,6 +468,10 @@ namespace Payments.Migrations
                     b.Property<string>("CheckoutCountry")
                         .HasMaxLength(2)
                         .HasColumnType("character varying(2)");
+
+                    b.Property<string>("CheckoutRegion")
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
 
                     b.Property<string>("City")
                         .HasMaxLength(80)
@@ -617,6 +625,10 @@ namespace Payments.Migrations
 
                     b.Property<decimal>("Amount")
                         .HasColumnType("numeric");
+
+                    b.Property<string>("CheckoutRegion")
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
 
                     b.Property<decimal?>("CoinAmount")
                         .HasColumnType("numeric");
@@ -1152,6 +1164,10 @@ namespace Payments.Migrations
                         .HasMaxLength(2)
                         .HasColumnType("character varying(2)");
 
+                    b.Property<string>("CheckoutRegion")
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1224,10 +1240,10 @@ namespace Payments.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.HasIndex("CheckoutCountry", "Status");
-
                     b.HasIndex("ProviderSlug", "ExternalId")
                         .IsUnique();
+
+                    b.HasIndex("CheckoutCountry", "CheckoutRegion", "Status");
 
                     b.ToTable("Subscriptions");
                 });

@@ -15,7 +15,10 @@ namespace Coflnet.Payments.Services;
 /// <param name="CheckoutCountry">The verified country whose VAT the price contains</param>
 /// <param name="BillingCountry">Stripe: the country of the billing address entered at checkout; PayPal: the payer's country</param>
 /// <param name="PaymentMethodCountry">Stripe: the issuing country of the card</param>
-public record PaymentEvidence(string IpAddress, string CheckoutCountry, string BillingCountry, string PaymentMethodCountry);
+/// <param name="CheckoutRegion">The buyer's state at checkout (from the edge), evidence for the per-state US cap</param>
+/// <param name="BillingRegion">Stripe: the state of the billing address entered at checkout (evidence only, never rejected on mismatch)</param>
+public record PaymentEvidence(string IpAddress, string CheckoutCountry, string BillingCountry, string PaymentMethodCountry,
+    string CheckoutRegion = null, string BillingRegion = null);
 
 /// <summary>
 /// A provider payment that granted a paid period; the caller records it for tax reporting.
@@ -158,6 +161,7 @@ public partial class SubscriptionService
         }
         // The VAT country of the sale, so the revenue export can list it without a PaymentRecord
         request.Country ??= subscription?.CheckoutCountry;
+        request.CheckoutRegion ??= subscription?.CheckoutRegion;
         request.State = PaymentRequest.Status.REFUND_PENDING;
         request.UpdatedAt = DateTime.UtcNow;
         await context.SaveChangesAsync();

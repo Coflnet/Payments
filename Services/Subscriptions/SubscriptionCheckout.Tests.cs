@@ -478,8 +478,7 @@ public class SubscriptionCheckoutTests
 
     /// <summary>
     /// Regression: every country outside the direct list got Managed Payments, also where Stripe does not take over the
-    /// tax (AE, CL, PE, BR, AR, CO) or where Coflnet blocks sales (TR, SA, KR, VN, MX, MD are covered by Stripe but listed in
-    /// <see cref="SalesRestrictions.BlockedCountries"/>, which applies to every subscription provider).
+    /// tax (AE, CL, PE, BR, AR, CO).
     /// </summary>
     [TestCase("AE")]
     [TestCase("CL")]
@@ -487,18 +486,50 @@ public class SubscriptionCheckoutTests
     [TestCase("BR")]
     [TestCase("AR")]
     [TestCase("CO")]
+    public void ManagedPaymentsIsNotOfferedWhereStripeDoesNotCoverTheTax(string country)
+    {
+        var routing = Routing();
+        Assert.That(routing.StripeMode(country), Is.Null);
+        Assert.That(routing.ManagedCovers(country), Is.False);
+        Assert.That(routing.ProvidersFor(country).Select(p => p.Provider), Is.Empty.Or.EqualTo(new[] { "lemonsqueezy" }));
+        Assert.That(routing.DirectProvidersFor(country), Is.Empty, "discount/auto and the provider list read this");
+    }
+
+    /// <summary>
+    /// Regression: TR, SA, KR, VN, MX and MD are in <see cref="SalesRestrictions.BlockedCountries"/> purely for tax reasons
+    /// (Coflnet would owe the local tax) but Stripe covers them: they get Managed Payments only, never a direct
+    /// Stripe/PayPal checkout, even when listed as direct countries.
+    /// </summary>
     [TestCase("TR")]
     [TestCase("SA")]
     [TestCase("KR")]
     [TestCase("VN")]
     [TestCase("MX")]
     [TestCase("MD")]
-    public void ManagedPaymentsIsNotOfferedWhereStripeDoesNotCoverTheTaxOrSalesAreBlocked(string country)
+    public void TaxBlockedCountriesCoveredByStripeGetManagedPaymentsButNeverDirect(string country)
     {
         var routing = Routing();
-        Assert.That(routing.StripeMode(country), Is.Null);
-        Assert.That(routing.ProvidersFor(country).Select(p => p.Provider), Is.Empty.Or.EqualTo(new[] { "lemonsqueezy" }));
-        Assert.That(routing.DirectProvidersFor(country), Is.Empty, "discount/auto and the provider list read this");
+        Assert.That(routing.StripeMode(country), Is.EqualTo(StripeCheckoutMode.Managed));
+        Assert.That(routing.ManagedCovers(country), Is.True);
+        Assert.That(routing.PayPalAvailable(country), Is.False);
+        Assert.That(routing.ProvidersFor(country).Select(p => (p.Provider, p.Mode)), Is.EqualTo(new[] { ("stripe", "managed") }));
+        Assert.That(routing.DirectProvidersFor(country), Is.EqualTo(new[] { "stripe" }));
+        Assert.That(SalesRestrictions.IsCountryBlocked(country) && !SalesRestrictions.DoWeSellTo(country, null), Is.True,
+            "one-time sales and direct invoices still refuse it");
+        var listedDirect = Routing(new() { ["SUBSCRIPTIONS:DIRECT_COUNTRIES"] = "DE," + country });
+        Assert.That(listedDirect.StripeMode(country), Is.Null);
+        Assert.That(listedDirect.PayPalAvailable(country), Is.False);
+    }
+
+    [Test]
+    public void ManagedBlockedCountriesAreConfigurableAndSeparateFromTheTaxBlocks()
+    {
+        var routing = Routing(new() { ["SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES"] = "tr, NO" });
+
+        Assert.That(routing.StripeMode("TR"), Is.Null);
+        Assert.That(routing.StripeMode("NO"), Is.Null);
+        Assert.That(routing.StripeMode("SA"), Is.EqualTo(StripeCheckoutMode.Managed));
+        Assert.That(routing.ManagedCovers("TR"), Is.False);
     }
 
     [Test]

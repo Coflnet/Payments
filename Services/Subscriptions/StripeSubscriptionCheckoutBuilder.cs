@@ -24,7 +24,8 @@ public record StripeSubscriptionCheckout(
     int PaymentRequestId,
     long? FirstPaymentCents = null, // "first payment only" code: price of the first invoice, below UnitAmountCents
     string CouponId = null, // one-time Stripe coupon that lowers the first invoice to FirstPaymentCents
-    string TaxRateId = null); // direct sales: inclusive manual VAT rate shown on Stripe's receipts
+    string TaxRateId = null, // direct sales: inclusive manual VAT rate shown on Stripe's receipts
+    string Region = null); // the buyer's state at checkout (evidence, per-state US cap)
 
 /// <summary>
 /// Managed Payments settings (STRIPE:MANAGED_TAX_CODE, STRIPE:MANAGED_TAX_BEHAVIOR)
@@ -132,6 +133,7 @@ public static class StripeSubscriptionCheckoutBuilder
         if (checkout.FirstPaymentCents < checkout.UnitAmountCents)
             metadata[Keys.FirstPriceCents] = checkout.FirstPaymentCents.ToString();
         AddIfSet(metadata, Keys.Country, checkout.Country);
+        AddIfSet(metadata, Keys.Region, checkout.Region);
         AddIfSet(metadata, Keys.DiscountCode, checkout.DiscountCode);
         AddIfSet(metadata, Keys.CreatorCode, checkout.CreatorCode);
         return metadata;

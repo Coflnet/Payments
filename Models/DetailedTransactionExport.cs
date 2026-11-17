@@ -173,6 +173,11 @@ namespace Coflnet.Payments.Models
         /// payments ("lemonsqueezy", "googlepay") or empty (not a subscription payment)
         /// </summary>
         public string SubscriptionMode { get; set; }
+
+        /// <summary>
+        /// Subscription payments: the buyer's state or province at checkout (ISO 3166-2 subdivision code without country prefix)
+        /// </summary>
+        public string CheckoutRegion { get; set; }
     }
 
     /// <summary>

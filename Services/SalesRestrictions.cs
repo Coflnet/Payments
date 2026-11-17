@@ -13,7 +13,12 @@ namespace Coflnet.Payments.Services
     {
         /// <summary>
         /// Countries where registering for taxes as a foreign seller is too much overhead
-        /// (AE: can't register for taxes as a foreigner).
+        /// (AE: can't register for taxes as a foreigner). A TAX reason only: it applies to every sale where Coflnet is the
+        /// seller (direct Stripe/PayPal subscriptions, one-time Stripe/PayPal/CoinGate purchases, expert quotes) and NOT to
+        /// Stripe Managed Payments subscriptions, where Stripe is merchant of record and remits the local tax (TR, SA, KR, VN, MX
+        /// and MD are on Stripe's coverage list, AE, CL and PE are not and so get no Managed Payments for lack of coverage).
+        /// What is blocked even for Managed Payments (sanctions and the like) is a separate list:
+        /// <see cref="Subscriptions.SubscriptionRouting.DefaultManagedBlockedCountries"/>.
         /// </summary>
         public static readonly IReadOnlySet<string> BlockedCountries = new HashSet<string>(StringComparer.Ordinal)
         {

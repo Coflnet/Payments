@@ -23,12 +23,15 @@ public partial class TopUpController
     /// </summary>
     /// <param name="country">ISO 3166-1 alpha-2 country of the buyer</param>
     /// <param name="productSlug">Optional plan; PayPal is only listed when the plan has a billing period PayPal supports</param>
+    /// <param name="region">Optional state of the buyer (ISO 3166-2 code without country prefix, e.g. "CA"); the US direct cap applies per state,
+    /// a US buyer without it is routed like one from a capped state</param>
     [HttpGet]
     [Route("subscribe/providers")]
-    public async Task<IEnumerable<SubscriptionProviderOption>> GetSubscriptionProviders([FromQuery] string country, [FromQuery] string productSlug = null)
+    public async Task<IEnumerable<SubscriptionProviderOption>> GetSubscriptionProviders([FromQuery] string country, [FromQuery] string productSlug = null,
+        [FromQuery] string region = null)
     {
         await subscriptionRouting.RefreshAsync();
-        var options = subscriptionRouting.Capture().ProvidersFor(country);
+        var options = subscriptionRouting.Capture(region).ProvidersFor(country);
         if (productSlug == null || paypalSubscriptions == null)
             return options;
         var plan = await productService.GetTopupProduct(productSlug, false);
@@ -52,10 +55,11 @@ public partial class TopUpController
         var user = await userService.GetOrCreate(userId);
         var plan = await GetSubscriptionPlan(productId);
         declarations.Validate(options, plan, userId);
-        var (country, mode, vatBasisPoints) = await StripeCountryAndMode(options, subscriptionRouting.Capture());
+        var region = UsDirectSubscriptionCap.NormalizeRegion(options?.Region);
+        var (country, mode, vatBasisPoints) = await StripeCountryAndMode(options, subscriptionRouting.Capture(region));
         var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.Stripe, vatBasisPoints);
         var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.Stripe,
-            RecurringIfDifferent(price, recurringPrice), country, mode == StripeCheckoutMode.Managed);
+            RecurringIfDifferent(price, recurringPrice), country, mode == StripeCheckoutMode.Managed, region);
         if (request.SessionId != null)
             return await ExistingStripeCheckout(stripe, request.SessionId);
         await RememberCountry(user, country, options);
@@ -65,7 +69,7 @@ public partial class TopUpController
             SubscriptionPricing.ToCents(recurringPrice), // gross for direct sales, net for Managed Payments (see SubscriptionPrice)
             SubscriptionService.IntervalWeeks(plan.OwnershipSeconds).Value, mode, country,
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(price));
+            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(price), Region: region);
         var session = await CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints);
         request.SessionId = session.Id;
         request.CoinAmount = plan.Cost;
@@ -91,7 +95,8 @@ public partial class TopUpController
         if (!PayPalPlanCatalog.IsSellable(plan))
             throw new ApiException("This plan is not available via PayPal.");
         declarations.Validate(options, plan, userId);
-        var routing = subscriptionRouting.Capture();
+        var region = UsDirectSubscriptionCap.NormalizeRegion(options?.Region);
+        var routing = subscriptionRouting.Capture(region);
         var country = await GetMatchingCountry(options, false, "PayPal");
         EnsureCountryAllowed(country);
         if (!routing.PayPalAvailable(country))
@@ -99,7 +104,7 @@ public partial class TopUpController
         var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.PayPal,
             DirectVatBasisPoints(country, "PayPal"));
         var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.PayPal,
-            RecurringIfDifferent(price, recurringPrice), country);
+            RecurringIfDifferent(price, recurringPrice), country, region: region);
         if (request.SessionId != null)
             return await ExistingPayPalApproval(paypal, request.SessionId);
         await RememberCountry(user, country, options);
@@ -125,9 +130,9 @@ public partial class TopUpController
         new SubscriptionDeclarationService(db, config, _logger);
     private SubscriptionDeclarationService subscriptionDeclarations;
 
-    private void EnsureLemonSqueezySubscriptionAllowed(string country)
+    private void EnsureLemonSqueezySubscriptionAllowed(string country, string region)
     {
-        if (subscriptionRouting.AllowsLemonSqueezyCheckout(country))
+        if (subscriptionRouting.Capture(region).AllowsLemonSqueezyCheckout(country))
             return;
         throw new ApiException(subscriptionRouting.LemonSqueezyCheckoutEnabled
             ? "Please subscribe with one of the payment methods offered for your country."

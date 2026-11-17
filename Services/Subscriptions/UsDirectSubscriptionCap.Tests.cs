@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
 
@@ -14,16 +15,21 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
 {
     private static readonly DateTime Now = new(2026, 11, 20, 12, 0, 0, DateTimeKind.Utc);
 
+    /// <summary>Reports <see cref="Count"/> active subscriptions for the state CA and none for the others</summary>
     private sealed class CountingCounter : IDirectSubscriptionCounter
     {
         public int Count { get; set; }
+        public Dictionary<string, int> Others { get; } = [];
         public int Calls { get; private set; }
         public bool Fails { get; set; }
 
-        public Task<int> CountActiveDirect(string country)
+        public Task<IReadOnlyDictionary<string, int>> CountActiveDirectByRegion(string country)
         {
             Calls++;
-            return Fails ? throw new InvalidOperationException("db down") : Task.FromResult(Count);
+            if (Fails)
+                throw new InvalidOperationException("db down");
+            var counts = new Dictionary<string, int>(Others) { ["CA"] = Count };
+            return Task.FromResult<IReadOnlyDictionary<string, int>>(counts);
         }
     }
 
@@ -43,9 +49,9 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
     }
 
     private UserSubscription Sub(string id, string status = "active", string provider = "stripe", string country = "US",
-        bool managed = false, DateTime? endsAt = null) => new()
+        bool managed = false, DateTime? endsAt = null, string region = "CA") => new()
     {
-        ExternalId = id, ProviderSlug = provider, CheckoutCountry = country, ManagedPayments = managed, Status = status, EndsAt = endsAt,
+        ExternalId = id, ProviderSlug = provider, CheckoutCountry = country, CheckoutRegion = region, ManagedPayments = managed, Status = status, EndsAt = endsAt,
         User = users.GetOrCreate("buyer-" + id).Result, Product = premium
     };
 
@@ -67,10 +73,85 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
             Sub("cancelled_running", "cancelled", endsAt: Now.AddDays(3)),
             Sub("cancelled_over", "cancelled", endsAt: Now.AddDays(-1)), Sub("cancelled_open", "cancelled"),
             Sub("expired", "expired"), Sub("managed", managed: true), Sub("lemon", provider: "lemonsqueezy"),
-            Sub("german", country: "DE"), Sub("nocountry", country: null));
+            Sub("german", country: "DE"), Sub("nocountry", country: null), Sub("noregion", region: null));
         await db.SaveChangesAsync();
 
-        Assert.That(await Active(), Is.EqualTo(new[] { "active", "cancelled_running", "past_due", "paused", "paypal" }));
+        Assert.That(await Active(), Is.EqualTo(new[] { "active", "cancelled_running", "noregion", "past_due", "paused", "paypal" }));
+    }
+
+    /// <summary>
+    /// The real counter groups by state in one query; subscriptions without a region are counted under the unknown bucket
+    /// (which belongs to no state).
+    /// </summary>
+    [Test]
+    public async Task TheDatabaseCounterGroupsActiveDirectSubscriptionsByState()
+    {
+        db.Subscriptions.AddRange(Sub("ca1"), Sub("ca2", provider: "paypal"), Sub("ny1", region: "NY"), Sub("none1", region: null),
+            Sub("ca_expired", "expired"), Sub("ca_managed", managed: true), Sub("de", country: "DE", region: "BY"));
+        await db.SaveChangesAsync();
+        var scopes = new ServiceCollection().AddSingleton(db).BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+
+        var counts = await new DbDirectSubscriptionCounter(scopes).CountActiveDirectByRegion("US");
+
+        Assert.That(counts, Is.EquivalentTo(new Dictionary<string, int> { ["CA"] = 2, ["NY"] = 1, [UsDirectSubscriptionCap.UnknownRegion] = 1 }));
+    }
+
+    /// <summary>
+    /// Owner decision: the cap applies per state: 10 in CA cap CA but not NY; an unknown or invalid state counts as capped;
+    /// subscriptions without a state (the unknown bucket) cap no state.
+    /// </summary>
+    [Test]
+    public async Task TheCapAppliesPerStateAndAnUnknownStateIsCapped()
+    {
+        var counter = new CountingCounter { Count = 10 };
+        counter.Others["NY"] = 9;
+        counter.Others[UsDirectSubscriptionCap.UnknownRegion] = 50;
+        var cap = new UsDirectSubscriptionCap(new ConfigurationBuilder().Build(), counter, null, () => Now);
+        await cap.RefreshAsync();
+
+        Assert.That(cap.ReachedFor("CA"), Is.True);
+        Assert.That(cap.ReachedFor(" ca "), Is.True, "normalized");
+        Assert.That(cap.ReachedFor("NY"), Is.False);
+        Assert.That(cap.ReachedFor("TX"), Is.False, "a state without subscriptions");
+        Assert.That(cap.ReachedFor(null), Is.True, "unknown region");
+        Assert.That(cap.ReachedFor(""), Is.True);
+        Assert.That(cap.ReachedFor("California"), Is.True, "not a subdivision code");
+        Assert.That(cap.ReachedFor(UsDirectSubscriptionCap.UnknownRegion), Is.True, "the unknown bucket is not a state");
+    }
+
+    /// <summary>
+    /// Regression: TopUpOptions.Region had MaxLength(3), so an unexpected edge value ("US-CA", padded " CA ") failed the model
+    /// validation of every checkout (one-time purchases included) with 400 instead of counting as an unknown state.
+    /// </summary>
+    [TestCase("US-CA")]
+    [TestCase(" CA ")]
+    [TestCase("Ontario")]
+    public void AnUnexpectedRegionPassesValidationAndCountsAsUnknown(string region)
+    {
+        var options = new TopUpOptions { Region = region };
+        var results = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
+
+        var valid = System.ComponentModel.DataAnnotations.Validator.TryValidateObject(options,
+            new System.ComponentModel.DataAnnotations.ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.That(valid, Is.True, string.Join("; ", results.Select(r => r.ErrorMessage)));
+        Assert.That(UsDirectSubscriptionCap.NormalizeRegion(region), region.Trim() == "CA" ? Is.EqualTo("CA") : Is.Null);
+    }
+
+    [Test]
+    public async Task EachStateLogsItsCapOnce()
+    {
+        var counter = new CountingCounter { Count = 10 };
+        counter.Others["NY"] = 10;
+        var logger = new MessageLogger();
+        var clock = Now;
+        var cap = new UsDirectSubscriptionCap(new ConfigurationBuilder().Build(), counter, logger, () => clock);
+        await cap.RefreshAsync();
+        clock = clock.AddMinutes(1);
+        await cap.RefreshAsync();
+
+        Assert.That(logger.Infos, Has.Count.EqualTo(2));
+        Assert.That(logger.Infos, Has.One.Contain("CA").And.One.Contain("NY"));
     }
 
     [Test]
@@ -82,17 +163,17 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
         var cap = new UsDirectSubscriptionCap(new ConfigurationBuilder().Build(), counter, logger, () => clock);
 
         await cap.RefreshAsync();
-        Assert.That(cap.Reached, Is.False);
+        Assert.That(cap.ReachedFor("CA"), Is.False);
         counter.Count = 10;
         await cap.RefreshAsync();
-        Assert.That((cap.Reached, counter.Calls), Is.EqualTo((false, 1)), "within the cache time the count is not read again");
+        Assert.That((cap.ReachedFor("CA"), counter.Calls), Is.EqualTo((false, 1)), "within the cache time the count is not read again");
 
         clock = clock.AddSeconds(UsDirectSubscriptionCap.CacheSeconds + 1);
         await cap.RefreshAsync();
         clock = clock.AddSeconds(UsDirectSubscriptionCap.CacheSeconds + 1);
         await cap.RefreshAsync();
 
-        Assert.That(cap.Reached, Is.True);
+        Assert.That(cap.ReachedFor("CA"), Is.True);
         Assert.That(logger.Infos, Has.Count.EqualTo(1));
         Assert.That(cap.Limit, Is.EqualTo(10));
     }
@@ -109,15 +190,15 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
 
         await cap.RefreshAsync();
 
-        Assert.That(cap.Reached, Is.True);
+        Assert.That(cap.ReachedFor("CA"), Is.True);
     }
 
     private sealed class PendingCounter : IDirectSubscriptionCounter
     {
-        public TaskCompletionSource<int> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<IReadOnlyDictionary<string, int>> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Calls { get; private set; }
 
-        public Task<int> CountActiveDirect(string country)
+        public Task<IReadOnlyDictionary<string, int>> CountActiveDirectByRegion(string country)
         {
             Calls++;
             return Result.Task;
@@ -138,10 +219,10 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
         var concurrent = cap.RefreshAsync();
         Assert.That(concurrent.IsCompleted, Is.False, "the concurrent request must not route before the count is known");
 
-        counter.Result.SetResult(12);
+        counter.Result.SetResult(new Dictionary<string, int> { ["CA"] = 12 });
         await Task.WhenAll(first, concurrent);
 
-        Assert.That((cap.Reached, counter.Calls), Is.EqualTo((true, 1)));
+        Assert.That((cap.ReachedFor("CA"), counter.Calls), Is.EqualTo((true, 1)));
     }
 
     /// <summary>
@@ -155,13 +236,13 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
         var logger = new MessageLogger();
         var clock = Now;
         var cap = new UsDirectSubscriptionCap(new ConfigurationBuilder().Build(), counter, logger, () => clock);
-        Assert.That(cap.Reached, Is.True, "before any count");
+        Assert.That(cap.ReachedFor("CA"), Is.True, "before any count");
 
         await cap.RefreshAsync();
         clock = clock.AddMinutes(1);
         await cap.RefreshAsync();
 
-        Assert.That(cap.Reached, Is.True, "failed counts keep the unknown state");
+        Assert.That(cap.ReachedFor("CA"), Is.True, "failed counts keep the unknown state");
         Assert.That(logger.Warnings.Count(w => w.Contains("not known yet")), Is.EqualTo(1));
     }
 
@@ -177,7 +258,7 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
 
         await cap.RefreshAsync();
 
-        Assert.That(cap.Reached, Is.False);
+        Assert.That(cap.ReachedFor("CA"), Is.False);
     }
 
     private static SubscriptionRouting RoutingWith(UsDirectSubscriptionCap cap) => new(new ConfigurationBuilder()
@@ -201,7 +282,7 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
         var cap = new UsDirectSubscriptionCap(new ConfigurationBuilder().Build(), counter, null, () => clock);
         await cap.RefreshAsync();
         var routing = RoutingWith(cap);
-        var snapshot = routing.Capture();
+        var snapshot = routing.Capture("CA");
 
         counter.Count = 10;
         clock = clock.AddMinutes(1);
@@ -210,15 +291,15 @@ public class UsDirectSubscriptionCapTests : DirectSubscriptionTestBase
         Assert.That(snapshot.IsDirectCountry("US"), Is.True);
         Assert.That(snapshot.StripeMode("US"), Is.EqualTo(StripeCheckoutMode.Direct));
         Assert.That(snapshot.PayPalAvailable("US"), Is.True);
-        Assert.That(routing.StripeMode("US"), Is.EqualTo(StripeCheckoutMode.Managed), "a new snapshot sees the new state");
-        Assert.That(routing.Capture().IsDirectCountry("US"), Is.False);
+        Assert.That(routing.Capture("CA").StripeMode("US"), Is.EqualTo(StripeCheckoutMode.Managed), "a new snapshot sees the new state");
+        Assert.That(routing.Capture("CA").IsDirectCountry("US"), Is.False);
     }
 
     [TestCase(true, StripeCheckoutMode.Managed, false)]
     [TestCase(false, StripeCheckoutMode.Direct, true)]
     public void ASnapshotWithAFixedCapStateRoutesConsistently(bool reached, StripeCheckoutMode mode, bool direct)
     {
-        var snapshot = RoutingWith(null).Capture(reached);
+        var snapshot = RoutingWith(null).Capture(usCapReached: reached);
 
         Assert.That((snapshot.StripeMode("US"), snapshot.IsDirectCountry("US"), snapshot.PayPalAvailable("US")), Is.EqualTo((mode, direct, direct)));
         Assert.That(snapshot.ProvidersFor("US").Select(p => p.Mode), Is.All.EqualTo(direct ? "direct" : "managed"));

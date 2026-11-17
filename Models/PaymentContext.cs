@@ -176,7 +176,7 @@ namespace Coflnet.Payments.Models
                 // Several providers share this table; one provider subscription maps to one row.
                 entity.HasIndex(e => new { e.ProviderSlug, e.ExternalId }).IsUnique();
                 // Counting the active direct subscriptions of a checkout country (US cap)
-                entity.HasIndex(e => new { e.CheckoutCountry, e.Status });
+                entity.HasIndex(e => new { e.CheckoutCountry, e.CheckoutRegion, e.Status });
             });
 
             modelBuilder.Entity<DiscountCode>(entity =>

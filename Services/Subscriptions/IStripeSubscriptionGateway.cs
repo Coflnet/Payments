@@ -117,7 +117,8 @@ public record StripeInvoiceInfo(
     string CustomerEmail,
     string CustomerName,
     IReadOnlyDictionary<string, string> SubscriptionMetadata,
-    long Tax = 0)
+    long Tax = 0,
+    string CustomerState = null)
 {
     /// <summary>
     /// Maps Stripe billing reasons to the vocabulary the refund code shares with Lemon Squeezy
@@ -142,6 +143,6 @@ public record StripeInvoiceInfo(
             invoice.CustomerAddress?.Country?.ToUpperInvariant(), invoice.CustomerAddress?.PostalCode,
             invoice.CustomerEmail, invoice.CustomerName,
             new Dictionary<string, string>(details?.Metadata ?? new Dictionary<string, string>()),
-            invoice.TotalTaxes?.Sum(t => t.Amount) ?? 0);
+            invoice.TotalTaxes?.Sum(t => t.Amount) ?? 0, invoice.CustomerAddress?.State?.ToUpperInvariant());
     }
 }

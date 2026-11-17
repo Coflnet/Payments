@@ -19,10 +19,17 @@ namespace Payments.Migrations
                 maxLength: 2,
                 nullable: true);
 
-            migrationBuilder.CreateIndex(
-                name: "IX_Subscriptions_CheckoutCountry_Status",
+            migrationBuilder.AddColumn<string>(
+                name: "CheckoutRegion",
                 table: "Subscriptions",
-                columns: new[] { "CheckoutCountry", "Status" });
+                type: "character varying(3)",
+                maxLength: 3,
+                nullable: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Subscriptions_CheckoutCountry_CheckoutRegion_Status",
+                table: "Subscriptions",
+                columns: new[] { "CheckoutCountry", "CheckoutRegion", "Status" });
 
             // Partial: only reversal rows (new with this release) are unique; sale rows of earlier releases may hold duplicates.
             migrationBuilder.CreateIndex(
@@ -209,6 +216,27 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
                 type: "character varying(2)",
                 maxLength: 2,
                 nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "CheckoutRegion",
+                table: "PaymentRecords",
+                type: "character varying(3)",
+                maxLength: 3,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "BillingRegion",
+                table: "PaymentRecords",
+                type: "character varying(16)",
+                maxLength: 16,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "CheckoutRegion",
+                table: "PaymentRequests",
+                type: "character varying(3)",
+                maxLength: 3,
+                nullable: true);
         }
 
         /// <inheritdoc />
@@ -219,7 +247,11 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
                 table: "CreatorCodeRevenues");
 
             migrationBuilder.DropIndex(
-                name: "IX_Subscriptions_CheckoutCountry_Status",
+                name: "IX_Subscriptions_CheckoutCountry_CheckoutRegion_Status",
+                table: "Subscriptions");
+
+            migrationBuilder.DropColumn(
+                name: "CheckoutRegion",
                 table: "Subscriptions");
 
             migrationBuilder.DropColumn(
@@ -295,6 +327,18 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
             migrationBuilder.DropColumn(
                 name: "PaymentMethodCountry",
                 table: "PaymentRecords");
+
+            migrationBuilder.DropColumn(
+                name: "CheckoutRegion",
+                table: "PaymentRecords");
+
+            migrationBuilder.DropColumn(
+                name: "BillingRegion",
+                table: "PaymentRecords");
+
+            migrationBuilder.DropColumn(
+                name: "CheckoutRegion",
+                table: "PaymentRequests");
         }
     }
 }

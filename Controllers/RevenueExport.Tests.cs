@@ -31,7 +31,8 @@ public class RevenueExportTests : DirectSubscriptionTestBase
     {
         UserId = 1, ExternalUserId = "buyer", Country = "DE", GrossAmount = 11.53m, Currency = "EUR", Provider = provider,
         ExternalOrderId = order, PaidAt = DateTime.UtcNow.AddDays(-5), Status = status, IsSubscriptionPayment = subscription,
-        TaxRemittedByProcessor = managed, CheckoutCountry = "DE", BillingCountry = "AT", PaymentMethodCountry = "FR", IpAddress = "203.0.113.7"
+        TaxRemittedByProcessor = managed, CheckoutCountry = "DE", BillingCountry = "AT", PaymentMethodCountry = "FR", IpAddress = "203.0.113.7",
+        CheckoutRegion = "BY"
     };
 
     private async Task<(string[] header, List<Dictionary<string, string>> rows)> Csv(bool includeAll)
@@ -62,7 +63,7 @@ public class RevenueExportTests : DirectSubscriptionTestBase
 
         Assert.That(header.Take(OriginalColumns.Length), Is.EqualTo(OriginalColumns));
         Assert.That(header.Skip(OriginalColumns.Length), Is.EqualTo(
-            new[] { "CheckoutCountry", "BillingCountry", "PaymentMethodCountry", "PayerCountry", "IpAddress", "SubscriptionMode" }));
+            new[] { "CheckoutCountry", "BillingCountry", "PaymentMethodCountry", "PayerCountry", "IpAddress", "SubscriptionMode", "CheckoutRegion" }));
         Assert.That(rows.Select(r => r["Status"]).Distinct(), Is.EqualTo(new[] { "Confirmed" }));
         Assert.That(rows, Has.Count.EqualTo(6));
     }
@@ -94,6 +95,7 @@ public class RevenueExportTests : DirectSubscriptionTestBase
         var stripe = rows.Single(r => r["ExternalReference"] == "in_ok");
         Assert.That((stripe["CheckoutCountry"], stripe["BillingCountry"], stripe["PaymentMethodCountry"], stripe["PayerCountry"], stripe["IpAddress"]),
             Is.EqualTo(("DE", "AT", "FR", "", "203.0.113.7")));
+        Assert.That(stripe["CheckoutRegion"], Is.EqualTo("BY"));
         var paypal = rows.Single(r => r["ExternalReference"] == "SALE-1");
         Assert.That((paypal["BillingCountry"], paypal["PayerCountry"]), Is.EqualTo(("", "AT")), "PayPal's payer country is its own column");
     }

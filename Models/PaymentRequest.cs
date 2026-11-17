@@ -24,6 +24,12 @@ public class PaymentRequest : HasId
     [MaxLength(2)]
     public string Country { get; set; }
     /// <summary>
+    /// Subscriptions: the buyer's state or province at checkout (ISO 3166-2 subdivision code without the country prefix),
+    /// copied to the subscription (PayPal) or the Stripe checkout metadata, kept as evidence. Null when unknown.
+    /// </summary>
+    [MaxLength(3)]
+    public string CheckoutRegion { get; set; }
+    /// <summary>
     /// PayPal subscriptions: the creator code of the checkout, copied to the subscription on activation
     /// (creator revenue shares; Stripe keeps it in the checkout metadata)
     /// </summary>

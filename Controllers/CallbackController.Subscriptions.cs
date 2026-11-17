@@ -177,11 +177,15 @@ public partial class CallbackController
             BuyerName = outcome.Name,
             IpAddress = outcome.Evidence?.IpAddress,
             CheckoutCountry = outcome.Evidence?.CheckoutCountry,
+            CheckoutRegion = outcome.Evidence?.CheckoutRegion,
+            BillingRegion = Truncate(outcome.Evidence?.BillingRegion, 16),
             BillingCountry = outcome.Evidence?.BillingCountry,
             PaymentMethodCountry = outcome.Evidence?.PaymentMethodCountry,
             IsSubscriptionPayment = true
         });
     }
+
+    private static string Truncate(string value, int length) => value is { } v && v.Length > length ? v[..length] : value;
 
     /// <summary>
     /// The share is based on the EUR price agreed for the subscription, not on what a Managed Payments buyer

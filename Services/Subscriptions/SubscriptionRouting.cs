@@ -29,10 +29,12 @@ public record SubscriptionProviderOption(string Provider, string Mode);
 /// Config:
 /// SUBSCRIPTIONS:DIRECT_COUNTRIES (comma separated, default EU-27 + GB + US) get direct Stripe/PayPal,
 /// all other countries get Stripe Managed Payments, but only those Stripe covers for tax (SUBSCRIPTIONS:MANAGED_COUNTRIES);
+/// SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES (default none) removes countries from Managed Payments for non-tax reasons (sanctions);
 /// SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED, SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED, SUBSCRIPTIONS:PAYPAL_ENABLED (default false)
 /// switch the new providers on; SUBSCRIPTIONS:LEMONSQUEEZY_CHECKOUT_ENABLED (default true) keeps
 /// Lemon Squeezy as the fallback where nothing else applies.
-/// The US is only direct while <see cref="UsDirectSubscriptionCap"/> is not reached (<see cref="RefreshAsync"/> keeps it current, and it counts as reached until the first count succeeded);
+/// The US is only direct while <see cref="UsDirectSubscriptionCap"/> is not reached for the buyer's state (the region passed to
+/// <see cref="Capture"/>; <see cref="RefreshAsync"/> keeps the counts current; an unknown region or count counts as reached);
 /// the US is in the default managed list, so capped buyers get Stripe Managed Payments.
 /// A direct country without a configured VAT rate (<see cref="SubscriptionTax"/>) is not sold to directly, so no
 /// direct provider is offered for it: it would be undercharged.
@@ -44,12 +46,21 @@ public class SubscriptionRouting
         "AT,BE,BG,HR,CY,CZ,DK,EE,FI,FR,DE,GR,HU,IE,IT,LV,LT,LU,MT,NL,PL,PT,RO,SK,SI,ES,SE,GB,US";
 
     /// <summary>
+    /// Countries blocked for Stripe Managed Payments although Stripe covers their tax. Empty: the tax-only blocks of
+    /// <see cref="SalesRestrictions.BlockedCountries"/> (TR, SA, KR, VN, MX, MD) do not apply to Managed Payments, where Stripe is merchant of
+    /// record and pays the local tax; CH/LI (Swiss VAT) and Northern Ireland postcodes (BT) are direct-only restrictions too.
+    /// Put countries here (SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES, comma separated) that must not be sold to by any seller, e.g. sanctions.
+    /// </summary>
+    public const string DefaultManagedBlockedCountries = "";
+
+    /// <summary>
     /// Countries in which Managed Payments takes over the indirect tax (cross-border sales of digital products), as
     /// documented by Stripe on 2026-11-17: https://docs.stripe.com/payments/managed-payments/tax-compliance
     /// (EU-27, GB and US included; RS only for sellers not VAT registered there, which Coflnet is not).
     /// Everywhere else Stripe leaves the tax to the seller, so Managed Payments is not offered there.
-    /// Override with SUBSCRIPTIONS:MANAGED_COUNTRIES (comma separated). The list is still narrowed by
-    /// <see cref="SalesRestrictions.BlockedCountries"/>, which applies to every subscription provider.
+    /// Override with SUBSCRIPTIONS:MANAGED_COUNTRIES (comma separated). The list is only narrowed by
+    /// SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES (<see cref="DefaultManagedBlockedCountries"/>), not by the tax-only
+    /// <see cref="SalesRestrictions.BlockedCountries"/> that applies where Coflnet is the seller.
     /// </summary>
     public const string DefaultManagedCountries =
         "CM,EG,GH,KE,NG,UG,ZA,ZM,ZW," // Africa
@@ -61,6 +72,7 @@ public class SubscriptionRouting
 
     private readonly IReadOnlySet<string> directCountries;
     private readonly IReadOnlySet<string> managedCountries;
+    private readonly IReadOnlySet<string> managedBlockedCountries;
     private readonly bool stripeDirect;
     private readonly bool stripeManaged;
     private readonly bool payPal;
@@ -84,6 +96,7 @@ public class SubscriptionRouting
         Tax = new SubscriptionTax(config);
         directCountries = ParseCountries(config?["SUBSCRIPTIONS:DIRECT_COUNTRIES"] ?? DefaultDirectCountries);
         managedCountries = ParseCountries(config?["SUBSCRIPTIONS:MANAGED_COUNTRIES"] ?? DefaultManagedCountries);
+        managedBlockedCountries = ParseCountries(config?["SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES"] ?? DefaultManagedBlockedCountries);
         stripeDirect = Flag(config, "SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED", false);
         stripeManaged = Flag(config, "SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED", false);
         payPal = Flag(config, "SUBSCRIPTIONS:PAYPAL_ENABLED", false);
@@ -91,10 +104,13 @@ public class SubscriptionRouting
     }
 
     /// <summary>
-    /// Takes one snapshot of the routing state (the US cap); a request routes with a single snapshot so a concurrent
+    /// Takes one snapshot of the routing state (the US cap of the buyer's state); a request routes with a single snapshot so a concurrent
     /// refresh of the cap cannot change the decision half way. Pass <paramref name="usCapReached"/> to fix the state.
     /// </summary>
-    public Snapshot Capture(bool? usCapReached = null) => new(this, usCapReached ?? usCap?.Reached == true);
+    /// <param name="region">The buyer's state (see <see cref="UsDirectSubscriptionCap.NormalizeRegion"/>); only used for US buyers.
+    /// Unknown counts as the cap reached (conservative), unless there is no cap at all.</param>
+    public Snapshot Capture(string region = null, bool? usCapReached = null) =>
+        new(this, usCapReached ?? usCap?.ReachedFor(region) == true);
 
     /// <summary>
     /// True when Coflnet sells directly (and handles VAT) to this country
@@ -213,15 +229,16 @@ public class SubscriptionRouting
 
     /// <summary>
     /// True when a Managed Payments sale to a buyer located in <paramref name="country"/> is allowed: Stripe covers the tax
-    /// there and we do not block the country (whatever country the buyer selected)
+    /// there and it is not blocked for Managed Payments (whatever country the buyer selected)
     /// </summary>
     public bool ManagedCovers(string country) => Normalize(country) is string c && SellsManagedTo(c);
 
     /// <summary>
-    /// Stripe covers the tax there and we do not block the country ourselves
+    /// Stripe covers the tax there and it is not blocked for non-tax reasons. The tax-only
+    /// <see cref="SalesRestrictions.BlockedCountries"/> do not matter: Stripe is the seller.
     /// </summary>
     private bool SellsManagedTo(string country) =>
-        managedCountries.Contains(country) && !SalesRestrictions.IsCountryBlocked(country);
+        managedCountries.Contains(country) && !managedBlockedCountries.Contains(country);
 
     private bool SellsDirectlyTo(string country) =>
         !SalesRestrictions.IsCountryBlocked(country) && !SalesRestrictions.IsBlockedForDirectProviders(country)

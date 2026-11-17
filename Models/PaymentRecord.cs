@@ -251,6 +251,18 @@ public class PaymentRecord
     public string CheckoutCountry { get; set; }
 
     /// <summary>
+    /// Subscription payments: the buyer's state or province at checkout (from the edge), evidence for the per-state US direct cap
+    /// </summary>
+    [MaxLength(3)]
+    public string CheckoutRegion { get; set; }
+
+    /// <summary>
+    /// Subscription payments: Stripe: state of the billing address entered at checkout (evidence only, never rejected on mismatch)
+    /// </summary>
+    [MaxLength(16)]
+    public string BillingRegion { get; set; }
+
+    /// <summary>
     /// Subscription payments: Stripe: country of the billing address entered at checkout; PayPal: the payer's country
     /// </summary>
     [MaxLength(2)]

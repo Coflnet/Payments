@@ -4,34 +4,48 @@ Lemon Squeezy is deprecated. New subscriptions (4, 13 or 52 week periods; Premiu
 `l_premium-slots-4`) go to:
 
 - direct Stripe and PayPal for `SUBSCRIPTIONS:DIRECT_COUNTRIES` (EU-27, GB, US by default), Coflnet handles the VAT (US: only up to
-  the cap below);
+  the cap below, per state);
 - Stripe Managed Payments (Stripe is merchant of record) in the countries Stripe covers for tax (`SUBSCRIPTIONS:MANAGED_COUNTRIES`,
   see below). Countries covered by neither get Lemon Squeezy while it is enabled, otherwise no provider.
 
 Switches: `SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED`, `SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED`, `SUBSCRIPTIONS:PAYPAL_ENABLED` (all default
 false), `SUBSCRIPTIONS:LEMONSQUEEZY_CHECKOUT_ENABLED` (default true, only used where no other provider applies).
 
-## US direct cap
+## US direct cap (per state)
 
-US buyers get direct Stripe/PayPal (no tax charged) only while fewer than `SUBSCRIPTIONS:US_DIRECT_LIMIT` (default 10) direct US
-subscriptions are active. From the limit on, new US buyers are routed to Stripe Managed Payments (Stripe collects the US sales tax; `US` is
-in `DefaultManagedCountries`, so it works with the defaults when `SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED` is on; with it off, a capped US buyer
-gets Lemon Squeezy or nothing, never PayPal). Existing subscriptions are untouched; the cap only routes new checkouts.
+US buyers get direct Stripe/PayPal (no tax charged) only while fewer than `SUBSCRIPTIONS:US_DIRECT_LIMIT` (default 10) direct subscriptions
+are active **for the buyer's state**. From the limit on, new buyers of that state are routed to Stripe Managed Payments (Stripe collects the US
+sales tax; `US` is in `DefaultManagedCountries`, so it works with the defaults when `SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED` is on; with it off, a
+capped US buyer gets Lemon Squeezy or nothing, never PayPal). Other states are unaffected (10 in CA cap CA, not NY). Existing subscriptions are
+untouched; the cap only routes new checkouts.
 
+- The state is the optional `region` of the request: `TopUpOptions.region` on the checkout endpoints, `region=` on `GET /TopUp/subscribe/providers` and
+  `GET /TopUp/discount/auto`. It is the ISO 3166-2 subdivision code without the country prefix (`CA`, `NY`, `DC`), upper cased and trimmed
+  (1-3 letters/digits, anything else counts as missing). SkyApi fills it from Cloudflare's `cf-region-code` header, never from the browser.
+  **Unknown or missing region for a US buyer = cap reached** (Managed Payments), the conservative choice. Countries other than the US ignore it.
+- The checkout state is stored: `Subscriptions.CheckoutRegion` (Stripe: checkout metadata `region`, PayPal: `PaymentRequest.CheckoutRegion`),
+  `PaymentRequests.CheckoutRegion` and `PaymentRecords.CheckoutRegion` (evidence; also the `CheckoutRegion` export column). For direct Stripe the
+  state of the billing address entered at Checkout (invoice `customer_address.state`) is recorded as `PaymentRecords.BillingRegion`; a mismatch with
+  the checkout state never rejects a payment.
 - Active = a direct subscription (provider `stripe` without Managed Payments, or `paypal`) whose checkout country (`Subscriptions.CheckoutCountry`,
   written when the subscription is recorded: Stripe checkout metadata, PayPal `PaymentRequest.Country`) is US and that has not ended: status is
   not `expired`, and `cancelled` only counts while `EndsAt` lies in the future (cancelled without `EndsAt` counts as ended). `past_due`,
-  `unpaid` and `paused` still count (they can recover). `UsDirectSubscriptionCap.ActiveDirect` is the single definition.
-- Cheap: one `COUNT` on the `(CheckoutCountry, Status)` index, cached for 30 seconds (`UsDirectSubscriptionCap.CacheSeconds`) in the singleton routing.
+  `unpaid` and `paused` still count (they can recover). `UsDirectSubscriptionCap.ActiveDirect` is the single definition; the count is grouped by
+  `CheckoutRegion`.
+- Active US direct subscriptions without a region (none exist in production yet, so this is only a definition for completeness) are counted under the
+  "unknown" bucket (`UsDirectSubscriptionCap.UnknownRegion`), which belongs to no state and so counts toward none.
+- Cheap: one grouped `COUNT` on the `(CheckoutCountry, CheckoutRegion, Status)` index returns the counts of all states, cached for 30 seconds
+  (`UsDirectSubscriptionCap.CacheSeconds`) in the singleton routing.
   `GET /TopUp/subscribe/providers`, `discount/auto`, `stripe/subscribe`, `paypal/subscribe` and `lemonsqueezy/subscribe` refresh it and then ask
   `SubscriptionRouting`, so they always agree. Requests arriving while a count runs wait for it (one count at a time), so the
-  requests right after a restart wait for the first count. Until a count succeeded the cap counts as reached (US buyers go to Managed
-  Payments; a warning is logged once). A failing count keeps the previous routing (warning).
-- A request takes one `SubscriptionRouting.Capture()` snapshot of the cap and makes all its routing decisions (mode, PayPal, providers)
-  with it, so a refresh in between cannot give a US buyer a direct checkout without the IP-country check.
+  requests right after a restart wait for the first count. Until a count succeeded the cap counts as reached for every state (US buyers go to Managed
+  Payments; a warning is logged once). A failing count keeps the previous counts (warning).
+- A request takes one `SubscriptionRouting.Capture(region)` snapshot of the cap of its state and makes all its routing decisions (mode, PayPal,
+  providers) with it, so a refresh in between cannot give a US buyer a direct checkout without the IP-country check.
 - A subscription counts once it is recorded (checkout completed / PayPal activated), not while its checkout is open, and the cache lags up to
   30 seconds, so concurrent checkouts around the limit can overshoot it by a few. That is accepted.
-- The first time the count reaches the limit an info log "US direct subscription cap reached" is written (again only after the count fell below it).
+- The first time the count of a state reaches the limit an info log "US direct subscription cap reached in {Region}" is written (again only after that
+  state's count fell below it).
 
 ## Where Managed Payments is offered
 
@@ -41,10 +55,20 @@ offered there. `SUBSCRIPTIONS:MANAGED_COUNTRIES` (comma separated) defaults to t
 (`SubscriptionRouting.DefaultManagedCountries`: the African, Asia-Pacific, European, EU, Latin American/Caribbean countries and CA, US
 of the page; RS is listed there only for sellers not VAT registered in Serbia, which we are not). Re-check the page when extending it.
 
-`SalesRestrictions.BlockedCountries` (TR, AE, SA, KR, VN, CL, MX, PE, MD) applies to every subscription provider, direct and managed,
-so TR, SA, KR, VN, MX and MD are on Stripe's list but still not sold to. Removing a country from `BlockedCountries` is the only step
-needed to offer Managed Payments there. The Managed Payments country is the buyer's selection (not matched against the IP), so the
-IP country, when the lookup knows it, must be covered and not blocked as well; otherwise the Stripe checkout is refused. `GET /TopUp/subscribe/providers`, `discount/auto` and the checkout endpoints all read the same
+Why each restriction list exists, and where it applies:
+
+| List | Reason | Direct Stripe/PayPal subscriptions | One-time Stripe/PayPal/CoinGate | Managed Payments |
+| --- | --- | --- | --- | --- |
+| `SalesRestrictions.BlockedCountries` (TR, AE, SA, KR, VN, CL, MX, PE, MD) | tax only: Coflnet would owe local tax as a foreign seller | blocked | blocked | NOT applied (Stripe is merchant of record and pays the tax) |
+| `SALES:DIRECT_PROVIDER_BLOCKED_COUNTRIES` (default CH, LI) and Northern Ireland postcodes (GB `BT`) | Swiss VAT / Northern Ireland registration, where Coflnet is the seller | blocked | blocked | not applied (Stripe handles it; CH/LI are on Stripe's list) |
+| `SUBSCRIPTIONS:MANAGED_COUNTRIES` | where Stripe takes over the tax (list below) | n/a | n/a | required (AE, CL, PE are not on it) |
+| `SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES` (default empty) | non-tax reasons (sanctions) that apply whoever the seller is | n/a | n/a | blocked |
+
+So TR, SA, KR, VN, MX and MD get Managed Payments subscriptions (they are on Stripe's list) while staying refused for direct subscriptions and
+one-time purchases; AE, CL and PE get nothing from Stripe. The existing code has no non-tax country block, hence `MANAGED_BLOCKED_COUNTRIES` is empty by default; put sanctioned
+countries there (the blocked list wins over `MANAGED_COUNTRIES`). The Managed Payments country is the buyer's selection (not matched against the IP), so the
+IP country, when the lookup knows it, must be covered by Stripe and not managed-blocked as well; otherwise the Stripe checkout is refused (a buyer located in AE can not pick TR to get Managed Payments; a buyer
+located in TR can pick any covered country for Managed Payments, but never a direct one, where selected and IP country must match). `GET /TopUp/subscribe/providers`, `discount/auto` and the checkout endpoints all read the same
 routing, so an uncovered country gets Lemon Squeezy (if enabled) or no provider, never a discount offer or a Stripe/PayPal checkout.
 
 ## Pricing and VAT
@@ -87,11 +111,11 @@ Plan prices (e.g. `l_premium` 9.69 EUR per 4 weeks) are NET, as they were with L
 
 | Route | Purpose |
 | --- | --- |
-| `GET /TopUp/subscribe/providers?country=DE&productSlug=l_premium` | Providers a buyer can choose |
+| `GET /TopUp/subscribe/providers?country=DE&productSlug=l_premium&region=CA` | Providers a buyer can choose (`region`: US state, see the cap) |
 | `POST /TopUp/stripe/subscribe?userId=&productId=` | Stripe checkout (direct or Managed Payments by country) |
 | `POST /TopUp/paypal/subscribe?userId=&productId=` | PayPal subscription, redirect to the returned `directLink` |
 | `GET /TopUp/discount/validate?code=&isSubscription=true&provider=stripe` | Validates a code; returns `amount` and `periodAmounts` |
-| `GET /TopUp/discount/auto?country=DE` | The promotion to offer (see below), 204 when none |
+| `GET /TopUp/discount/auto?country=DE&region=CA` | The promotion to offer (see below), 204 when none |
 | `GET/POST /api/DiscountCode` | List / create-or-replace codes (internal) |
 
 Slot bundles use the same endpoints and accept discount and creator codes like single subscriptions. The seats are granted
@@ -190,7 +214,7 @@ payments the checkout (IP verified) country is the only evidence. Managed Paymen
 `GET /RevenueExport/transactions/export?startDate=&endDate=[&provider=&country=&format=csv|json&includeAllStatuses=true]`: by default only
 `Confirmed` payment records; with `includeAllStatuses=true` records of every status plus captured payments marked for a manual refund that have no
 record. Numbers use a decimal point and `Timestamp` is `yyyy-MM-dd HH:mm:ss` UTC whatever the server culture; quoted fields double inner quotes. CSV columns: the original ones in their original order (including `Status`), then appended `CheckoutCountry`, `BillingCountry`,
-`PaymentMethodCountry`, `PayerCountry`, `IpAddress`, `SubscriptionMode`. The JSON of `/RevenueExport/transactions` and of the export endpoint carries the
+`PaymentMethodCountry`, `PayerCountry`, `IpAddress`, `SubscriptionMode`, `CheckoutRegion` (the buyer's state at checkout). The JSON of `/RevenueExport/transactions` and of the export endpoint carries the
 same fields (`/transactions` has never filtered by status).
 
 - `Status` already was a column, so it is not appended a second time (a duplicate header would be ambiguous); it holds the mapping: `PaymentRecordStatus`
@@ -244,7 +268,8 @@ Each sale is granted only when it matches the agreed price: the first sale the f
 `Migrations/20261117120348_DirectSubscriptions` (EF) and the hand-written `.cockroach.sql` beside it add the subscription columns,
 `DiscountCodes` (with `PeriodAmounts` as a JSON text column and `AutoApply`), `PayPalPlans` and `PaymentRequests.RecurringAmount`, plus the
 evidence columns `PaymentRecords.CheckoutCountry/BillingCountry/PaymentMethodCountry` and `ServicePerformanceDeclarations.PaymentRequestId`,
-`Subscriptions.CheckoutCountry` with its index `(CheckoutCountry, Status)`, and the partial unique index `UX_CreatorCodeRevenues_Reversal` on
+`Subscriptions.CheckoutCountry` and `CheckoutRegion` with their index `(CheckoutCountry, CheckoutRegion, Status)`, `PaymentRequests.CheckoutRegion`,
+`PaymentRecords.CheckoutRegion/BillingRegion`, and the partial unique index `UX_CreatorCodeRevenues_Reversal` on
 `CreatorCodeRevenues.TransactionReference` for reversal rows only (`LIKE '%#refund:%'`): sale rows written by earlier releases were never checked for
 duplicates, so a full unique index could fail on them and they are never deleted; the script stops if reversal rows are already duplicated
 (existing tables, so no new grants; `Migrations/apply-direct-subscriptions.sh` runs the same file per instance).

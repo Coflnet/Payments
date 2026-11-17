@@ -39,6 +39,15 @@ public class TopUpOptions
     [MaxLength(2)]
     public string Country { get; set; }
     /// <summary>
+    /// Optional state or province of the buyer as ISO 3166-2 subdivision code without the country prefix ("CA", "NY"),
+    /// taken by the caller from the trusted edge (Cloudflare cf-region-code), never from the browser.
+    /// Subscriptions: the US direct subscription cap applies per US state; a US buyer without it is treated as capped.
+    /// Longer than a subdivision code on purpose: an unexpected edge value ("US-CA", padded) counts as missing
+    /// (<see cref="Services.Subscriptions.UsDirectSubscriptionCap.NormalizeRegion"/>) instead of failing every checkout's model validation.
+    /// </summary>
+    [MaxLength(32)]
+    public string Region { get; set; }
+    /// <summary>
     /// Browser fingerprint of the user
     /// </summary>
     [MaxLength(32)]

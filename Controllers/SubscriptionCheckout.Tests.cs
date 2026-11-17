@@ -82,16 +82,18 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
             stripe.Object, paypal.Object);
     }
 
-    /// <summary>A negative count fails (the count stays unknown)</summary>
+    /// <summary>The count of the state "CA" (the others have none); a negative count fails (the counts stay unknown)</summary>
     private sealed class FixedCounter(int count) : IDirectSubscriptionCounter
     {
-        public Task<int> CountActiveDirect(string country) =>
-            count < 0 ? throw new InvalidOperationException("db down") : Task.FromResult(count);
+        public Task<IReadOnlyDictionary<string, int>> CountActiveDirectByRegion(string country) =>
+            count < 0 ? throw new InvalidOperationException("db down")
+                : Task.FromResult<IReadOnlyDictionary<string, int>>(new Dictionary<string, int> { ["CA"] = count });
     }
 
-    private static TopUpOptions Options(string country, string discount = null) => new()
+    private static TopUpOptions Options(string country, string discount = null, string region = null) => new()
     {
-        Country = country, UserIp = "203.0.113.7", SuccessUrl = "https://ok", CancelUrl = "https://cancel", DiscountCode = discount
+        Country = country, UserIp = "203.0.113.7", SuccessUrl = "https://ok", CancelUrl = "https://cancel", DiscountCode = discount,
+        Region = region
     };
 
     [Test]
@@ -118,14 +120,101 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     {
         var controller = Controller("US", activeDirectUs: 10);
 
-        var providers = await controller.GetSubscriptionProviders("US");
-        await controller.StripeSubscribe("buyer", "l_premium", Options("US"));
+        var providers = await controller.GetSubscriptionProviders("US", region: "CA");
+        await controller.StripeSubscribe("buyer", "l_premium", Options("US", region: "CA"));
 
         Assert.That(providers.Select(p => (p.Provider, p.Mode)), Is.EqualTo(new[] { ("stripe", "managed") }));
         Assert.That(created.ManagedPayments?.Enabled, Is.True);
         Assert.That(created.LineItems.Single().PriceData.TaxBehavior, Is.EqualTo("exclusive"));
         Assert.That(created.SubscriptionData.Metadata["mode"], Is.EqualTo("managed"));
+        Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_premium", Options("US", region: "CA")));
+    }
+
+    /// <summary>
+    /// Owner decision: the cap of 10 applies per US state: 10 direct subscriptions in CA send CA buyers to Managed Payments,
+    /// NY buyers (no subscriptions there) stay direct, and a US buyer without a known state is treated as capped.
+    /// </summary>
+    [Test]
+    public async Task TheUsCapAppliesPerStateAndAnUnknownStateIsCapped()
+    {
+        var controller = Controller("US", activeDirectUs: 10);
+
+        var ca = await controller.GetSubscriptionProviders("US", region: "ca");
+        var ny = await controller.GetSubscriptionProviders("US", region: "NY");
+        var unknown = await controller.GetSubscriptionProviders("US");
+        var invalid = await controller.GetSubscriptionProviders("US", region: "California");
+
+        Assert.That(ca.Select(p => p.Mode), Is.EqualTo(new[] { "managed" }));
+        Assert.That(ny.Select(p => (p.Provider, p.Mode)), Is.EqualTo(new[] { ("stripe", "direct"), ("paypal", "direct") }));
+        Assert.That(unknown.Select(p => p.Mode), Is.EqualTo(new[] { "managed" }));
+        Assert.That(invalid.Select(p => p.Mode), Is.EqualTo(new[] { "managed" }));
+    }
+
+    [Test]
+    public async Task TheCheckoutStateIsStoredOnTheRequestAndTheStripeMetadata()
+    {
+        await Controller("US", activeDirectUs: 10).StripeSubscribe("buyer", "l_premium", Options("US", region: "ny"));
+
+        Assert.That(created.ManagedPayments, Is.Null);
+        Assert.That(created.SubscriptionData.Metadata["region"], Is.EqualTo("NY"));
+        Assert.That((await db.PaymentRequests.SingleAsync()).CheckoutRegion, Is.EqualTo("NY"));
+    }
+
+    [Test]
+    public async Task AnUnknownStateGetsManagedPaymentsAtCheckoutAndStoresNoRegion()
+    {
+        var controller = Controller("US", activeDirectUs: 0);
+
+        await controller.StripeSubscribe("buyer", "l_premium", Options("US"));
+
+        Assert.That(created.ManagedPayments?.Enabled, Is.True);
+        Assert.That(created.SubscriptionData.Metadata.ContainsKey("region"), Is.False);
         Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_premium", Options("US")));
+    }
+
+    /// <summary>
+    /// Regression: TR, SA, KR, VN, MX and MD were blocked for Managed Payments only for tax reasons that Stripe (merchant of
+    /// record) takes over. They get Managed Payments and are still refused for direct and one-time sales.
+    /// </summary>
+    [TestCase("TR")]
+    [TestCase("SA")]
+    [TestCase("KR")]
+    [TestCase("VN")]
+    [TestCase("MX")]
+    [TestCase("MD")]
+    public async Task TaxBlockedCountriesCoveredByStripeGetManagedPaymentsOnly(string country)
+    {
+        var controller = Controller(country);
+        await AddBlackFridayCode();
+
+        var providers = await controller.GetSubscriptionProviders(country);
+        var auto = (await controller.GetAutoDiscount(country)).Result as OkObjectResult;
+        await controller.StripeSubscribe("buyer", "l_premium", Options(country));
+
+        Assert.That(providers.Select(p => (p.Provider, p.Mode)), Is.EqualTo(new[] { ("stripe", "managed") }));
+        Assert.That(((AutoDiscount)auto.Value).Providers, Is.EqualTo(new[] { "stripe" }));
+        Assert.That(created.ManagedPayments?.Enabled, Is.True);
+        Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_premium", Options(country)));
+        Assert.That(SalesRestrictions.IsCountryBlocked(country), Is.True, "still blocked where Coflnet is the seller (one-time purchases)");
+        Assert.That(SalesRestrictions.DoWeSellTo(country, null), Is.False);
+    }
+
+    [Test]
+    public void AManagedBlockedCountryIsRefusedEvenThoughStripeCoversIt()
+    {
+        var controller = Controller("TR", new() { ["SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES"] = "tr" });
+
+        Assert.ThrowsAsync<ApiException>(() => controller.StripeSubscribe("buyer", "l_premium", Options("TR")));
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Never);
+    }
+
+    /// <summary>The IP country of a managed buyer must be covered too; TR is (only tax-blocked), so a buyer located there may buy managed</summary>
+    [Test]
+    public async Task ManagedPaymentsAcceptsATaxBlockedIpCountry()
+    {
+        await Controller("TR").StripeSubscribe("buyer", "l_premium", Options("CH"));
+
+        stripe.Verify(s => s.CreateCheckoutSession(It.Is<SessionCreateOptions>(o => o.ManagedPayments.Enabled == true)), Times.Once);
     }
 
     [Test]
@@ -135,10 +224,12 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await db.SaveChangesAsync();
         var controller = Controller("US", activeDirectUs: 10);
 
-        var us = (await controller.GetAutoDiscount("US")).Result as OkObjectResult;
+        var us = (await controller.GetAutoDiscount("US", "CA")).Result as OkObjectResult;
+        var usOtherState = (await controller.GetAutoDiscount("US", "NY")).Result as OkObjectResult;
         var de = (await controller.GetAutoDiscount("DE")).Result as OkObjectResult;
 
         Assert.That(((AutoDiscount)us.Value).Providers, Is.EqualTo(new[] { "stripe" }));
+        Assert.That(((AutoDiscount)usOtherState.Value).Providers, Is.EqualTo(new[] { "stripe", "paypal" }));
         Assert.That(((AutoDiscount)de.Value).Providers, Is.EqualTo(new[] { "stripe", "paypal" }));
         Assert.That((await controller.GetSubscriptionProviders("DE")).Select(p => p.Mode), Is.All.EqualTo("direct"));
     }
@@ -146,9 +237,9 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     [Test]
     public async Task UsBuyersStayDirectBelowTheCapAndTheLimitIsConfigurable()
     {
-        Assert.That((await Controller("US", activeDirectUs: 9).GetSubscriptionProviders("US")).Select(p => p.Mode), Is.All.EqualTo("direct"));
+        Assert.That((await Controller("US", activeDirectUs: 9).GetSubscriptionProviders("US", region: "CA")).Select(p => p.Mode), Is.All.EqualTo("direct"));
         var limited = Controller("US", new() { ["SUBSCRIPTIONS:US_DIRECT_LIMIT"] = "3" }, activeDirectUs: 3);
-        Assert.That((await limited.GetSubscriptionProviders("US")).Select(p => p.Mode), Is.EqualTo(new[] { "managed" }));
+        Assert.That((await limited.GetSubscriptionProviders("US", region: "CA")).Select(p => p.Mode), Is.EqualTo(new[] { "managed" }));
     }
 
     [Test]
@@ -455,10 +546,10 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     [Test]
     public async Task OpenDirectUsCheckoutIsNotReusedOnceTheCapSendsUsBuyersToManagedPayments()
     {
-        await Controller("US", activeDirectUs: 9).StripeSubscribe("buyer", "l_premium", Options("US"));
+        await Controller("US", activeDirectUs: 9).StripeSubscribe("buyer", "l_premium", Options("US", region: "CA"));
         Assert.That(created.ManagedPayments, Is.Null);
 
-        await Controller("US", activeDirectUs: 10).StripeSubscribe("buyer", "l_premium", Options("US"));
+        await Controller("US", activeDirectUs: 10).StripeSubscribe("buyer", "l_premium", Options("US", region: "CA"));
 
         stripe.Verify(s => s.GetCheckoutSession(It.IsAny<string>()), Times.Never);
         Assert.That(created.ManagedPayments.Enabled, Is.True);
@@ -474,7 +565,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     {
         var controller = Controller("US", activeDirectUs: -1);
 
-        var providers = await controller.GetSubscriptionProviders("US");
+        var providers = await controller.GetSubscriptionProviders("US", region: "CA");
 
         Assert.That(providers.Select(p => (p.Provider, p.Mode)), Is.EqualTo(new[] { ("stripe", "managed") }));
     }
@@ -785,8 +876,9 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     /// </summary>
     [TestCase("BR")]
     [TestCase("AE")]
-    [TestCase("TR")]
-    public async Task UncoveredOrBlockedCountriesGetNoStripeOrPayPalCheckout(string country)
+    [TestCase("CL")]
+    [TestCase("PE")]
+    public async Task UncoveredCountriesGetNoStripeOrPayPalCheckout(string country)
     {
         var controller = Controller(country);
 
@@ -800,10 +892,10 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
 
     /// <summary>
     /// Regression: the Managed Payments country is the buyer's unverified selection, so a buyer in an uncovered (BR) or
-    /// blocked (TR) country got a Managed Payments checkout by selecting a covered one (CH).
+    /// uncovered (AE) country got a Managed Payments checkout by selecting a covered one (CH).
     /// </summary>
     [TestCase("BR")]
-    [TestCase("TR")]
+    [TestCase("AE")]
     public void ManagedPaymentsIsRefusedWhenTheIpCountryIsNotCovered(string ipCountry)
     {
         var error = Assert.ThrowsAsync<ApiException>(() => Controller(ipCountry).StripeSubscribe("buyer", "l_premium", Options("CH")));
