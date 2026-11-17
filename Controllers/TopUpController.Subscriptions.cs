@@ -59,8 +59,7 @@ public partial class TopUpController
         var checkout = new StripeSubscriptionCheckout(user, plan, SubscriptionPricing.ToCents(price),
             SubscriptionService.IntervalWeeks(plan.OwnershipSeconds).Value, mode, country,
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id,
-            StripeSubscriptionCheckoutBuilder.SessionExpiry(discount?.ExpiresAt, DateTime.UtcNow));
+            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id);
         var session = await CreateStripeSubscriptionSession(stripe,
             StripeSubscriptionCheckoutBuilder.Build(checkout, StripeManagedSettings.From(config)));
         request.SessionId = session.Id;

@@ -1,5 +1,11 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
@@ -57,6 +63,75 @@ public class SubscriptionCheckoutTests
         Assert.That(price.UnitAmount, Is.EqualTo(2492));
         Assert.That(options.Mode, Is.EqualTo("subscription"));
         Assert.That(options.SubscriptionData.Metadata["mode"], Is.EqualTo("managed"));
+    }
+
+    /// <summary>Stripe's list of Checkout Session parameters not allowed with managed_payments[enabled]=true</summary>
+    private static readonly string[] ManagedPaymentsDisallowed =
+    [
+        "automatic_tax", "tax_id_collection", "subscription_data.default_tax_rates", "payment_method_collection",
+        "payment_method_configuration", "payment_method_options", "payment_method_types", "saved_payment_method_options",
+        "customer_update.name", "customer_update.address", "shipping_address_collection", "shipping_options",
+        "subscription_data.application_fee_percent", "subscription_data.on_behalf_of", "subscription_data.transfer_data",
+        "subscription_data.invoice_settings"
+    ];
+
+    /// <summary>
+    /// The form body Stripe.net sends (including empty nested option objects) holds none of the disallowed parameters,
+    /// for a session with every optional input set.
+    /// </summary>
+    [Test]
+    public async Task ManagedPaymentsRequestBodyHasNoDisallowedParameter()
+    {
+        var options = StripeSubscriptionCheckoutBuilder.Build(
+            new StripeSubscriptionCheckout(new User { ExternalId = "buyer" }, Plan, 2492, 13, StripeCheckoutMode.Managed, "BR",
+                "https://ok", "https://cancel", "a@b.c", "SAVE10", "creator", 42),
+            StripeManagedSettings.From(new ConfigurationBuilder().Build()));
+
+        var sent = await SentToStripe(options);
+        var keys = sent.Body.Split('&')
+            .Select(pair => Uri.UnescapeDataString(pair.Split('=')[0]).Replace("][", ".").Replace("[", ".").TrimEnd(']'))
+            .ToList();
+
+        Assert.That(string.CompareOrdinal(sent.ApiVersion, "2025-03-31.basil"), Is.GreaterThanOrEqualTo(0), sent.ApiVersion);
+        Assert.That(keys, Does.Contain("managed_payments.enabled"));
+        foreach (var disallowed in ManagedPaymentsDisallowed)
+            Assert.That(keys.Where(k => k == disallowed || k.StartsWith(disallowed + ".")), Is.Empty, disallowed);
+        Assert.That(new object[]
+        {
+            options.AutomaticTax, options.TaxIdCollection, options.SubscriptionData.DefaultTaxRates, options.PaymentMethodCollection,
+            options.PaymentMethodConfiguration, options.PaymentMethodOptions, options.PaymentMethodTypes,
+            options.SavedPaymentMethodOptions, options.CustomerUpdate, options.ShippingAddressCollection, options.ShippingOptions,
+            options.SubscriptionData.ApplicationFeePercent, options.SubscriptionData.OnBehalfOf,
+            options.SubscriptionData.TransferData, options.SubscriptionData.InvoiceSettings
+        }, Is.All.Null);
+    }
+
+    /// <summary>
+    /// Creates the session through Stripe.net against a fake HTTP handler and returns the form body and API version
+    /// exactly as they would go over the wire.
+    /// </summary>
+    private static async Task<(string Body, string ApiVersion)> SentToStripe(SessionCreateOptions options)
+    {
+        var handler = new CapturingHandler();
+        var client = new Stripe.StripeClient("sk_test_123", httpClient: new Stripe.SystemNetHttpClient(new HttpClient(handler)));
+        await new SessionService(client).CreateAsync(options);
+        return (handler.Body, handler.ApiVersion);
+    }
+
+    private sealed class CapturingHandler : HttpMessageHandler
+    {
+        public string Body { get; private set; }
+        public string ApiVersion { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            ApiVersion = request.Headers.GetValues("Stripe-Version").Single();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"id":"cs_test","object":"checkout.session"}""", Encoding.UTF8, "application/json")
+            };
+        }
     }
 
     [Test]

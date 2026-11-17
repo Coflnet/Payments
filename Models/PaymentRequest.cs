@@ -63,8 +63,9 @@ public class PaymentRequest : HasId
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
     /// <summary>
-    /// Subscription checkouts priced with a discount code that expires: the code's expiry. A PayPal subscription
-    /// approved more than a short grace after it is not activated (Stripe sessions expire with the code instead).
+    /// Subscription checkouts priced with a discount code that expires: the code's expiry. Checkouts started before it
+    /// stay payable for 24 hours after it (Stripe's session lifetime); a PayPal subscription approved later than that
+    /// is cancelled and not granted.
     /// </summary>
     public DateTime? ExpiresAt { get; set; }
     /// <summary>

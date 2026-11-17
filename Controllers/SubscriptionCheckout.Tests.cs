@@ -271,44 +271,30 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     }
 
     /// <summary>
-    /// Regression: a promotion checkout session stayed payable for Stripe's default 24 hours after the code expired.
+    /// Owner decision: a checkout started before its code expired stays payable for 24 hours, so the Stripe session
+    /// keeps Stripe's default lifetime (24 hours) instead of ending with the code; the code's expiry is recorded.
     /// </summary>
     [TestCase("DE")]
     [TestCase("BR")]
-    public async Task StripeSessionExpiresWithItsDiscountCode(string country)
+    public async Task StripeSessionWithAnExpiringCodeKeepsStripesDefaultLifetime(string country)
     {
-        var expires = DateTime.UtcNow.AddHours(2);
+        var expires = DateTime.UtcNow.AddMinutes(5);
         db.DiscountCodes.Add(new DiscountCode { Code = "PROMO", AmountType = "percent", Amount = 25, ExpiresAt = expires });
         await db.SaveChangesAsync();
 
         await Controller(country).StripeSubscribe("buyer", "l_premium", Options(country, "PROMO"));
 
-        Assert.That(created.ExpiresAt, Is.EqualTo(expires).Within(TimeSpan.FromSeconds(1)));
+        Assert.That(created.ExpiresAt, Is.Null);
         Assert.That((await db.PaymentRequests.SingleAsync()).ExpiresAt, Is.EqualTo(expires).Within(TimeSpan.FromSeconds(1)));
     }
 
     [Test]
-    public async Task StripeSessionWithoutAnExpiringCodeKeepsTheDefaultExpiry()
+    public async Task ExpiredCodeIsNotAcceptedForNewCheckouts()
     {
-        await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE"));
-        Assert.That(created.ExpiresAt, Is.Null);
-    }
-
-    [TestCase(5, 31)]       // expires sooner than Stripe's 30 minute minimum
-    [TestCase(120, 120)]    // within the allowed range: the code's expiry
-    [TestCase(-60, 31)]     // already expired (validated a moment ago): the minimum
-    public void SessionExpiryIsClampedToStripesRange(int codeMinutes, int expectedMinutes)
-    {
-        var now = new DateTime(2026, 11, 30, 23, 0, 0, DateTimeKind.Utc);
-        Assert.That(StripeSubscriptionCheckoutBuilder.SessionExpiry(now.AddMinutes(codeMinutes), now), Is.EqualTo(now.AddMinutes(expectedMinutes)));
-    }
-
-    [Test]
-    public void SessionExpiryIsLeftToStripeWhenTheCodeOutlivesTheSession()
-    {
-        var now = new DateTime(2026, 11, 27, 0, 0, 0, DateTimeKind.Utc);
-        Assert.That(StripeSubscriptionCheckoutBuilder.SessionExpiry(now.AddDays(3), now), Is.Null);
-        Assert.That(StripeSubscriptionCheckoutBuilder.SessionExpiry(null, now), Is.Null);
+        db.DiscountCodes.Add(new DiscountCode { Code = "PROMO", AmountType = "percent", Amount = 25, ExpiresAt = DateTime.UtcNow.AddMinutes(-1) });
+        await db.SaveChangesAsync();
+        Assert.ThrowsAsync<ApiException>(() => Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "PROMO")));
+        Assert.ThrowsAsync<ApiException>(() => Controller("DE").PayPalSubscribe("buyer", "l_premium", Options("DE", "PROMO")));
     }
 
     [Test]

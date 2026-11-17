@@ -59,10 +59,10 @@ wins. The response lists `providers` that honor it. Local codes are NOT honored 
 `lemonsqueezy/subscribe` is validated against Lemon Squeezy only and rejected ("Invalid or expired"), so a buyer routed there is
 never charged a price different from the one shown. `discount/auto` returns 204 for a country where only Lemon Squeezy applies.
 
-A checkout priced with an expiring code does not stay payable: Stripe sessions expire with the code (at least 31 minutes
-after creation, Stripe's minimum, and at most Stripe's default of 24 hours), and a PayPal subscription whose first payment is
-more than 30 minutes after the code expired is cancelled at PayPal and not granted (its payments are marked for a manual
-refund). An open checkout is only reused for the same first and renewal price.
+Codes are accepted for new checkouts until `expiresAt` (the website stops showing them then), but a checkout started before
+`expiresAt` stays payable at the discounted price for a 24 hour grace: Stripe sessions keep Stripe's default lifetime of 24
+hours, and a PayPal subscription whose first payment is more than 24 hours after the code expired is cancelled at PayPal and
+not granted (its payments are marked for a manual refund). An open checkout is only reused for the same first and renewal price.
 
 ## Stripe
 

@@ -22,10 +22,10 @@ public partial class SubscriptionService
     private const string ExpiredCodeCancelReason = "Approved after the discount code of the checkout expired";
 
     /// <summary>
-    /// How long after its discount code expired a PayPal checkout may still be approved (Stripe sessions get the
-    /// same 30 minute minimum)
+    /// How long after its discount code expired a checkout started before the expiry may still be approved at the
+    /// discounted price; the same as the 24 hours a Stripe checkout session stays open.
     /// </summary>
-    internal static readonly TimeSpan ExpiredCodeGrace = TimeSpan.FromMinutes(30);
+    internal static readonly TimeSpan ExpiredCodeGrace = TimeSpan.FromHours(24);
 
     private IPayPalSubscriptionApi PayPalApi =>
         paypal ?? throw new ApiException("PayPal subscriptions are not available.");
@@ -237,7 +237,7 @@ public partial class SubscriptionService
     }
 
     /// <summary>
-    /// A checkout priced with a discount code must be approved before the code expired (plus a short grace).
+    /// A checkout priced with a discount code must be approved before the code expired plus <see cref="ExpiredCodeGrace"/>.
     /// The first payment is the best evidence of the approval time; without it, now.
     /// </summary>
     private static bool ApprovedAfterCodeExpired(PaymentRequest request, PayPalSubscription remote)

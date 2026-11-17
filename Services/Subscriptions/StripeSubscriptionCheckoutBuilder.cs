@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using Coflnet.Payments.Models;
 using Microsoft.Extensions.Configuration;
@@ -10,8 +9,6 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// <summary>
 /// Everything a Stripe subscription checkout session is built from
 /// </summary>
-/// <param name="ExpiresAt">When the session must expire (see <see cref="StripeSubscriptionCheckoutBuilder.SessionExpiry"/>);
-/// null keeps Stripe's default of 24 hours</param>
 public record StripeSubscriptionCheckout(
     User User,
     TopUpProduct Plan,
@@ -24,8 +21,7 @@ public record StripeSubscriptionCheckout(
     string Email,
     string DiscountCode,
     string CreatorCode,
-    int PaymentRequestId,
-    DateTime? ExpiresAt = null);
+    int PaymentRequestId);
 
 /// <summary>
 /// Managed Payments settings (STRIPE:MANAGED_TAX_CODE, STRIPE:MANAGED_TAX_BEHAVIOR)
@@ -51,25 +47,6 @@ public record StripeManagedSettings(string TaxCode, string TaxBehavior)
 /// </summary>
 public static class StripeSubscriptionCheckoutBuilder
 {
-    /// <summary>Stripe accepts expires_at from 30 minutes to 24 hours after creation; one minute of margin for latency</summary>
-    private static readonly TimeSpan ShortestSession = TimeSpan.FromMinutes(31);
-    private static readonly TimeSpan LongestSession = TimeSpan.FromHours(24) - TimeSpan.FromMinutes(1);
-
-    /// <summary>
-    /// The expires_at of a session priced with a discount code that expires at <paramref name="priceValidUntil"/>:
-    /// the code's expiry, but at least 31 minutes from now (Stripe's minimum) and null (Stripe's default of 24 hours)
-    /// when the code outlives that anyway.
-    /// </summary>
-    public static DateTime? SessionExpiry(DateTime? priceValidUntil, DateTime now)
-    {
-        if (priceValidUntil is not DateTime expiry)
-            return null;
-        var until = expiry.Kind == DateTimeKind.Local ? expiry.ToUniversalTime() : DateTime.SpecifyKind(expiry, DateTimeKind.Utc);
-        if (until >= now + LongestSession)
-            return null;
-        return until < now + ShortestSession ? now + ShortestSession : until;
-    }
-
     public static SessionCreateOptions Build(StripeSubscriptionCheckout checkout, StripeManagedSettings managed) =>
         checkout.Mode == StripeCheckoutMode.Managed ? BuildManaged(checkout, managed) : BuildDirect(checkout);
 
@@ -100,7 +77,6 @@ public static class StripeSubscriptionCheckoutBuilder
             SubscriptionData = new SessionSubscriptionDataOptions { Metadata = new Dictionary<string, string>(metadata) },
             ClientReferenceId = checkout.User.ExternalId,
             CustomerEmail = checkout.Email,
-            ExpiresAt = checkout.ExpiresAt,
             SuccessUrl = checkout.SuccessUrl,
             CancelUrl = checkout.CancelUrl
         };

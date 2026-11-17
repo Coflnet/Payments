@@ -403,7 +403,7 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
     public async Task SubscriptionApprovedAfterItsCodeExpiredIsCancelledAndNotGranted()
     {
         var request = await SeedCheckout("paypal", "I-SUB", premium, 9.69m);
-        request.ExpiresAt = new DateTime(2026, 11, 17, 9, 0, 0, DateTimeKind.Utc); // first payment at 10:00
+        request.ExpiresAt = new DateTime(2026, 11, 16, 9, 59, 0, DateTimeKind.Utc); // first payment 24h 1min later
         await db.SaveChangesAsync();
         SetSubscription();
         paypal.Replies["/v1/billing/subscriptions/I-SUB/cancel"] = new JObject();
@@ -421,7 +421,7 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
     public async Task SubscriptionApprovedWithinTheGraceAfterItsCodeExpiredIsGranted()
     {
         var request = await SeedCheckout("paypal", "I-SUB", premium, 9.69m);
-        request.ExpiresAt = new DateTime(2026, 11, 17, 9, 45, 0, DateTimeKind.Utc); // first payment 15 minutes later
+        request.ExpiresAt = new DateTime(2026, 11, 16, 10, 1, 0, DateTimeKind.Utc); // first payment 23h 59min later
         await db.SaveChangesAsync();
         SetSubscription();
 
