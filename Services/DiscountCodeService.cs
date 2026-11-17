@@ -33,8 +33,7 @@ public class DiscountCodeService
         var discount = await Find(code);
         if (discount == null || !discount.IsActive)
             return null;
-        var now = DateTime.UtcNow;
-        if (discount.StartsAt > now || discount.ExpiresAt < now || discount.TimesRedeemed >= discount.MaxRedemptions)
+        if (!IsAvailable(discount))
         {
             logger.LogInformation("Discount code {Code} is outside its validity window or used up", discount.Code);
             return null;
@@ -42,6 +41,29 @@ public class DiscountCodeService
         var validated = ToValidated(discount);
         validated.IsValid = isSubscription || !discount.SubscriptionOnly;
         return validated;
+    }
+
+    /// <summary>
+    /// The newest active code flagged <see cref="DiscountCode.AutoApply"/> that is inside its validity window
+    /// and has redemptions left; null when there is none.
+    /// </summary>
+    public async Task<DiscountCode> GetActiveAutoApply()
+    {
+        var now = DateTime.UtcNow;
+        var candidates = await db.DiscountCodes
+            .Where(c => c.AutoApply && c.IsActive && c.SubscriptionOnly)
+            .Where(c => c.StartsAt == null || c.StartsAt <= now)
+            .Where(c => c.ExpiresAt == null || c.ExpiresAt > now)
+            .Where(c => c.MaxRedemptions == null || c.TimesRedeemed < c.MaxRedemptions)
+            .ToListAsync();
+        // ordered in memory: CreatedAt ties (and SQLite/Postgres collations) must not decide
+        return candidates.OrderByDescending(c => c.CreatedAt).ThenByDescending(c => c.Id).FirstOrDefault();
+    }
+
+    private static bool IsAvailable(DiscountCode discount)
+    {
+        var now = DateTime.UtcNow;
+        return !(discount.StartsAt > now || discount.ExpiresAt < now || discount.TimesRedeemed >= discount.MaxRedemptions);
     }
 
     /// <summary>
@@ -85,6 +107,8 @@ public class DiscountCodeService
         existing.Name = update.Name;
         existing.AmountType = update.AmountType;
         existing.Amount = update.Amount;
+        existing.PeriodAmounts = update.PeriodAmounts is { Count: > 0 } ? new(update.PeriodAmounts) : null;
+        existing.AutoApply = update.AutoApply;
         existing.IsActive = update.IsActive;
         existing.SubscriptionOnly = update.SubscriptionOnly;
         existing.StartsAt = update.StartsAt;
@@ -103,10 +127,24 @@ public class DiscountCodeService
             throw new ApiException("AmountType must be 'percent' or 'fixed'");
         if (update.Amount <= 0 || update.AmountType == "percent" && update.Amount >= 100)
             throw new ApiException("Amount must be positive (and below 100 for percent codes)");
+        ValidatePeriodAmounts(update);
+        if (update.AutoApply && !update.SubscriptionOnly)
+            throw new ApiException("AutoApply codes must be SubscriptionOnly");
         if (update.Duration is not (null or DiscountCode.EveryRenewal or DiscountCode.FirstPaymentOnly))
             throw new ApiException("Duration must be 'forever' or 'once'");
         if (update.MaxRedemptions < 1)
             throw new ApiException("MaxRedemptions must be at least 1 when set");
+    }
+
+    private static void ValidatePeriodAmounts(DiscountCode update)
+    {
+        foreach (var (weeks, amount) in update.PeriodAmounts ?? [])
+        {
+            if (weeks is not (4 or 13 or 52))
+                throw new ApiException("PeriodAmounts keys must be the billing weeks 4, 13 or 52");
+            if (amount <= 0 || update.AmountType == "percent" && amount >= 100)
+                throw new ApiException("PeriodAmounts must be positive (and below 100 for percent codes)");
+        }
     }
 
     private Task<DiscountCode> Find(string code)
@@ -124,6 +162,8 @@ public class DiscountCodeService
         Code = discount.Code,
         Id = "local-" + discount.Id,
         Amount = discount.Amount,
+        PeriodAmounts = discount.PeriodAmounts is { Count: > 0 } ? new(discount.PeriodAmounts) : null,
+        ExpiresAt = discount.ExpiresAt,
         AmountType = discount.AmountType,
         Name = discount.Name ?? discount.Code,
         IsValid = true,

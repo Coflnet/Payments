@@ -360,7 +360,7 @@ public partial class SubscriptionService
     {
         var creator = string.IsNullOrWhiteSpace(subscription.CreatorCode) ? null
             : await context.CreatorCodes.FirstOrDefaultAsync(c => c.Code.ToLower() == subscription.CreatorCode.ToLower());
-        var discount = await DiscountTerms(subscription.DiscountCode);
+        var discount = (await DiscountTerms(subscription.DiscountCode))?.ForPeriod(IntervalWeeks(plan.OwnershipSeconds));
         if (discount?.Duration == DiscountCode.FirstPaymentOnly)
             discount = null;
         return SubscriptionPricing.ToCents(SubscriptionPricing.Apply(plan.Price, creator, discount));

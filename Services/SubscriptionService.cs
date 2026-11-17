@@ -20,6 +20,7 @@ public partial class SubscriptionService
     private readonly IReadOnlyDictionary<string, ISubscriptionProvider> providers;
     private readonly IStripeSubscriptionGateway stripe;
     private readonly IPayPalSubscriptionApi paypal;
+    private readonly PayPalPlanCatalog paypalPlans;
 
     /// <summary>
     /// Represents a service for managing subscriptions.
@@ -32,6 +33,7 @@ public partial class SubscriptionService
     /// <param name="lemonSqueezyService"></param>
     /// <param name="stripe">Stripe Billing API, null when Stripe subscriptions are not used</param>
     /// <param name="paypal">PayPal Subscriptions API, null when PayPal subscriptions are not used</param>
+    /// <param name="paypalPlans">PayPal plans created per product; defaults to one without a config override</param>
     public SubscriptionService(
         ILogger<SubscriptionService> logger,
         TransactionService transactionService,
@@ -40,8 +42,10 @@ public partial class SubscriptionService
         PaymentContext context,
         LemonSqueezyService lemonSqueezyService,
         IStripeSubscriptionGateway stripe = null,
-        IPayPalSubscriptionApi paypal = null)
+        IPayPalSubscriptionApi paypal = null,
+        PayPalPlanCatalog paypalPlans = null)
     {
+        this.paypalPlans = paypalPlans ?? (paypal == null ? null : new PayPalPlanCatalog(context, paypal, null));
         this.logger = logger;
         this.transactionService = transactionService;
         this.userService = userService;

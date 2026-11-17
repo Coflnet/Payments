@@ -53,6 +53,12 @@ namespace Payments.Migrations
                 maxLength: 64,
                 nullable: true);
 
+            migrationBuilder.AddColumn<decimal>(
+                name: "RecurringAmount",
+                table: "PaymentRequests",
+                type: "numeric",
+                nullable: true);
+
             migrationBuilder.CreateTable(
                 name: "DiscountCodes",
                 columns: table => new
@@ -63,6 +69,8 @@ namespace Payments.Migrations
                     Name = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                     AmountType = table.Column<string>(type: "character varying(10)", maxLength: 10, nullable: false),
                     Amount = table.Column<decimal>(type: "numeric", nullable: false),
+                    PeriodAmounts = table.Column<string>(type: "text", nullable: true),
+                    AutoApply = table.Column<bool>(type: "boolean", nullable: false),
                     IsActive = table.Column<bool>(type: "boolean", nullable: false),
                     SubscriptionOnly = table.Column<bool>(type: "boolean", nullable: false),
                     Duration = table.Column<string>(type: "character varying(10)", maxLength: 10, nullable: true),
@@ -75,6 +83,24 @@ namespace Payments.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_DiscountCodes", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "PayPalPlans",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "integer", nullable: false)
+                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
+                    ProductSlug = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
+                    BillingWeeks = table.Column<int>(type: "integer", nullable: false),
+                    Currency = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false),
+                    PlanId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                    PayPalProductId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_PayPalPlans", x => x.Id);
                 });
 
             // Rows written before providers were recorded are Lemon Squeezy subscriptions.
@@ -102,6 +128,12 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
                 table: "DiscountCodes",
                 column: "Code",
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_PayPalPlans_ProductSlug_BillingWeeks_Currency",
+                table: "PayPalPlans",
+                columns: new[] { "ProductSlug", "BillingWeeks", "Currency" },
+                unique: true);
         }
 
         /// <inheritdoc />
@@ -109,6 +141,13 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
         {
             migrationBuilder.DropTable(
                 name: "DiscountCodes");
+
+            migrationBuilder.DropTable(
+                name: "PayPalPlans");
+
+            migrationBuilder.DropColumn(
+                name: "RecurringAmount",
+                table: "PaymentRequests");
 
             migrationBuilder.DropIndex(
                 name: "IX_Subscriptions_ProviderSlug_ExternalId",

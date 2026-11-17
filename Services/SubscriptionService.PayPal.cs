@@ -19,9 +19,19 @@ namespace Coflnet.Payments.Services;
 public partial class SubscriptionService
 {
     private const string PayPalCancelReason = "Cancelled by the customer";
+    private const string ExpiredCodeCancelReason = "Approved after the discount code of the checkout expired";
+
+    /// <summary>
+    /// How long after its discount code expired a PayPal checkout may still be approved (Stripe sessions get the
+    /// same 30 minute minimum)
+    /// </summary>
+    internal static readonly TimeSpan ExpiredCodeGrace = TimeSpan.FromMinutes(30);
 
     private IPayPalSubscriptionApi PayPalApi =>
         paypal ?? throw new ApiException("PayPal subscriptions are not available.");
+
+    private PayPalPlanCatalog PayPalPlans =>
+        paypalPlans ?? throw new ApiException("PayPal subscriptions are not available.");
 
     /// <summary>
     /// The custom_id of a PayPal subscription created for this user and plan
@@ -151,8 +161,22 @@ public partial class SubscriptionService
         }
         await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
         subscription.PaymentAmount = sale.Amount.Total + " " + sale.Amount.Currency;
+        await SwitchToRecurringPrice(subscription);
         await context.SaveChangesAsync();
         return PayPalOutcome(subscription, sale);
+    }
+
+    /// <summary>
+    /// A "first payment only" code priced the first cycle lower: once that sale is granted, renewals are agreed at the
+    /// recurring price the checkout recorded.
+    /// </summary>
+    private async Task SwitchToRecurringPrice(UserSubscription subscription)
+    {
+        var recurring = await context.PaymentRequests
+            .Where(r => r.Provider == SubscriptionProviders.PayPal && r.SessionId == subscription.ExternalId)
+            .Select(r => r.RecurringAmount).FirstOrDefaultAsync();
+        if (recurring != null)
+            subscription.PriceCents = SubscriptionPricing.ToCents(recurring.Value);
     }
 
     private static SubscriptionPaymentOutcome PayPalOutcome(UserSubscription subscription, PayPalSale sale)
@@ -181,7 +205,7 @@ public partial class SubscriptionService
             .Where(r => r.Provider == SubscriptionProviders.PayPal && r.SessionId == remote.Id)
             .OrderByDescending(r => r.Id).FirstOrDefaultAsync();
         var plan = await PlanBySlug(request?.ProductId?.Slug);
-        var rejection = PayPalCheckoutRejection(remote, request, plan);
+        var rejection = await PayPalCheckoutRejection(remote, request, plan);
         if (rejection != null)
         {
             logger.LogWarning("Ignoring PayPal subscription {SubscriptionId}: {Reason}", remote.Id, rejection);
@@ -189,6 +213,11 @@ public partial class SubscriptionService
         }
         if (!IsPastApproval(remote.Status))
             return null; // fulfil only once the buyer approved and PayPal activated the subscription
+        if (ApprovedAfterCodeExpired(request, remote))
+        {
+            await RejectExpiredCheckout(remote, request);
+            return null;
+        }
         var subscription = new UserSubscription
         {
             User = request.User,
@@ -207,12 +236,38 @@ public partial class SubscriptionService
         return subscription;
     }
 
-    private string PayPalCheckoutRejection(PayPalSubscription remote, PaymentRequest request, TopUpProduct plan)
+    /// <summary>
+    /// A checkout priced with a discount code must be approved before the code expired (plus a short grace).
+    /// The first payment is the best evidence of the approval time; without it, now.
+    /// </summary>
+    private static bool ApprovedAfterCodeExpired(PaymentRequest request, PayPalSubscription remote)
+    {
+        if (request.ExpiresAt is not DateTime expiry)
+            return false;
+        var approved = ParseTime(remote.BillingInfo?.LastPayment?.Time) ?? DateTime.UtcNow;
+        return approved > expiry + ExpiredCodeGrace;
+    }
+
+    /// <summary>
+    /// Cancels the subscription at PayPal; its sales are not granted and are marked for a manual refund when they arrive.
+    /// </summary>
+    private async Task RejectExpiredCheckout(PayPalSubscription remote, PaymentRequest request)
+    {
+        logger.LogError("PayPal subscription {SubscriptionId} was approved after its discount code expired at {ExpiresAt}; cancelling it, its payments need a manual refund",
+            remote.Id, request.ExpiresAt);
+        if (remote.Status is "ACTIVE" or "SUSPENDED")
+            await PayPalApi.Cancel(remote.Id, ExpiredCodeCancelReason);
+        request.State = PaymentRequest.Status.REJECTED;
+        request.UpdatedAt = DateTime.UtcNow;
+        await context.SaveChangesAsync();
+    }
+
+    private async Task<string> PayPalCheckoutRejection(PayPalSubscription remote, PaymentRequest request, TopUpProduct plan)
     {
         if (request == null || plan == null)
             return "no checkout of a subscription plan was recorded for it";
-        if (remote.PlanId != PayPalApi.PlanIdFor(plan.Slug))
-            return $"plan {remote.PlanId} is not the configured plan of {plan.Slug}";
+        if (!await PayPalPlans.IsPlanOf(remote.PlanId, plan))
+            return $"plan {remote.PlanId} is not the PayPal plan of {plan.Slug}";
         if (remote.CustomId != PayPalCustomId(plan.Id, request.User.ExternalId))
             return $"custom_id {remote.CustomId} does not match the checkout";
         return null;

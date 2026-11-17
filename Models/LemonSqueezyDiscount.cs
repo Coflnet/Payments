@@ -201,6 +201,30 @@ public class ValidatedDiscount
     public decimal Amount { get; set; }
 
     /// <summary>
+    /// Local codes only: amounts per billing period in weeks that override <see cref="Amount"/> for that period,
+    /// so a client can show per-period prices. Null when the code has one amount for every period.
+    /// </summary>
+    public System.Collections.Generic.Dictionary<int, decimal> PeriodAmounts { get; set; }
+
+    /// <summary>
+    /// Local codes only: when the code expires. Internal (not part of the API response): checkouts priced with the
+    /// code must not stay payable long after it expired.
+    /// </summary>
+    [Newtonsoft.Json.JsonIgnore, JsonIgnore]
+    public DateTime? ExpiresAt { get; set; }
+
+    /// <summary>
+    /// A copy whose <see cref="Amount"/> is the amount of the given billing period
+    /// </summary>
+    public ValidatedDiscount ForPeriod(int? weeks)
+    {
+        var copy = (ValidatedDiscount)MemberwiseClone();
+        if (weeks is int w && PeriodAmounts != null && PeriodAmounts.TryGetValue(w, out var amount))
+            copy.Amount = amount;
+        return copy;
+    }
+
+    /// <summary>
     /// Type of discount: "percent" or "fixed"
     /// </summary>
     public string AmountType { get; set; }

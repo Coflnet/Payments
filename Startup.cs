@@ -110,6 +110,7 @@ namespace Coflnet.Payments
             services.AddScoped<GroupService>();
             services.AddScoped<CreatorCodeService>();
             services.AddScoped<DiscountCodeService>();
+            services.AddScoped<Services.Subscriptions.PayPalPlanCatalog>();
             services.AddSingleton<Services.Subscriptions.SubscriptionRouting>();
             services.AddSingleton<Services.Subscriptions.IStripeSubscriptionGateway, Services.Subscriptions.StripeSubscriptionGateway>();
             services.AddSingleton<Services.Subscriptions.IPayPalSubscriptionApi, Services.Subscriptions.PayPalSubscriptionApi>();

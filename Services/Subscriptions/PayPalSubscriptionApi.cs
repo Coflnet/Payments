@@ -16,19 +16,29 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// <summary>
 /// A new PayPal subscription priced by this service
 /// </summary>
-/// <param name="PlanId">Configured PayPal plan (P-...) with one REGULAR billing cycle of the plan's period</param>
+/// <param name="PlanId">PayPal plan (P-...) with a one cycle TRIAL followed by an infinite REGULAR cycle of the plan's period</param>
 /// <param name="CustomId">Internal reference, at most 127 characters</param>
-/// <param name="Price">VAT-inclusive (and discounted) price per cycle, sent as plan override</param>
+/// <param name="Price">VAT-inclusive (and discounted) price of the first cycle (the plan's TRIAL cycle), sent as plan override</param>
+/// <param name="RecurringPrice">Price of every following cycle (the REGULAR cycle); equals <paramref name="Price"/> unless a
+/// "first payment only" code applies. Null means the same as <paramref name="Price"/>.</param>
 public record PayPalSubscriptionRequest(string PlanId, string CustomId, decimal Price, string Currency,
-    string ReturnUrl, string CancelUrl, string Email);
+    string ReturnUrl, string CancelUrl, string Email, decimal? RecurringPrice = null);
+
+/// <summary>
+/// A billing plan to create: a one cycle TRIAL then an infinite REGULAR cycle, both of <paramref name="Weeks"/> weeks
+/// at the list price. The trial cycle exists so a subscription can price its first cycle differently.
+/// </summary>
+public record PayPalPlanRequest(string CatalogProductId, string Name, string Description, int Weeks, decimal Price, string Currency);
 
 /// <summary>
 /// PayPal Subscriptions v1 (the checkout SDK has no subscriptions API)
 /// </summary>
 public interface IPayPalSubscriptionApi
 {
-    /// <summary>The configured plan id for a product slug (PAYPAL:SUBSCRIPTION_PLANS:{slug}), null if none</summary>
-    string PlanIdFor(string productSlug);
+    /// <summary>Creates a catalog product (type SERVICE, category SOFTWARE) and returns its id</summary>
+    Task<string> CreateCatalogProduct(string name, string description);
+    /// <summary>Creates an active billing plan and returns its id</summary>
+    Task<string> CreatePlan(PayPalPlanRequest request);
     Task<PayPalSubscription> Create(PayPalSubscriptionRequest request);
     Task<PayPalSubscription> Get(string subscriptionId);
     /// <summary>Cancels immediately and finally (PayPal has no cancel at period end)</summary>
@@ -45,16 +55,19 @@ public interface IPayPalSubscriptionApi
 public class PayPalSubscriptionApi : IPayPalSubscriptionApi
 {
     private readonly PayPalHttpClient client;
-    private readonly IConfiguration config;
 
-    public PayPalSubscriptionApi(PayPalHttpClient client, IConfiguration config)
+    public PayPalSubscriptionApi(PayPalHttpClient client)
     {
         this.client = client;
-        this.config = config;
     }
 
-    public string PlanIdFor(string productSlug) =>
-        string.IsNullOrWhiteSpace(productSlug) ? null : config?[$"PAYPAL:SUBSCRIPTION_PLANS:{productSlug}"];
+    public async Task<string> CreateCatalogProduct(string name, string description) =>
+        (await Send<PayPalResource>("/v1/catalogs/products", HttpMethod.Post, CatalogProductBody(name, description)))?.Id
+        ?? throw new ApiException("PayPal did not return a catalog product id.");
+
+    public async Task<string> CreatePlan(PayPalPlanRequest request) =>
+        (await Send<PayPalResource>("/v1/billing/plans", HttpMethod.Post, PlanBody(request)))?.Id
+        ?? throw new ApiException("PayPal did not return a plan id.");
 
     public Task<PayPalSubscription> Create(PayPalSubscriptionRequest request) =>
         Send<PayPalSubscription>("/v1/billing/subscriptions", HttpMethod.Post, CreateBody(request));
@@ -85,8 +98,54 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
         return Send<PayPalSale>($"/v1/payments/sale/{Escape(saleId)}/refund", HttpMethod.Post, body);
     }
 
+    internal static JObject CatalogProductBody(string name, string description) => new()
+    {
+        ["name"] = Truncate(name, 127),
+        ["description"] = Truncate(description, 256),
+        ["type"] = "SERVICE",
+        ["category"] = "SOFTWARE"
+    };
+
     /// <summary>
-    /// The plan override changes only the price; the billing cycle structure must match the plan.
+    /// Sequence 1 is a one cycle TRIAL, sequence 2 the infinite REGULAR cycle; both at the list price.
+    /// </summary>
+    internal static JObject PlanBody(PayPalPlanRequest request) => new()
+    {
+        ["product_id"] = request.CatalogProductId,
+        ["name"] = Truncate(request.Name, 127),
+        ["description"] = Truncate(request.Description, 127),
+        ["status"] = "ACTIVE",
+        ["billing_cycles"] = new JArray(
+            PlanCycle(request, "TRIAL", 1, 1),
+            PlanCycle(request, "REGULAR", 2, 0)),
+        ["payment_preferences"] = new JObject
+        {
+            ["auto_bill_outstanding"] = true,
+            ["setup_fee"] = new JObject { ["value"] = "0", ["currency_code"] = request.Currency },
+            ["setup_fee_failure_action"] = "CANCEL",
+            ["payment_failure_threshold"] = 3
+        }
+    };
+
+    private static JObject PlanCycle(PayPalPlanRequest request, string tenure, int sequence, int totalCycles) => new()
+    {
+        ["frequency"] = new JObject { ["interval_unit"] = "WEEK", ["interval_count"] = request.Weeks },
+        ["tenure_type"] = tenure,
+        ["sequence"] = sequence,
+        ["total_cycles"] = totalCycles,
+        ["pricing_scheme"] = PricingScheme(request.Price, request.Currency)
+    };
+
+    private static JObject PricingScheme(decimal price, string currency) => new()
+    {
+        ["fixed_price"] = new JObject { ["value"] = Money(price), ["currency_code"] = currency }
+    };
+
+    private static string Truncate(string text, int max) => text == null || text.Length <= max ? text : text[..max];
+
+    /// <summary>
+    /// The plan override prices the two cycles of the plan (sequence 1 TRIAL = first payment, sequence 2 REGULAR = renewals);
+    /// the cycle structure itself must match the plan.
     /// </summary>
     internal static JObject CreateBody(PayPalSubscriptionRequest request)
     {
@@ -96,14 +155,9 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
             ["custom_id"] = request.CustomId,
             ["plan"] = new JObject
             {
-                ["billing_cycles"] = new JArray(new JObject
-                {
-                    ["sequence"] = 1,
-                    ["pricing_scheme"] = new JObject
-                    {
-                        ["fixed_price"] = new JObject { ["value"] = Money(request.Price), ["currency_code"] = request.Currency }
-                    }
-                })
+                ["billing_cycles"] = new JArray(
+                    new JObject { ["sequence"] = 1, ["pricing_scheme"] = PricingScheme(request.Price, request.Currency) },
+                    new JObject { ["sequence"] = 2, ["pricing_scheme"] = PricingScheme(request.RecurringPrice ?? request.Price, request.Currency) })
             },
             ["application_context"] = ApplicationContext(request.ReturnUrl, request.CancelUrl)
         };

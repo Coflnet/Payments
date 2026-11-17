@@ -1,4 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using System.Collections.Generic;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Coflnet.Payments.Models
@@ -80,6 +83,10 @@ namespace Coflnet.Payments.Models
         /// Discount codes validated locally for direct providers
         /// </summary>
         public DbSet<DiscountCode> DiscountCodes { get; set; }
+        /// <summary>
+        /// PayPal billing plans created per subscription product, period and currency
+        /// </summary>
+        public DbSet<PayPalPlan> PayPalPlans { get; set; }
         /// <summary>
         /// Authoritative payment records for tax compliance reporting.
         /// Tracks exact amounts paid, taxes, fees, discounts per transaction.
@@ -173,6 +180,20 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<DiscountCode>(entity =>
             {
                 entity.HasIndex(e => e.Code).IsUnique();
+                // JSON in a plain text column: works on PostgreSQL and CockroachDB alike.
+                entity.Property(e => e.PeriodAmounts).HasColumnType("text").HasConversion(
+                    new ValueConverter<Dictionary<int, decimal>, string>(
+                        v => v == null || v.Count == 0 ? null : JsonSerializer.Serialize(v, (JsonSerializerOptions)null),
+                        v => string.IsNullOrEmpty(v) ? null : JsonSerializer.Deserialize<Dictionary<int, decimal>>(v, (JsonSerializerOptions)null)),
+                    new ValueComparer<Dictionary<int, decimal>>(
+                        (a, b) => JsonSerializer.Serialize(a, (JsonSerializerOptions)null) == JsonSerializer.Serialize(b, (JsonSerializerOptions)null),
+                        v => v == null ? 0 : JsonSerializer.Serialize(v, (JsonSerializerOptions)null).GetHashCode(),
+                        v => v == null ? null : new Dictionary<int, decimal>(v)));
+            });
+
+            modelBuilder.Entity<PayPalPlan>(entity =>
+            {
+                entity.HasIndex(e => new { e.ProductSlug, e.BillingWeeks, e.Currency }).IsUnique();
             });
 
             modelBuilder.Entity<SubscriptionPlanChange>(entity =>

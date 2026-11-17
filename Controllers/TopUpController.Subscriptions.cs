@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
+using Coflnet.Payments.Models.LemonSqueezy;
 using Coflnet.Payments.Services;
 using Coflnet.Payments.Services.Subscriptions;
 using Microsoft.AspNetCore.Mvc;
@@ -21,15 +22,17 @@ public partial class TopUpController
     /// Lemon Squeezy is only listed when no direct provider applies.
     /// </summary>
     /// <param name="country">ISO 3166-1 alpha-2 country of the buyer</param>
-    /// <param name="productSlug">Optional plan; PayPal is only listed when a PayPal plan is configured for it</param>
+    /// <param name="productSlug">Optional plan; PayPal is only listed when the plan has a billing period PayPal supports</param>
     [HttpGet]
     [Route("subscribe/providers")]
-    public IEnumerable<SubscriptionProviderOption> GetSubscriptionProviders([FromQuery] string country, [FromQuery] string productSlug = null)
+    public async Task<IEnumerable<SubscriptionProviderOption>> GetSubscriptionProviders([FromQuery] string country, [FromQuery] string productSlug = null)
     {
         var options = subscriptionRouting.ProvidersFor(country);
-        if (productSlug == null)
+        if (productSlug == null || paypalSubscriptions == null)
             return options;
-        return options.Where(o => o.Provider != SubscriptionProviders.PayPal || paypalSubscriptions?.PlanIdFor(productSlug) != null);
+        var plan = await productService.GetTopupProduct(productSlug, false);
+        var payPalSellable = SubscriptionService.IsSubscriptionPlan(plan) && PayPalPlanCatalog.IsSellable(new TopUpProduct(plan));
+        return options.Where(o => o.Provider != SubscriptionProviders.PayPal || payPalSellable);
     }
 
     /// <summary>
@@ -47,8 +50,8 @@ public partial class TopUpController
         var user = await userService.GetOrCreate(userId);
         var plan = await GetSubscriptionPlan(productId);
         var (country, mode) = await StripeCountryAndMode(options);
-        var (price, _) = await SubscriptionPrice(options, plan, SubscriptionProviders.Stripe);
-        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.Stripe);
+        var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.Stripe);
+        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.Stripe, RecurringIfDifferent(price, recurringPrice));
         if (request.SessionId != null)
             return await ExistingStripeCheckout(stripe, request.SessionId);
         await RememberCountry(user, country, options);
@@ -56,11 +59,13 @@ public partial class TopUpController
         var checkout = new StripeSubscriptionCheckout(user, plan, SubscriptionPricing.ToCents(price),
             SubscriptionService.IntervalWeeks(plan.OwnershipSeconds).Value, mode, country,
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id);
+            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id,
+            StripeSubscriptionCheckoutBuilder.SessionExpiry(discount?.ExpiresAt, DateTime.UtcNow));
         var session = await CreateStripeSubscriptionSession(stripe,
             StripeSubscriptionCheckoutBuilder.Build(checkout, StripeManagedSettings.From(config)));
         request.SessionId = session.Id;
         request.CoinAmount = plan.Cost;
+        request.ExpiresAt = discount?.ExpiresAt;
         await db.SaveChangesAsync();
         return new TopUpIdResponse { Id = session.Id, DirectLink = session.Url };
     }
@@ -69,7 +74,7 @@ public partial class TopUpController
     /// Starts a PayPal subscription (direct sales only). Redirect the buyer to the returned approval link.
     /// </summary>
     /// <param name="userId">The user subscribing</param>
-    /// <param name="productId">Slug of the subscription plan; needs PAYPAL:SUBSCRIPTION_PLANS:{slug}</param>
+    /// <param name="productId">Slug of the subscription plan; its PayPal plan is created on the first checkout</param>
     /// <param name="options">Country, IP, urls, creator and discount code</param>
     [HttpPost]
     [Route("paypal/subscribe")]
@@ -78,28 +83,28 @@ public partial class TopUpController
         var paypal = paypalSubscriptions ?? throw new ApiException("PayPal subscriptions are not available.");
         var user = await userService.GetOrCreate(userId);
         var plan = await GetSubscriptionPlan(productId);
-        var planId = paypal.PlanIdFor(plan.Slug) ?? throw new ApiException("This plan is not available via PayPal.");
+        if (!PayPalPlanCatalog.IsSellable(plan))
+            throw new ApiException("This plan is not available via PayPal.");
         var country = await GetMatchingCountry(options, false, "PayPal");
         EnsureCountryAllowed(country);
         if (!subscriptionRouting.PayPalAvailable(country))
             throw new ApiException($"PayPal subscriptions are not available in your country ({country}).");
-        var (price, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.PayPal);
-        // A PayPal plan override has one price for every cycle, so "first payment only" codes are Stripe only.
-        if (discount?.Duration == DiscountCode.FirstPaymentOnly)
-            throw new ApiException("This discount code is not available for PayPal subscriptions.");
-        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.PayPal);
+        var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.PayPal);
+        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.PayPal, RecurringIfDifferent(price, recurringPrice));
         if (request.SessionId != null)
             return await ExistingPayPalApproval(paypal, request.SessionId);
         await RememberCountry(user, country, options);
+        var planId = await PayPalPlans.GetOrCreate(plan);
 
         var created = await paypal.Create(new PayPalSubscriptionRequest(planId,
             SubscriptionService.PayPalCustomId(plan.Id, user.ExternalId), price, plan.CurrencyCode.ToUpperInvariant(),
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail));
+            options?.UserEmail, recurringPrice));
         var approve = ApproveLink(created) ?? throw new ApiException("PayPal did not return an approval link.");
-        // The webhook only activates subscriptions recorded here, for exactly this price.
+        // The webhook only activates subscriptions recorded here, for exactly this price, and not long after the code expired.
         request.SessionId = created.Id;
         request.CoinAmount = plan.Cost;
+        request.ExpiresAt = discount?.ExpiresAt;
         await db.SaveChangesAsync();
         return new TopUpIdResponse { Id = created.Id, DirectLink = approve };
     }
@@ -140,18 +145,27 @@ public partial class TopUpController
         return (country, mode);
     }
 
-    private async Task<(decimal price, Coflnet.Payments.Models.LemonSqueezy.ValidatedDiscount discount)> SubscriptionPrice(
+    /// <summary>
+    /// What a subscription checkout charges: the first payment, the renewals (they differ for "first payment only"
+    /// codes) and the validated code with the amount of the plan's billing period applied.
+    /// </summary>
+    private async Task<(decimal price, decimal recurringPrice, ValidatedDiscount discount)> SubscriptionPrice(
         TopUpOptions options, TopUpProduct plan, string provider)
     {
         if ((options?.TopUpAmount ?? 0) > 0)
             throw new ApiException("Subscriptions have a fixed price.");
         // GetPriceAndCoins applies the creator code; the discount code is applied by the direct providers themselves.
         var (creatorPrice, _, _, discount) = await GetPriceAndCoins(options, plan, isSubscription: true, checkoutProvider: provider);
+        discount = discount?.ForPeriod(SubscriptionService.IntervalWeeks(plan.OwnershipSeconds));
         var price = SubscriptionPricing.Apply(creatorPrice, null, discount);
+        var recurringPrice = discount?.Duration == DiscountCode.FirstPaymentOnly ? creatorPrice : price;
         if (SubscriptionPricing.ToCents(price) < SubscriptionPricing.MinimumCents)
             throw new ApiException("The discounted price is below the minimum charge.");
-        return (price, discount);
+        return (price, recurringPrice, discount);
     }
+
+    private static decimal? RecurringIfDifferent(decimal price, decimal recurringPrice) =>
+        recurringPrice == price ? null : recurringPrice;
 
     private async Task RememberCountry(User user, string country, TopUpOptions options)
     {

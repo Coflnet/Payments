@@ -11,6 +11,12 @@ public class PaymentRequest : HasId
     /// <value></value>
     public decimal Amount { get; set; }
     /// <summary>
+    /// Subscriptions: the price of every renewal when it differs from <see cref="Amount"/>
+    /// (the first payment of a "first payment only" discount code). Null when all payments cost <see cref="Amount"/>.
+    /// PayPal checks renewals against it; for Stripe it only keeps such a checkout from being reused for another code.
+    /// </summary>
+    public decimal? RecurringAmount { get; set; }
+    /// <summary>
     /// The coins this request buys. Null for requests created before the column existed;
     /// providers that fulfil from this record require it.
     /// </summary>
@@ -56,6 +62,10 @@ public class PaymentRequest : HasId
     public Status State { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+    /// <summary>
+    /// Subscription checkouts priced with a discount code that expires: the code's expiry. A PayPal subscription
+    /// approved more than a short grace after it is not activated (Stripe sessions expire with the code instead).
+    /// </summary>
     public DateTime? ExpiresAt { get; set; }
     /// <summary>
     /// States a payment request can be in

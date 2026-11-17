@@ -39,6 +39,15 @@ public class PayPalMoney
     [DataMember(Name = "value")] public string Value { get; set; }
 }
 
+/// <summary>
+/// Any PayPal resource of which only the id is read (catalog product, billing plan)
+/// </summary>
+[DataContract]
+public class PayPalResource
+{
+    [DataMember(Name = "id")] public string Id { get; set; }
+}
+
 [DataContract]
 public class PayPalLink
 {

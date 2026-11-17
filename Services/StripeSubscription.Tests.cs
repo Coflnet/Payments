@@ -83,6 +83,56 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         Assert.That((await Buyer()).Balance, Is.Zero, "the credited coins are spent on the service");
     }
 
+    /// <summary>
+    /// A slot bundle bought with a discount code is granted as four seats bound to the subscription, and renews them.
+    /// </summary>
+    [Test]
+    public async Task DiscountedSlotBundleGrantsFourSeatsAndRenewsThem()
+    {
+        var bundle = new TopUpProduct { Slug = "l_premium-slots-4", Title = "slots", Price = 33.69m, Cost = 7200, CurrencyCode = "eur",
+            ProviderSlug = "lemonsqueezy", OwnershipSeconds = FourWeeks, SlotCount = 4, SlotTier = "premium", Type = Product.ProductType.SERVICE };
+        db.TopUpProducts.Add(bundle);
+        await db.SaveChangesAsync();
+        await groups.AddProductToGroup(bundle, bundle.Slug);
+        await groups.AddProductToGroup(bundle, "premium");
+        checkoutMetadata[Keys.ProductSlug] = bundle.Slug;
+        checkoutMetadata[Keys.DiscountCode] = "BF2026";
+        checkoutMetadata[Keys.PriceCents] = "2527";
+        remote = Snapshot(priceCents: 2527);
+        var service = Service(stripe.Object);
+
+        Assert.That(await service.StripeInvoicePaid(Invoice(total: 2527)), Is.Not.Null);
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_2", "subscription_cycle", 2527)), Is.Not.Null);
+
+        var buyer = await Buyer();
+        var seats = await db.TierSlots.Where(t => t.UserId == buyer.Id && t.SubscriptionId == "sub_1").ToListAsync();
+        Assert.That(seats, Has.Count.EqualTo(4));
+        Assert.That(seats.Select(t => t.Tier), Is.All.EqualTo("premium"));
+        Assert.That(seats.Select(t => t.Expires), Is.All.EqualTo(DateTime.UtcNow.AddSeconds(2 * FourWeeks)).Within(TimeSpan.FromMinutes(1)));
+        Assert.That((await Subscription("sub_1")).DiscountCode, Is.EqualTo("BF2026"));
+    }
+
+    /// <summary>
+    /// A plan switch reprices with the period amount of the target plan, not the code default.
+    /// </summary>
+    [Test]
+    public async Task PlanSwitchRepricesWithThePeriodAmountOfTheTargetPlan()
+    {
+        db.DiscountCodes.Add(new DiscountCode { Code = "BF2026", AmountType = "percent", Amount = 10, PeriodAmounts = new() { [4] = 25 } });
+        await db.SaveChangesAsync();
+        checkoutMetadata[Keys.DiscountCode] = "BF2026";
+        checkoutMetadata[Keys.PriceCents] = "727";
+        remote = Snapshot(priceCents: 727);
+        var service = Service(stripe.Object);
+        var requests = new List<StripePriceChangeRequest>();
+        OnPriceChange(_ => new StripePriceChange(remote = Snapshot(plan: "l_prem_plus", priceCents: 2677), "in_up", "paid"), requests);
+        await service.StripeInvoicePaid(Invoice(total: 727));
+
+        await service.ChangePlan("buyer", "sub_1", "l_prem_plus");
+
+        Assert.That(requests.Single().UnitAmount, Is.EqualTo(2677), "35.69 minus the 25% of the 4 week period");
+    }
+
     [Test]
     public async Task RenewalExtendsTheSameAccessByOnePeriod()
     {

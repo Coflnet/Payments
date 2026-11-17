@@ -44,6 +44,7 @@ namespace Payments.Controllers
         private readonly SubscriptionRouting subscriptionRouting;
         private readonly IStripeSubscriptionGateway stripeSubscriptions;
         private readonly IPayPalSubscriptionApi paypalSubscriptions;
+        private readonly PayPalPlanCatalog paypalPlans;
 
         /// <summary>
         /// Creates a new instance of the <see cref="TopUpController"/> class
@@ -62,7 +63,8 @@ namespace Payments.Controllers
             DiscountCodeService discountCodes = null,
             SubscriptionRouting subscriptionRouting = null,
             IStripeSubscriptionGateway stripeSubscriptions = null,
-            IPayPalSubscriptionApi paypalSubscriptions = null)
+            IPayPalSubscriptionApi paypalSubscriptions = null,
+            PayPalPlanCatalog paypalPlans = null)
         {
             _logger = logger;
             db = context;
@@ -80,7 +82,11 @@ namespace Payments.Controllers
             this.subscriptionRouting = subscriptionRouting ?? new SubscriptionRouting(config);
             this.stripeSubscriptions = stripeSubscriptions;
             this.paypalSubscriptions = paypalSubscriptions;
+            this.paypalPlans = paypalPlans ?? (paypalSubscriptions == null ? null : new PayPalPlanCatalog(context, paypalSubscriptions, config));
         }
+
+        private PayPalPlanCatalog PayPalPlans =>
+            paypalPlans ?? throw new ApiException("PayPal subscriptions are not available.");
 
         /// <summary>
         /// All available topup options
@@ -118,6 +124,31 @@ namespace Payments.Controllers
             
             // Return the discount (might have IsValid=false if subscription-only and not a subscription)
             return Ok(discount);
+        }
+
+        /// <summary>
+        /// The promotion to offer for new subscriptions (newest active code flagged AutoApply), or 204 when there is none.
+        /// Send its code as <c>discountCode</c> with the Stripe/PayPal subscription checkout; it passes the normal validation.
+        /// Lemon Squeezy checkouts do not honor local codes, so buyers routed there must not be shown promotion prices.
+        /// </summary>
+        /// <param name="country">Optional buyer country; 204 when only Lemon Squeezy would apply to it</param>
+        [HttpGet]
+        [Route("discount/auto")]
+        [ProducesResponseType(typeof(AutoDiscount), 200)]
+        [ProducesResponseType(204)]
+        public async Task<ActionResult<AutoDiscount>> GetAutoDiscount([FromQuery] string country = null)
+        {
+            var code = await discountCodes.GetActiveAutoApply();
+            var providers = subscriptionRouting.DirectProvidersFor(country);
+            if (code == null || providers.Count == 0)
+                return NoContent();
+            return Ok(new AutoDiscount
+            {
+                Code = code.Code, Name = code.Name ?? code.Code, AmountType = code.AmountType, Amount = code.Amount,
+                PeriodAmounts = code.PeriodAmounts is { Count: > 0 } ? new(code.PeriodAmounts) : null,
+                Duration = code.Duration ?? DiscountCode.EveryRenewal, StartsAt = code.StartsAt, ExpiresAt = code.ExpiresAt,
+                Providers = providers.ToList()
+            });
         }
 
         /// <summary>
@@ -231,7 +262,8 @@ namespace Payments.Controllers
             return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };
         }
 
-        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null)
+        /// <param name="recurringAmount">Subscriptions: the renewal price when it differs from <paramref name="eurPrice"/></param>
+        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null, decimal? recurringAmount = null)
         {
             PaymentRequest request = null;
             request = await transactionService.WithTransactionAsync<PaymentRequest>(async (transaction, owns) =>
@@ -250,8 +282,9 @@ namespace Payments.Controllers
             if (existingRequests.Count > 5 || existingRequests.Count > 3 && existingRequests.Select(e => e.CreateOnIp).Distinct().Count() < 3)
                 throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
 
+            // Only a checkout of the same prices is reused: one opened with another (or without a) discount code charges other prices.
             var match = existingRequests.FirstOrDefault(r => r.User.Id == user.Id && r.ProductId.Id == product.Id && r.State < PaymentRequest.Status.PAID && r.CreatedAt > DateTime.UtcNow.AddMinutes(-10) && r.SessionId != null
-                && r.Provider == (provider ?? product.ProviderSlug));
+                && r.Provider == (provider ?? product.ProviderSlug) && r.Amount == eurPrice && r.RecurringAmount == recurringAmount);
             if (match != null)
                 return match; // already existing request, return it
 
@@ -262,6 +295,7 @@ namespace Payments.Controllers
                 CreatedAt = DateTime.UtcNow,
                 State = PaymentRequest.Status.CREATED,
                 Amount = eurPrice,
+                RecurringAmount = recurringAmount,
                 CreateOnIp = userIp,
                 DeviceFingerprint = topupotions.Fingerprint,
                 Locale = topupotions?.Locale,

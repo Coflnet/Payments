@@ -158,6 +158,9 @@ namespace Payments.Migrations
                         .HasMaxLength(10)
                         .HasColumnType("character varying(10)");
 
+                    b.Property<bool>("AutoApply")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Code")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -182,6 +185,9 @@ namespace Payments.Migrations
                     b.Property<string>("Name")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
+
+                    b.Property<string>("PeriodAmounts")
+                        .HasColumnType("text");
 
                     b.Property<DateTime?>("StartsAt")
                         .HasColumnType("timestamp with time zone");
@@ -329,6 +335,47 @@ namespace Payments.Migrations
                         .IsUnique();
 
                     b.ToTable("OwnerShip", (string)null);
+                });
+
+            modelBuilder.Entity("Coflnet.Payments.Models.PayPalPlan", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("BillingWeeks")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<string>("PayPalProductId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("PlanId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ProductSlug")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductSlug", "BillingWeeks", "Currency")
+                        .IsUnique();
+
+                    b.ToTable("PayPalPlans");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.PaymentConfirmationOutbox", b =>
@@ -583,6 +630,9 @@ namespace Payments.Migrations
                     b.Property<string>("Provider")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
+
+                    b.Property<decimal?>("RecurringAmount")
+                        .HasColumnType("numeric");
 
                     b.Property<string>("SessionId")
                         .HasMaxLength(75)

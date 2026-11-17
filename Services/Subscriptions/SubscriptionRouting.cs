@@ -98,6 +98,22 @@ public class SubscriptionRouting
     }
 
     /// <summary>
+    /// The direct providers (Stripe, PayPal) a buyer from <paramref name="country"/> can use; without a country
+    /// every enabled direct provider. Local discount codes only work with these, never with Lemon Squeezy.
+    /// </summary>
+    public IReadOnlyList<string> DirectProvidersFor(string country)
+    {
+        if (Normalize(country) != null)
+            return ProvidersFor(country).Select(p => p.Provider).Where(p => p != SubscriptionProviders.LemonSqueezy).ToList();
+        var providers = new List<string>();
+        if (stripeDirect || stripeManaged)
+            providers.Add(SubscriptionProviders.Stripe);
+        if (payPal)
+            providers.Add(SubscriptionProviders.PayPal);
+        return providers;
+    }
+
+    /// <summary>
     /// True when a new Lemon Squeezy subscription is allowed for this buyer
     /// </summary>
     public bool AllowsLemonSqueezyCheckout(string country) =>

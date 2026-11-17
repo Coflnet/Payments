@@ -84,9 +84,15 @@ The code handles these webhook events (no API key needed — events carry their 
 - `PAYMENT.CAPTURE.COMPLETED` → updates transaction reference
 - `PAYMENT.CAPTURE.REFUNDED` → reverts purchase locally
 
-No PayPal Payouts, Disputes, Subscriptions, Invoicing, Vault, or Transaction Search APIs are used.
+Direct subscriptions (see [docs/direct-subscriptions.md](docs/direct-subscriptions.md)) additionally use the **Subscriptions API**:
+create catalog products and billing plans (`/v1/catalogs/products`, `/v1/billing/plans`, created automatically on the first
+checkout of a plan), create/get/cancel subscriptions and list their transactions (`/v1/billing/subscriptions`), and get/refund
+subscription sales (`/v1/payments/sale`). Webhook events: `BILLING.SUBSCRIPTION.*`, `PAYMENT.SALE.COMPLETED`,
+`PAYMENT.SALE.REFUNDED`, `PAYMENT.SALE.REVERSED`.
 
-> **Live app features:** In the PayPal Developer Dashboard, enable **only** the "Accept payments" feature for the live REST API app. Disable Payouts, Customer disputes, Transaction search, Invoicing, Subscriptions, Partner referrals, Vault, and Webhooks management.
+No PayPal Payouts, Disputes, Invoicing, Vault, or Transaction Search APIs are used.
+
+> **Live app features:** In the PayPal Developer Dashboard, enable **only** the "Accept payments" and "Subscriptions" features for the live REST API app. Disable Payouts, Customer disputes, Transaction search, Invoicing, Partner referrals, Vault, and Webhooks management.
 
 
 
