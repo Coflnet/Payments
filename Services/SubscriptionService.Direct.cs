@@ -24,9 +24,11 @@ namespace Coflnet.Payments.Services;
 /// <param name="EurAmount">The payment in the plan currency (EUR) for revenue shares; null when unknown
 /// (a Managed Payments proration paid in a local currency)</param>
 /// <param name="IsProration">An upgrade's proration, not a paid period</param>
+/// <param name="TaxAmount">VAT contained in <paramref name="Amount"/> (direct sales: our VAT; Managed Payments: what Stripe remitted)</param>
+/// <param name="TaxRate">VAT rate in percent, 0 when unknown</param>
 public record SubscriptionPaymentOutcome(UserSubscription Subscription, TopUpProduct Product, string PaymentId,
     decimal Amount, string Currency, string Country, string PostalCode, string Email, string Name, DateTime PaidAt,
-    decimal? EurAmount = null, bool IsProration = false)
+    decimal? EurAmount = null, bool IsProration = false, decimal TaxAmount = 0, double TaxRate = 0)
 {
     /// <summary>Merchant of record (Stripe Managed Payments) remits the tax</summary>
     public bool TaxRemittedByProcessor => Subscription.ManagedPayments;
@@ -52,6 +54,28 @@ public partial class SubscriptionService
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// What the provider charges for a net price: Managed Payments the net price itself (Stripe adds the tax),
+    /// direct subscriptions the net price plus the VAT of <paramref name="country"/>. Null when a direct country has no VAT rate.
+    /// </summary>
+    private long? ChargedCents(decimal netPrice, bool managedPayments, string country)
+    {
+        if (managedPayments)
+            return SubscriptionPricing.ToCents(netPrice);
+        return tax?.RateFor(country) is int basisPoints ? SubscriptionPricing.GrossCents(netPrice, basisPoints) : null;
+    }
+
+    /// <summary>
+    /// Splits a gross amount a direct sale charged into its net part and VAT (zero without a rate)
+    /// </summary>
+    private (decimal net, decimal vat, double ratePercent) VatSplit(decimal gross, string country)
+    {
+        var basisPoints = tax?.RateFor(country) ?? 0;
+        var grossCents = SubscriptionPricing.ToCents(gross);
+        var vat = SubscriptionPricing.VatPortionCents(grossCents, basisPoints) / 100m;
+        return (gross - vat, vat, basisPoints / 100.0);
     }
 
     private Task<bool> IsGranted(string userId, string reference) => context.FiniteTransactions

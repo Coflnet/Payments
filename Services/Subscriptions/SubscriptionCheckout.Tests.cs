@@ -59,7 +59,7 @@ public class SubscriptionCheckoutTests
         Assert.That(paths.Intersect(ManagedPaymentsForbidden), Is.Empty);
         var price = options.LineItems.Single().PriceData;
         Assert.That(price.ProductData.TaxCode, Is.EqualTo("txcd_10103000"));
-        Assert.That(price.TaxBehavior, Is.EqualTo("inclusive"));
+        Assert.That(price.TaxBehavior, Is.EqualTo("exclusive"), "Managed Payments: net amount, Stripe adds the tax");
         Assert.That(price.UnitAmount, Is.EqualTo(2492));
         Assert.That(options.Mode, Is.EqualTo("subscription"));
         Assert.That(options.SubscriptionData.Metadata["mode"], Is.EqualTo("managed"));
@@ -139,10 +139,10 @@ public class SubscriptionCheckoutTests
     {
         var options = Build(StripeCheckoutMode.Managed, new Dictionary<string, string>
         {
-            ["STRIPE:MANAGED_TAX_CODE"] = "txcd_10000000", ["STRIPE:MANAGED_TAX_BEHAVIOR"] = "exclusive"
+            ["STRIPE:MANAGED_TAX_CODE"] = "txcd_10000000", ["STRIPE:MANAGED_TAX_BEHAVIOR"] = "inclusive"
         });
         Assert.That(options.LineItems.Single().PriceData.ProductData.TaxCode, Is.EqualTo("txcd_10000000"));
-        Assert.That(options.LineItems.Single().PriceData.TaxBehavior, Is.EqualTo("exclusive"));
+        Assert.That(options.LineItems.Single().PriceData.TaxBehavior, Is.EqualTo("inclusive"));
     }
 
     [Test]
@@ -165,6 +165,66 @@ public class SubscriptionCheckoutTests
         Assert.That(metadata.ContainsKey("creatorCode"), Is.False);
     }
 
+    [TestCase(969, 1900, 1153)]   // 9.69 * 1.19 = 11.5311
+    [TestCase(969, 2000, 1163)]   // 11.628
+    [TestCase(969, 0, 969)]
+    [TestCase(485, 1900, 577)]    // 5.7715
+    [TestCase(5, 2550, 6)]        // 6.2775
+    [TestCase(1000, 2050, 1205)]  // exactly .5 rounds away from zero
+    public void GrossIsTheNetCentsPlusVatRoundedHalfAwayFromZero(long net, int basisPoints, long gross) =>
+        Assert.That(SubscriptionPricing.GrossCents(net, basisPoints), Is.EqualTo(gross));
+
+    [Test]
+    public void NetPriceIsRoundedToCentsBeforeVatIsAdded() =>
+        Assert.That(SubscriptionPricing.GrossCents(4.845m, 1900), Is.EqualTo(SubscriptionPricing.GrossCents(485, 1900)));
+
+    [Test]
+    public void VatPortionIsWhatGrossExceedsItsNet()
+    {
+        Assert.That(SubscriptionPricing.VatPortionCents(1153, 1900), Is.EqualTo(184));
+        Assert.That(SubscriptionPricing.VatPortionCents(969, 0), Is.Zero);
+    }
+
+    [Test]
+    public void OnlyTheUsDefaultsToNoVat()
+    {
+        var tax = new SubscriptionTax(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            [SubscriptionTax.RateKeyPrefix + "DE"] = "1900", [SubscriptionTax.RateKeyPrefix + "XX"] = "20000"
+        }).Build());
+        Assert.That(tax.RateFor("de"), Is.EqualTo(1900));
+        Assert.That(tax.RateFor("US"), Is.Zero);
+        Assert.That(tax.RateFor("FR"), Is.Null);
+        Assert.That(tax.RateFor("XX"), Is.Null, "out of range");
+        Assert.That(tax.RateFor(null), Is.Null);
+    }
+
+    /// <summary>
+    /// Regression: a rate written as a percentage ("25.5") made the config binder throw on every provider lookup of
+    /// that country; it is a missing rate instead (the country gets no direct provider and startup logs it).
+    /// </summary>
+    [TestCase("25.5")]
+    [TestCase("-100")]
+    [TestCase("19%")]
+    public void InvalidRateIsAMissingRate(string value)
+    {
+        var routing = Routing(new Dictionary<string, string> { [SubscriptionTax.RateKeyPrefix + "FI"] = value });
+        Assert.That(routing.Tax.RateFor("FI"), Is.Null);
+        Assert.That(routing.StripeMode("FI"), Is.Null);
+        Assert.That(routing.DirectCountriesWithoutVatRate(), Does.Contain("FI"));
+    }
+
+    [Test]
+    public void StartupReportsDirectCountriesWithoutARateOnlyWhileADirectProviderIsOn()
+    {
+        Assert.That(Routing().DirectCountriesWithoutVatRate(), Does.Contain("FR").And.Not.Contain("DE").And.Not.Contain("US"));
+        var managedOnly = Routing(new Dictionary<string, string>
+        {
+            ["SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED"] = "false", ["SUBSCRIPTIONS:PAYPAL_ENABLED"] = "false"
+        });
+        Assert.That(managedOnly.DirectCountriesWithoutVatRate(), Is.Empty);
+    }
+
     [TestCase(2430000, 4)]
     [TestCase(2419200, 4)]
     [TestCase(7776000, 13)]
@@ -177,6 +237,8 @@ public class SubscriptionCheckoutTests
     {
         var values = new Dictionary<string, string>
         {
+            [SubscriptionTax.RateKeyPrefix + "DE"] = "1900", [SubscriptionTax.RateKeyPrefix + "AT"] = "2000",
+            [SubscriptionTax.RateKeyPrefix + "GB"] = "2000", [SubscriptionTax.RateKeyPrefix + "US"] = "0",
             ["SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED"] = "true",
             ["SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED"] = "true",
             ["SUBSCRIPTIONS:PAYPAL_ENABLED"] = "true"

@@ -151,7 +151,7 @@ public partial class SubscriptionService
         var reference = SubscriptionProviders.GrantReference(SubscriptionProviders.PayPal, sale.Id);
         // A redelivery of a granted sale returns it again so its recording can be retried.
         if (await IsGranted(subscription.User.ExternalId, reference))
-            return PayPalOutcome(subscription, sale);
+            return await PayPalOutcome(subscription, sale);
         var paid = ParseMoney(sale.Amount?.Total) ?? 0;
         if (!PayPalSaleMatchesPrice(subscription, sale))
         {
@@ -163,7 +163,7 @@ public partial class SubscriptionService
         subscription.PaymentAmount = sale.Amount.Total + " " + sale.Amount.Currency;
         await SwitchToRecurringPrice(subscription);
         await context.SaveChangesAsync();
-        return PayPalOutcome(subscription, sale);
+        return await PayPalOutcome(subscription, sale);
     }
 
     /// <summary>
@@ -179,12 +179,34 @@ public partial class SubscriptionService
             subscription.PriceCents = SubscriptionPricing.ToCents(recurring.Value);
     }
 
-    private static SubscriptionPaymentOutcome PayPalOutcome(UserSubscription subscription, PayPalSale sale)
+    /// <summary>
+    /// PayPal sales are direct sales: the paid gross contains the VAT of the checkout country, which is reported
+    /// separately; the EUR amount (creator shares) is the net part.
+    /// </summary>
+    private async Task<SubscriptionPaymentOutcome> PayPalOutcome(UserSubscription subscription, PayPalSale sale)
     {
         var paid = ParseMoney(sale.Amount?.Total) ?? 0;
+        var country = await PayPalVatCountry(subscription);
+        var (net, vat, rate) = VatSplit(paid, country);
         return new SubscriptionPaymentOutcome(subscription, (TopUpProduct)subscription.Product, sale.Id, paid,
-            sale.Amount?.Currency?.ToUpperInvariant(), subscription.User.Country, null, null, null,
-            ParseTime(sale.CreateTime) ?? DateTime.UtcNow, paid);
+            sale.Amount?.Currency?.ToUpperInvariant(), country, null, null, null,
+            ParseTime(sale.CreateTime) ?? DateTime.UtcNow, net, false, vat, rate);
+    }
+
+    /// <summary>
+    /// The country whose VAT the price of a PayPal subscription contains: the verified country of its checkout, fixed
+    /// for the subscription's lifetime (the user's remembered country changes with later purchases).
+    /// </summary>
+    private async Task<string> PayPalVatCountry(UserSubscription subscription)
+    {
+        var country = await context.PaymentRequests
+            .Where(r => r.Provider == SubscriptionProviders.PayPal && r.SessionId == subscription.ExternalId)
+            .OrderByDescending(r => r.Id).Select(r => r.Country).FirstOrDefaultAsync();
+        if (country != null)
+            return country;
+        logger.LogWarning("PayPal subscription {SubscriptionId} has no checkout country; splitting its VAT with the user's current country",
+            subscription.ExternalId);
+        return subscription.User.Country;
     }
 
     private static bool PayPalSaleMatchesPrice(UserSubscription subscription, PayPalSale sale) =>
@@ -227,7 +249,9 @@ public partial class SubscriptionService
             CreatedAt = ParseTime(remote.CreateTime) ?? DateTime.UtcNow,
             PriceCents = SubscriptionPricing.ToCents(request.Amount),
             Currency = plan.CurrencyCode?.ToUpperInvariant(),
-            ProviderPlanId = remote.PlanId
+            ProviderPlanId = remote.PlanId,
+            CreatorCode = request.CreatorCode,
+            DiscountCode = request.DiscountCode
         };
         context.Subscriptions.Add(subscription);
         request.State = PaymentRequest.Status.PAID;

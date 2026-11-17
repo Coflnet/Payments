@@ -59,6 +59,27 @@ namespace Payments.Migrations
                 type: "numeric",
                 nullable: true);
 
+            migrationBuilder.AddColumn<string>(
+                name: "Country",
+                table: "PaymentRequests",
+                type: "character varying(2)",
+                maxLength: 2,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "CreatorCode",
+                table: "PaymentRequests",
+                type: "character varying(50)",
+                maxLength: 50,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "DiscountCode",
+                table: "PaymentRequests",
+                type: "character varying(50)",
+                maxLength: 50,
+                nullable: true);
+
             migrationBuilder.CreateTable(
                 name: "DiscountCodes",
                 columns: table => new
@@ -147,6 +168,18 @@ WHERE s.""ProviderSlug"" = newer.""ProviderSlug"" AND s.""ExternalId"" = newer."
 
             migrationBuilder.DropColumn(
                 name: "RecurringAmount",
+                table: "PaymentRequests");
+
+            migrationBuilder.DropColumn(
+                name: "Country",
+                table: "PaymentRequests");
+
+            migrationBuilder.DropColumn(
+                name: "CreatorCode",
+                table: "PaymentRequests");
+
+            migrationBuilder.DropColumn(
+                name: "DiscountCode",
                 table: "PaymentRequests");
 
             migrationBuilder.DropIndex(

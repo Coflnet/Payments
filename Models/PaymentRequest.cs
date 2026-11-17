@@ -17,6 +17,24 @@ public class PaymentRequest : HasId
     /// </summary>
     public decimal? RecurringAmount { get; set; }
     /// <summary>
+    /// Subscriptions: the buyer country the price was made for (for direct sales the verified country whose VAT
+    /// <see cref="Amount"/> contains). PayPal splits the VAT of every sale with it, so a later change of the user's
+    /// country does not change the VAT of an existing subscription. Null for other requests.
+    /// </summary>
+    [MaxLength(2)]
+    public string Country { get; set; }
+    /// <summary>
+    /// PayPal subscriptions: the creator code of the checkout, copied to the subscription on activation
+    /// (creator revenue shares; Stripe keeps it in the checkout metadata)
+    /// </summary>
+    [MaxLength(50)]
+    public string CreatorCode { get; set; }
+    /// <summary>
+    /// PayPal subscriptions: the local discount code of the checkout, copied to the subscription on activation
+    /// </summary>
+    [MaxLength(50)]
+    public string DiscountCode { get; set; }
+    /// <summary>
     /// The coins this request buys. Null for requests created before the column existed;
     /// providers that fulfil from this record require it.
     /// </summary>

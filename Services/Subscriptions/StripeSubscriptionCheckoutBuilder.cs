@@ -12,7 +12,7 @@ namespace Coflnet.Payments.Services.Subscriptions;
 public record StripeSubscriptionCheckout(
     User User,
     TopUpProduct Plan,
-    long UnitAmountCents,
+    long UnitAmountCents, // direct: gross incl. VAT, final; managed: net, Stripe adds the tax
     int IntervalWeeks,
     StripeCheckoutMode Mode,
     string Country,
@@ -30,8 +30,8 @@ public record StripeManagedSettings(string TaxCode, string TaxBehavior)
 {
     /// <summary>Software as a service, personal use</summary>
     public const string DefaultTaxCode = "txcd_10103000";
-    /// <summary>Buyers pay the list price; Stripe withholds the tax from it</summary>
-    public const string DefaultTaxBehavior = "inclusive";
+    /// <summary>The unit amount is the net plan price; Stripe adds the buyer's tax at checkout (Lemon Squeezy era pricing)</summary>
+    public const string DefaultTaxBehavior = "exclusive";
 
     public static StripeManagedSettings From(IConfiguration config) => new(
         config?["STRIPE:MANAGED_TAX_CODE"] ?? DefaultTaxCode,
@@ -53,6 +53,7 @@ public static class StripeSubscriptionCheckoutBuilder
     private static SessionCreateOptions BuildDirect(StripeSubscriptionCheckout checkout)
     {
         var options = BaseOptions(checkout);
+        // The amount is final: no tax_behavior, tax_code or automatic_tax, so Stripe adds nothing.
         options.LineItems = [LineItem(checkout, null, null)];
         // Billing country is the evidence for the VAT we charge and remit ourselves.
         options.BillingAddressCollection = "required";

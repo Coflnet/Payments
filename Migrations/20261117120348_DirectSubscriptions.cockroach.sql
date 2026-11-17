@@ -16,6 +16,11 @@ ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "ManagedPayments" boolean N
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "PriceCents" bigint;
 ALTER TABLE "Subscriptions" ADD COLUMN IF NOT EXISTS "ProviderPlanId" character varying(64);
 ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "RecurringAmount" numeric;
+-- The buyer country a subscription checkout was priced for (the VAT country of direct sales)
+ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "Country" character varying(2);
+-- PayPal subscriptions: the codes of the checkout, copied to the subscription on activation
+ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "CreatorCode" character varying(50);
+ALTER TABLE "PaymentRequests" ADD COLUMN IF NOT EXISTS "DiscountCode" character varying(50);
 
 CREATE TABLE IF NOT EXISTS "DiscountCodes" (
     -- INT4 explicitly: the model maps Id to a 32 bit integer (CockroachDB's plain INTEGER is 64 bit).

@@ -49,14 +49,15 @@ public partial class TopUpController
         var stripe = stripeSubscriptions ?? throw new ApiException("Stripe subscriptions are not available.");
         var user = await userService.GetOrCreate(userId);
         var plan = await GetSubscriptionPlan(productId);
-        var (country, mode) = await StripeCountryAndMode(options);
-        var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.Stripe);
-        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.Stripe, RecurringIfDifferent(price, recurringPrice));
+        var (country, mode, vatBasisPoints) = await StripeCountryAndMode(options);
+        var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.Stripe, vatBasisPoints);
+        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.Stripe,
+            RecurringIfDifferent(price, recurringPrice), country);
         if (request.SessionId != null)
             return await ExistingStripeCheckout(stripe, request.SessionId);
         await RememberCountry(user, country, options);
 
-        var checkout = new StripeSubscriptionCheckout(user, plan, SubscriptionPricing.ToCents(price),
+        var checkout = new StripeSubscriptionCheckout(user, plan, SubscriptionPricing.ToCents(price),  // gross for direct sales, net for Managed Payments (see SubscriptionPrice)
             SubscriptionService.IntervalWeeks(plan.OwnershipSeconds).Value, mode, country,
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
             options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id);
@@ -88,8 +89,10 @@ public partial class TopUpController
         EnsureCountryAllowed(country);
         if (!subscriptionRouting.PayPalAvailable(country))
             throw new ApiException($"PayPal subscriptions are not available in your country ({country}).");
-        var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.PayPal);
-        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.PayPal, RecurringIfDifferent(price, recurringPrice));
+        var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.PayPal,
+            DirectVatBasisPoints(country, "PayPal"));
+        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.PayPal,
+            RecurringIfDifferent(price, recurringPrice), country);
         if (request.SessionId != null)
             return await ExistingPayPalApproval(paypal, request.SessionId);
         await RememberCountry(user, country, options);
@@ -104,6 +107,8 @@ public partial class TopUpController
         request.SessionId = created.Id;
         request.CoinAmount = plan.Cost;
         request.ExpiresAt = discount?.ExpiresAt;
+        request.CreatorCode = options?.CreatorCode;
+        request.DiscountCode = discount?.Code;
         await db.SaveChangesAsync();
         return new TopUpIdResponse { Id = created.Id, DirectLink = approve };
     }
@@ -126,10 +131,10 @@ public partial class TopUpController
     }
 
     /// <summary>
-    /// Direct countries get the one-time payment checks (selected country must match the IP country);
-    /// Managed Payments buyers are taxed by Stripe, so their country only selects the mode.
+    /// Direct countries get the one-time payment checks (selected country must match the IP country) and the VAT rate
+    /// added to their price; Managed Payments buyers are taxed by Stripe (rate 0 here), so their country only selects the mode.
     /// </summary>
-    private async Task<(string country, StripeCheckoutMode mode)> StripeCountryAndMode(TopUpOptions options)
+    private async Task<(string country, StripeCheckoutMode mode, int vatBasisPoints)> StripeCountryAndMode(TopUpOptions options)
     {
         var selected = options?.Country?.Trim().ToUpperInvariant()
             ?? options?.Locale?.Split(',').FirstOrDefault()?.Split('-').LastOrDefault()?.ToUpperInvariant();
@@ -139,26 +144,44 @@ public partial class TopUpController
             country = await GetMatchingCountry(options, false, "Stripe");
             EnsureCountryAllowed(country);
         }
+        var vatBasisPoints = subscriptionRouting.IsDirectCountry(country) ? DirectVatBasisPoints(country, "Stripe") : 0;
         var mode = subscriptionRouting.StripeMode(country)
             ?? throw new ApiException($"Stripe subscriptions are not available in your country ({country ?? "unknown"}).");
-        return (country, mode);
+        return (country, mode, vatBasisPoints);
+    }
+
+    /// <summary>
+    /// The VAT added to the net price of a direct sale to <paramref name="country"/>. A direct country without a
+    /// configured rate is refused: selling it at the net price would undercharge.
+    /// </summary>
+    private int DirectVatBasisPoints(string country, string provider)
+    {
+        if (subscriptionRouting.Tax.RateFor(country) is int basisPoints)
+            return basisPoints;
+        _logger.LogError("No VAT rate configured ({Key}{Country}); refusing the direct {Provider} subscription checkout",
+            SubscriptionTax.RateKeyPrefix, country, provider);
+        throw new ApiException($"{provider} subscriptions are not available in your country ({country}).");
     }
 
     /// <summary>
     /// What a subscription checkout charges: the first payment, the renewals (they differ for "first payment only"
     /// codes) and the validated code with the amount of the plan's billing period applied.
+    /// Plan prices are net: both amounts are the discounted net price plus <paramref name="vatBasisPoints"/> of VAT
+    /// (0 for Managed Payments, where Stripe adds the tax), i.e. what the provider will charge.
     /// </summary>
     private async Task<(decimal price, decimal recurringPrice, ValidatedDiscount discount)> SubscriptionPrice(
-        TopUpOptions options, TopUpProduct plan, string provider)
+        TopUpOptions options, TopUpProduct plan, string provider, int vatBasisPoints)
     {
         if ((options?.TopUpAmount ?? 0) > 0)
             throw new ApiException("Subscriptions have a fixed price.");
         // GetPriceAndCoins applies the creator code; the discount code is applied by the direct providers themselves.
         var (creatorPrice, _, _, discount) = await GetPriceAndCoins(options, plan, isSubscription: true, checkoutProvider: provider);
         discount = discount?.ForPeriod(SubscriptionService.IntervalWeeks(plan.OwnershipSeconds));
-        var price = SubscriptionPricing.Apply(creatorPrice, null, discount);
-        var recurringPrice = discount?.Duration == DiscountCode.FirstPaymentOnly ? creatorPrice : price;
-        if (SubscriptionPricing.ToCents(price) < SubscriptionPricing.MinimumCents)
+        var net = SubscriptionPricing.Apply(creatorPrice, null, discount);
+        var recurringNet = discount?.Duration == DiscountCode.FirstPaymentOnly ? creatorPrice : net;
+        var price = SubscriptionPricing.GrossCents(net, vatBasisPoints) / 100m;
+        var recurringPrice = SubscriptionPricing.GrossCents(recurringNet, vatBasisPoints) / 100m;
+        if (price * 100 < SubscriptionPricing.MinimumCents)
             throw new ApiException("The discounted price is below the minimum charge.");
         return (price, recurringPrice, discount);
     }

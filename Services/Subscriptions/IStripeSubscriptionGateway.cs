@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Stripe.Checkout;
@@ -56,12 +57,12 @@ public record StripeSubscriptionSnapshot(
 /// <summary>
 /// A price swap on the single subscription item
 /// </summary>
-/// <param name="UnitAmount">New recurring amount in cents</param>
+/// <param name="UnitAmount">New recurring amount in cents: gross incl. VAT for direct subscriptions, net for Managed Payments</param>
 /// <param name="Currency">Lower case ISO currency</param>
 /// <param name="IntervalWeeks">Billing interval in weeks (unchanged by plan switches)</param>
 /// <param name="InvoiceNow">Upgrade: invoice the proration immediately; the new price only applies once that
 /// invoice is paid (pending_if_incomplete). Downgrade: no proration, the new price starts with the next renewal.</param>
-/// <param name="TaxBehavior">Kept from the current price ("inclusive" for Managed Payments, null for direct)</param>
+/// <param name="TaxBehavior">Kept from the current price ("exclusive" for Managed Payments, where the amount is net; null for direct, where it is the final gross)</param>
 /// <param name="PlanSlug">The plan billed after the change; its Stripe product identifies the plan</param>
 /// <param name="PlanName">Product name shown to the buyer</param>
 public record StripePriceChangeRequest(long UnitAmount, string Currency, int IntervalWeeks, bool InvoiceNow,
@@ -106,7 +107,8 @@ public record StripeInvoiceInfo(
     string CustomerPostalCode,
     string CustomerEmail,
     string CustomerName,
-    IReadOnlyDictionary<string, string> SubscriptionMetadata)
+    IReadOnlyDictionary<string, string> SubscriptionMetadata,
+    long Tax = 0)
 {
     /// <summary>
     /// Maps Stripe billing reasons to the vocabulary the refund code shares with Lemon Squeezy
@@ -130,6 +132,7 @@ public record StripeInvoiceInfo(
             invoice.Total, invoice.AmountPaid, invoice.Currency, invoice.Created,
             invoice.CustomerAddress?.Country?.ToUpperInvariant(), invoice.CustomerAddress?.PostalCode,
             invoice.CustomerEmail, invoice.CustomerName,
-            new Dictionary<string, string>(details?.Metadata ?? new Dictionary<string, string>()));
+            new Dictionary<string, string>(details?.Metadata ?? new Dictionary<string, string>()),
+            invoice.TotalTaxes?.Sum(t => t.Amount) ?? 0);
     }
 }

@@ -112,6 +112,7 @@ namespace Coflnet.Payments
             services.AddScoped<DiscountCodeService>();
             services.AddScoped<Services.Subscriptions.PayPalPlanCatalog>();
             services.AddSingleton<Services.Subscriptions.SubscriptionRouting>();
+            services.AddSingleton<Services.Subscriptions.SubscriptionTax>();
             services.AddSingleton<Services.Subscriptions.IStripeSubscriptionGateway, Services.Subscriptions.StripeSubscriptionGateway>();
             services.AddSingleton<Services.Subscriptions.IPayPalSubscriptionApi, Services.Subscriptions.PayPalSubscriptionApi>();
             SalesRestrictions.Configure(Configuration[SalesRestrictions.ConfigKey]);
@@ -215,6 +216,20 @@ namespace Coflnet.Payments
                 endpoints.MapMetrics();
                 endpoints.MapControllers();
             });
+            LogMissingVatRates(app.ApplicationServices);
+        }
+
+        /// <summary>
+        /// A direct country without a usable VAT rate silently gets no direct subscription provider: say so once at startup.
+        /// </summary>
+        private static void LogMissingVatRates(IServiceProvider services)
+        {
+            var missing = services.GetRequiredService<Services.Subscriptions.SubscriptionRouting>().DirectCountriesWithoutVatRate();
+            if (missing.Count == 0)
+                return;
+            services.GetRequiredService<ILogger<Startup>>().LogError(
+                "No valid VAT rate ({Key}<country>, basis points) for direct subscription countries {Countries}: they are offered no direct Stripe/PayPal subscription",
+                Services.Subscriptions.SubscriptionTax.RateKeyPrefix, string.Join(",", missing));
         }
     }
 }

@@ -138,12 +138,30 @@ public partial class SubscriptionService
         await context.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// The outcome reports the EUR amount without VAT (creator shares are based on net revenue).
+    /// Direct sales (EUR, amount verified) split the VAT of the checkout country off what was paid and are reported
+    /// under that country; Managed Payments reports the tax Stripe remitted and <paramref name="managedEurAmount"/>,
+    /// the already net agreed price (null when unknown).
+    /// </summary>
     private SubscriptionPaymentOutcome StripeOutcome(UserSubscription subscription, StripeSubscriptionSnapshot snapshot,
-        StripeInvoiceInfo invoice, decimal? eurAmount) =>
-        new(subscription, (TopUpProduct)subscription.Product, invoice.Id, invoice.AmountPaid / 100m,
-            invoice.Currency?.ToUpperInvariant(), invoice.CustomerCountry ?? MetadataCountry(snapshot),
-            invoice.CustomerPostalCode, invoice.CustomerEmail, invoice.CustomerName, invoice.Created, eurAmount,
-            invoice.NormalizedBillingReason == "updated");
+        StripeInvoiceInfo invoice, decimal? managedEurAmount)
+    {
+        var paid = invoice.AmountPaid / 100m;
+        if (subscription.ManagedPayments)
+            return StripeOutcome(subscription, invoice, paid, invoice.CustomerCountry ?? MetadataCountry(snapshot),
+                managedEurAmount, invoice.Tax / 100m, 0);
+        var country = MetadataCountry(snapshot) ?? invoice.CustomerCountry;
+        var (net, vat, rate) = VatSplit(paid, country);
+        return StripeOutcome(subscription, invoice, paid, country, net, vat, rate);
+    }
+
+    private static SubscriptionPaymentOutcome StripeOutcome(UserSubscription subscription, StripeInvoiceInfo invoice,
+        decimal paid, string country, decimal? eurNet, decimal vat, double rate) =>
+        new(subscription, (TopUpProduct)subscription.Product, invoice.Id, paid,
+            invoice.Currency?.ToUpperInvariant(), country,
+            invoice.CustomerPostalCode, invoice.CustomerEmail, invoice.CustomerName, invoice.Created, eurNet,
+            invoice.NormalizedBillingReason == "updated", vat, rate);
 
     private async Task<SubscriptionPaymentOutcome> RejectStripeInvoice(UserSubscription subscription, StripeInvoiceInfo invoice, string reason)
     {
@@ -212,10 +230,16 @@ public partial class SubscriptionService
         if (terms?.Duration != DiscountCode.FirstPaymentOnly)
             return;
         var plan = (TopUpProduct)subscription.Product;
-        var full = await RecurringPriceCents(subscription, plan);
+        var full = await RecurringPriceCents(subscription, plan, MetadataCountry(snapshot));
+        if (full == null)
+        {
+            logger.LogError("No VAT rate for {Country}: the price of {SubscriptionId} stays at its first payment price after a \"first payment only\" code",
+                MetadataCountry(snapshot), subscription.ExternalId);
+            return;
+        }
         if (snapshot.UnitAmount == full)
             return;
-        var change = await StripeApi.ChangePrice(snapshot, new StripePriceChangeRequest(full,
+        var change = await StripeApi.ChangePrice(snapshot, new StripePriceChangeRequest(full.Value,
             plan.CurrencyCode.ToLowerInvariant(), IntervalWeeks(plan.OwnershipSeconds).Value, false,
             snapshot.TaxBehavior, plan.Slug, plan.Title));
         ApplyStripePrice(subscription, change.Subscription);
@@ -229,9 +253,9 @@ public partial class SubscriptionService
     private async Task<SubscriptionPaymentOutcome> RecordStripeProration(UserSubscription subscription,
         StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice)
     {
-        var eurAmount = subscription.ManagedPayments ? (decimal?)null : invoice.AmountPaid / 100m;
+        // A Managed Payments proration may be paid in a local currency: its EUR amount is unknown.
         if (await context.SubscriptionPlanChanges.AnyAsync(c => c.InvoiceId == invoice.Id))
-            return StripeOutcome(subscription, snapshot, invoice, eurAmount);
+            return StripeOutcome(subscription, snapshot, invoice, null);
         if (snapshot.HasPendingUpdate)
             throw new ApiException($"Stripe has not applied the upgrade paid by {invoice.Id} yet; retry later");
         var target = await PlanBySlug(StripePlans.SlugOf(snapshot));
@@ -242,7 +266,7 @@ public partial class SubscriptionService
             await PrepareOwnership(subscription);
             await ApplyPlanLocally(subscription, target, invoice.Id, invoice.Created, s => ApplyStripePrice(s, snapshot));
         }
-        return StripeOutcome(subscription, snapshot, invoice, eurAmount);
+        return StripeOutcome(subscription, snapshot, invoice, null);
     }
 
     /// <summary>
@@ -354,16 +378,18 @@ public partial class SubscriptionService
     /// <summary>
     /// The recurring price for <paramref name="plan"/> with the subscription's creator and discount codes,
     /// as agreed at checkout (codes that expired since still apply to the existing subscription;
-    /// "first payment only" codes no longer apply to recurring prices).
+    /// "first payment only" codes no longer apply to recurring prices), in the amount Stripe charges:
+    /// gross with the VAT of the checkout <paramref name="country"/> for direct subscriptions, net for Managed Payments.
+    /// Null when a direct subscription's country has no VAT rate.
     /// </summary>
-    private async Task<long> RecurringPriceCents(UserSubscription subscription, TopUpProduct plan)
+    private async Task<long?> RecurringPriceCents(UserSubscription subscription, TopUpProduct plan, string country)
     {
         var creator = string.IsNullOrWhiteSpace(subscription.CreatorCode) ? null
             : await context.CreatorCodes.FirstOrDefaultAsync(c => c.Code.ToLower() == subscription.CreatorCode.ToLower());
         var discount = (await DiscountTerms(subscription.DiscountCode))?.ForPeriod(IntervalWeeks(plan.OwnershipSeconds));
         if (discount?.Duration == DiscountCode.FirstPaymentOnly)
             discount = null;
-        return SubscriptionPricing.ToCents(SubscriptionPricing.Apply(plan.Price, creator, discount));
+        return ChargedCents(SubscriptionPricing.Apply(plan.Price, creator, discount), subscription.ManagedPayments, country);
     }
 
     private Task<Models.LemonSqueezy.ValidatedDiscount> DiscountTerms(string code) =>
@@ -403,7 +429,8 @@ public partial class SubscriptionService
                 throw new ApiException("The subscription is not available for a plan change. Reload its status first.");
             await service.PrepareOwnership(subscription);
             var upgrade = TierRank(target) > TierRank(await service.AccessProduct(subscription));
-            var priceCents = await service.RecurringPriceCents(subscription, target);
+            var priceCents = await service.RecurringPriceCents(subscription, target, MetadataCountry(current))
+                ?? throw new ApiException($"The plan can not be priced for country {MetadataCountry(current)}: no VAT rate is configured.");
             var change = await service.StripeApi.ChangePrice(current, new StripePriceChangeRequest(priceCents,
                 target.CurrencyCode.ToLowerInvariant(), IntervalWeeks(target.OwnershipSeconds).Value, upgrade,
                 current.TaxBehavior, target.Slug, target.Title));

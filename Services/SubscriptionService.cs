@@ -15,6 +15,7 @@ public partial class SubscriptionService
     private UserService userService;
     private ProductService productService;
     private ILogger<SubscriptionService> logger;
+    private readonly SubscriptionTax tax;
     private PaymentContext context;
     private LemonSqueezyService lemonSqueezyService;
     private readonly IReadOnlyDictionary<string, ISubscriptionProvider> providers;
@@ -34,6 +35,7 @@ public partial class SubscriptionService
     /// <param name="stripe">Stripe Billing API, null when Stripe subscriptions are not used</param>
     /// <param name="paypal">PayPal Subscriptions API, null when PayPal subscriptions are not used</param>
     /// <param name="paypalPlans">PayPal plans created per product; defaults to one without a config override</param>
+    /// <param name="tax">VAT rates for direct sales; without it direct subscriptions can not be priced (plan switches fail)</param>
     public SubscriptionService(
         ILogger<SubscriptionService> logger,
         TransactionService transactionService,
@@ -43,8 +45,10 @@ public partial class SubscriptionService
         LemonSqueezyService lemonSqueezyService,
         IStripeSubscriptionGateway stripe = null,
         IPayPalSubscriptionApi paypal = null,
-        PayPalPlanCatalog paypalPlans = null)
+        PayPalPlanCatalog paypalPlans = null,
+        SubscriptionTax tax = null)
     {
+        this.tax = tax;
         this.paypalPlans = paypalPlans ?? (paypal == null ? null : new PayPalPlanCatalog(context, paypal, null));
         this.logger = logger;
         this.transactionService = transactionService;

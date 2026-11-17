@@ -35,6 +35,16 @@ public abstract class DirectSubscriptionTestBase
     protected int failingPublishes;
     protected const int FourWeeks = 2430000;
 
+    /// <summary>VAT rates (EXPERT_CONFIG:VAT_RATE_BASIS_POINTS) as appsettings.json ships them, for a few direct countries</summary>
+    protected static readonly Dictionary<string, string> VatRates = new()
+    {
+        [SubscriptionTax.RateKeyPrefix + "DE"] = "1900", [SubscriptionTax.RateKeyPrefix + "AT"] = "2000",
+        [SubscriptionTax.RateKeyPrefix + "FI"] = "2550", [SubscriptionTax.RateKeyPrefix + "GB"] = "2000",
+        [SubscriptionTax.RateKeyPrefix + "US"] = "0"
+    };
+
+    protected static SubscriptionTax Tax() => new(new ConfigurationBuilder().AddInMemoryCollection(VatRates).Build());
+
     [SetUp]
     public async Task SetUpDatabase()
     {
@@ -79,7 +89,7 @@ public abstract class DirectSubscriptionTestBase
         new(NullLogger<SubscriptionService>.Instance, transactions, users, products, db,
             new LemonSqueezyService(new ConfigurationBuilder().Build(), NullLogger<LemonSqueezyService>.Instance, db,
                 new VariantCacheService(NullLogger<VariantCacheService>.Instance)),
-            stripe, paypal, paypalPlans);
+            stripe, paypal, paypalPlans, Tax());
 
     protected CallbackController Callback(SubscriptionService service, IDictionary<string, string> settings = null,
         PayPalHttpClient paypalClient = null)

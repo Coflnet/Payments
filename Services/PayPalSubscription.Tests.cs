@@ -85,6 +85,71 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
         return await controller.Paypal();
     }
 
+    /// <summary>
+    /// The agreed price is the gross incl. VAT; the record splits the VAT of the buyer's country off
+    /// (9.69 net + 19% = 11.53 gross, VAT 1.84) and the creator share is based on the net part.
+    /// </summary>
+    [Test]
+    public async Task GrossSaleIsRecordedWithItsVatSplitOff()
+    {
+        var request = await SeedCheckout("paypal", "I-SUB", premium, 11.53m);
+        request.User.Country = "DE";
+        await db.SaveChangesAsync();
+        SetSubscription();
+        SetSale(total: "11.53");
+
+        Assert.That(await Post(SaleCompleted(total: "11.53")), Is.TypeOf<OkResult>());
+
+        Assert.That((await Subscription("I-SUB")).PriceCents, Is.EqualTo(1153));
+        var record = await db.PaymentRecords.SingleAsync();
+        Assert.That((record.GrossAmount, record.TaxAmount, record.Subtotal, record.NetAmount), Is.EqualTo((11.53m, 1.84m, 9.69m, 9.69m)));
+        Assert.That(record.TaxRate, Is.EqualTo(19.0));
+        Assert.That(publishedPayments.Single().PayedAmount, Is.EqualTo(11.53), "the event carries what the buyer paid");
+    }
+
+    /// <summary>
+    /// Regression: the VAT of every sale was split with the user's current country, which later purchases overwrite.
+    /// A German subscription (11.53 incl. 19%) renewed after the user bought from Austria was recorded with 20% VAT
+    /// (1.92, net 9.61) under AT; from a country without a rate (CH) with no VAT at all and the whole 11.53 as creator base.
+    /// </summary>
+    [TestCase("AT")]
+    [TestCase("CH")]
+    public async Task VatOfASaleStaysWithTheCheckoutCountryAfterTheUserMoved(string laterCountry) =>
+        await AssertGermanSaleRecorded(laterCountry);
+
+    /// <summary>
+    /// Regression: the PayPal subscription never took over the checkout's creator code, so no creator share was
+    /// recorded for PayPal subscriptions at all (and the payment record named no creator code).
+    /// </summary>
+    [Test]
+    public async Task CreatorCodeOfTheCheckoutEarnsItsShareOfTheNetPrice()
+    {
+        await AssertGermanSaleRecorded("DE");
+        var subscription = await Subscription("I-SUB");
+        Assert.That(subscription.CreatorCode, Is.EqualTo("CREATOR"));
+        Assert.That((await db.PaymentRecords.SingleAsync()).CreatorCode, Is.EqualTo("CREATOR"));
+        Assert.That((await db.CreatorCodeRevenues.SingleAsync()).CreatorRevenue, Is.EqualTo(0.969m));
+    }
+
+    private async Task AssertGermanSaleRecorded(string laterCountry)
+    {
+        db.CreatorCodes.Add(new CreatorCode { Code = "CREATOR", CreatorUserId = "creator", DiscountPercent = 0,
+            RevenueSharePercent = 10, IsActive = true });
+        var request = await SeedCheckout("paypal", "I-SUB", premium, 11.53m);
+        request.Country = "DE";
+        request.CreatorCode = "CREATOR";
+        request.User.Country = laterCountry;
+        await db.SaveChangesAsync();
+        SetSubscription();
+        SetSale(total: "11.53");
+
+        Assert.That(await Post(SaleCompleted(total: "11.53")), Is.TypeOf<OkResult>());
+
+        var record = await db.PaymentRecords.SingleAsync();
+        Assert.That((record.Country, record.TaxAmount, record.NetAmount, record.TaxRate), Is.EqualTo(("DE", 1.84m, 9.69m, 19.0)));
+        Assert.That((await db.CreatorCodeRevenues.SingleAsync()).FinalPrice, Is.EqualTo(9.69m));
+    }
+
     [Test]
     public async Task SaleCompletedGrantsOnceAndActivationSafetyNetCannotGrantItAgain()
     {

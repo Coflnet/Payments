@@ -263,7 +263,8 @@ namespace Payments.Controllers
         }
 
         /// <param name="recurringAmount">Subscriptions: the renewal price when it differs from <paramref name="eurPrice"/></param>
-        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null, decimal? recurringAmount = null)
+        /// <param name="country">Subscriptions: the country the price was made for (its VAT for direct sales)</param>
+        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null, decimal? recurringAmount = null, string country = null)
         {
             PaymentRequest request = null;
             request = await transactionService.WithTransactionAsync<PaymentRequest>(async (transaction, owns) =>
@@ -282,9 +283,10 @@ namespace Payments.Controllers
             if (existingRequests.Count > 5 || existingRequests.Count > 3 && existingRequests.Select(e => e.CreateOnIp).Distinct().Count() < 3)
                 throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
 
-            // Only a checkout of the same prices is reused: one opened with another (or without a) discount code charges other prices.
+            // Only a checkout of the same prices is reused: one opened with another (or without a) discount code charges other prices,
+            // one opened for another country contains another VAT (or none, Managed Payments) even if the amount happens to match.
             var match = existingRequests.FirstOrDefault(r => r.User.Id == user.Id && r.ProductId.Id == product.Id && r.State < PaymentRequest.Status.PAID && r.CreatedAt > DateTime.UtcNow.AddMinutes(-10) && r.SessionId != null
-                && r.Provider == (provider ?? product.ProviderSlug) && r.Amount == eurPrice && r.RecurringAmount == recurringAmount);
+                && r.Provider == (provider ?? product.ProviderSlug) && r.Amount == eurPrice && r.RecurringAmount == recurringAmount && r.Country == country);
             if (match != null)
                 return match; // already existing request, return it
 
@@ -296,6 +298,7 @@ namespace Payments.Controllers
                 State = PaymentRequest.Status.CREATED,
                 Amount = eurPrice,
                 RecurringAmount = recurringAmount,
+                Country = country,
                 CreateOnIp = userIp,
                 DeviceFingerprint = topupotions.Fingerprint,
                 Locale = topupotions?.Locale,

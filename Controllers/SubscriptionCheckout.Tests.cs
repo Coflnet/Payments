@@ -56,7 +56,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
 
     private TopUpController Controller(string ipCountry, Dictionary<string, string> settings = null)
     {
-        var values = new Dictionary<string, string>
+        var values = new Dictionary<string, string>(VatRates)
         {
             ["SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED"] = "true",
             ["SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED"] = "true",
@@ -79,18 +79,94 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     };
 
     [Test]
-    public async Task EuBuyerGetsADirectStripeSubscriptionAtTheVatInclusivePlanPrice()
+    public async Task EuBuyerGetsADirectStripeSubscriptionAtTheNetPlanPricePlusVat()
     {
         var response = await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE"));
 
         Assert.That(response.DirectLink, Is.EqualTo("https://checkout.stripe.com/c/cs_1"));
         Assert.That(created.ManagedPayments, Is.Null);
-        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(969));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1153));
         Assert.That(created.LineItems.Single().PriceData.Recurring.IntervalCount, Is.EqualTo(4));
         var request = await db.PaymentRequests.SingleAsync();
         Assert.That(request.Provider, Is.EqualTo("stripe"));
         Assert.That(request.SessionId, Is.EqualTo("cs_1"));
         Assert.That((await Buyer()).Country, Is.EqualTo("DE"));
+    }
+
+    [Test]
+    public async Task ManagedPaymentsSendsTheNetPriceWithExclusiveTax()
+    {
+        await Controller("BR").StripeSubscribe("buyer", "l_premium", Options("BR"));
+        var price = created.LineItems.Single().PriceData;
+        Assert.That(price.UnitAmount, Is.EqualTo(969));
+        Assert.That(price.TaxBehavior, Is.EqualTo("exclusive"));
+        Assert.That(created.SubscriptionData.Metadata["priceCents"], Is.EqualTo("969"));
+    }
+
+    [Test]
+    public async Task DirectStripeSessionLetsStripeAddNoTax()
+    {
+        await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE"));
+        Assert.That(created.AutomaticTax, Is.Null);
+        Assert.That(created.LineItems.Single().PriceData.TaxBehavior, Is.Null);
+        Assert.That(created.LineItems.Single().PriceData.ProductData.TaxCode, Is.Null);
+    }
+
+    [Test]
+    public async Task GermanYearlyPlanWithAHalfOffPeriodCodeAddsVatToTheDiscountedNetPrice()
+    {
+        await AddPlans();
+        db.DiscountCodes.Add(new DiscountCode
+        {
+            Code = "HALF", AmountType = "percent", Amount = 0, SubscriptionOnly = true, PeriodAmounts = new() { [52] = 50 }
+        });
+        await db.SaveChangesAsync();
+        await Controller("DE").StripeSubscribe("buyer", "l_premium_52", Options("DE", "HALF"));
+        // net 99.69 -> 49.84 after the code (see PeriodAmountOverrides...), gross = 49.84 * 1.19 = 59.3096
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(5931));
+    }
+
+    [Test]
+    public async Task BritishBuyerPaysTwentyPercentVat()
+    {
+        await Controller("GB").StripeSubscribe("buyer", "l_premium", Options("GB"));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1163), "9.69 * 1.20 = 11.628");
+    }
+
+    [Test]
+    public async Task AmericanBuyerPaysThePlanPriceWithoutVat()
+    {
+        await Controller("US").StripeSubscribe("buyer", "l_premium", Options("US"));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(969));
+    }
+
+    /// <summary>
+    /// Regression: a direct country without a VAT rate would be sold at the net price; it must be refused and not listed.
+    /// </summary>
+    [Test]
+    public async Task DirectCountryWithoutAVatRateIsRefusedAndNotListed()
+    {
+        var controller = Controller("FR");
+        Assert.ThrowsAsync<ApiException>(() => controller.StripeSubscribe("buyer", "l_premium", Options("FR")));
+        Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_premium", Options("FR")));
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Never);
+        paypal.Verify(p => p.Create(It.IsAny<PayPalSubscriptionRequest>()), Times.Never);
+
+        var listed = await controller.GetSubscriptionProviders("FR");
+        Assert.That(listed.Select(o => o.Provider), Is.EqualTo(new[] { "lemonsqueezy" }));
+        Assert.That(controller.GetAutoDiscount("FR").Result.Result, Is.InstanceOf<NoContentResult>());
+    }
+
+    [Test]
+    public async Task PayPalFirstPaymentOnlyCodeAndRenewalsAreBothGross()
+    {
+        db.DiscountCodes.Add(new DiscountCode { Code = "INTRO", AmountType = "percent", Amount = 50, Duration = DiscountCode.FirstPaymentOnly });
+        await db.SaveChangesAsync();
+        await Controller("GB").PayPalSubscribe("buyer", "l_premium", Options("GB", "INTRO"));
+        Assert.That(paypalRequest.Price, Is.EqualTo(5.81m), "4.84 * 1.20 = 5.808");
+        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(11.63m));
+        var request = await db.PaymentRequests.SingleAsync();
+        Assert.That((request.Amount, request.RecurringAmount), Is.EqualTo((5.81m, (decimal?)11.63m)));
     }
 
     [Test]
@@ -123,8 +199,8 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         db.DiscountCodes.Add(new DiscountCode { Code = "SAVE10", AmountType = "percent", Amount = 10, SubscriptionOnly = true });
         await db.SaveChangesAsync();
         await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "save10"));
-        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(872));
-        Assert.That(created.SubscriptionData.Metadata["priceCents"], Is.EqualTo("872"));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1038));
+        Assert.That(created.SubscriptionData.Metadata["priceCents"], Is.EqualTo("1038"));
     }
 
     [Test]
@@ -184,11 +260,11 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         db.DiscountCodes.Add(new DiscountCode { Code = "INTRO", AmountType = "percent", Amount = 50, Duration = DiscountCode.FirstPaymentOnly });
         await db.SaveChangesAsync();
         await Controller("DE").PayPalSubscribe("buyer", "l_premium", Options("DE", "INTRO"));
-        Assert.That(paypalRequest.Price, Is.EqualTo(4.84m));
-        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(9.69m));
+        Assert.That(paypalRequest.Price, Is.EqualTo(5.76m));
+        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(11.53m));
         var request = await db.PaymentRequests.SingleAsync();
-        Assert.That(request.Amount, Is.EqualTo(4.84m));
-        Assert.That(request.RecurringAmount, Is.EqualTo(9.69m));
+        Assert.That(request.Amount, Is.EqualTo(5.76m));
+        Assert.That(request.RecurringAmount, Is.EqualTo(11.53m));
     }
 
     [Test]
@@ -207,12 +283,12 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
 
         Assert.That(response.DirectLink, Is.EqualTo("https://www.paypal.com/approve"));
         Assert.That(paypalRequest.PlanId, Is.EqualTo("P-PREMIUM"));
-        Assert.That(paypalRequest.Price, Is.EqualTo(9.69m));
+        Assert.That(paypalRequest.Price, Is.EqualTo(11.53m));
         Assert.That(paypalRequest.CustomId, Is.EqualTo(SubscriptionService.PayPalCustomId(premium.Id, "buyer")));
         var request = await db.PaymentRequests.SingleAsync();
         Assert.That(request.Provider, Is.EqualTo("paypal"));
         Assert.That(request.SessionId, Is.EqualTo("I-SUB"));
-        Assert.That(request.Amount, Is.EqualTo(9.69m));
+        Assert.That(request.Amount, Is.EqualTo(11.53m));
     }
 
     /// <summary>
@@ -246,8 +322,8 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await controller.StripeSubscribe("buyer", "l_premium", Options("DE", "SAVE10"));
 
         stripe.Verify(s => s.GetCheckoutSession(It.IsAny<string>()), Times.Never);
-        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(872));
-        Assert.That(await db.PaymentRequests.Select(r => r.Amount).ToListAsync(), Is.EquivalentTo(new[] { 9.69m, 8.72m }));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1038));
+        Assert.That(await db.PaymentRequests.Select(r => r.Amount).ToListAsync(), Is.EquivalentTo(new[] { 11.53m, 10.38m }));
     }
 
     /// <summary>
@@ -266,8 +342,8 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await controller.PayPalSubscribe("buyer", "l_premium", Options("DE", "FOREVER"));
 
         paypal.Verify(p => p.Get(It.IsAny<string>()), Times.Never);
-        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(4.84m));
-        Assert.That(await db.PaymentRequests.Select(r => r.RecurringAmount).ToListAsync(), Is.EquivalentTo(new decimal?[] { 9.69m, null }));
+        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(5.76m));
+        Assert.That(await db.PaymentRequests.Select(r => r.RecurringAmount).ToListAsync(), Is.EquivalentTo(new decimal?[] { 11.53m, null }));
     }
 
     /// <summary>
@@ -295,6 +371,43 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await db.SaveChangesAsync();
         Assert.ThrowsAsync<ApiException>(() => Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "PROMO")));
         Assert.ThrowsAsync<ApiException>(() => Controller("DE").PayPalSubscribe("buyer", "l_premium", Options("DE", "PROMO")));
+    }
+
+    /// <summary>
+    /// Regression: the open checkout was matched by amount only, so a buyer who opened a direct US checkout (9.69, no VAT)
+    /// and then one from a Managed Payments country (9.69 net, Stripe adds tax) got the direct session without tax.
+    /// </summary>
+    [Test]
+    public async Task OpenCheckoutOfTheSameAmountIsNotReusedForAnotherCountry()
+    {
+        await Controller("US").StripeSubscribe("buyer", "l_premium", Options("US"));
+
+        await Controller("BR").StripeSubscribe("buyer", "l_premium", Options("BR"));
+
+        stripe.Verify(s => s.GetCheckoutSession(It.IsAny<string>()), Times.Never);
+        Assert.That(created.ManagedPayments.Enabled, Is.True);
+        var requests = await db.PaymentRequests.OrderBy(r => r.Id).Select(r => new { r.Amount, r.Country }).ToListAsync();
+        Assert.That(requests.Select(r => (r.Amount, r.Country)), Is.EqualTo(new[] { (9.69m, "US"), (9.69m, "BR") }));
+    }
+
+    /// <summary>
+    /// The PayPal webhook splits the VAT with the checkout's country and takes the codes from the checkout
+    /// (regression: the creator code was lost, so PayPal subscriptions earned creators nothing).
+    /// </summary>
+    [Test]
+    public async Task PayPalCheckoutRecordsItsVerifiedCountryAndCodes()
+    {
+        db.CreatorCodes.Add(new Coflnet.Payments.Models.CreatorCode { Code = "CREATOR", CreatorUserId = "creator", DiscountPercent = 0, RevenueSharePercent = 10, IsActive = true });
+        db.DiscountCodes.Add(new DiscountCode { Code = "SAVE10", AmountType = "percent", Amount = 10, SubscriptionOnly = true });
+        await db.SaveChangesAsync();
+        var options = Options("AT", "SAVE10");
+        options.CreatorCode = "CREATOR";
+
+        await Controller("AT").PayPalSubscribe("buyer", "l_premium", options);
+
+        var request = await db.PaymentRequests.SingleAsync();
+        Assert.That((request.Amount, request.Country), Is.EqualTo((10.46m, "AT")), "9.69 - 10% = 8.72, * 1.20 = 10.464");
+        Assert.That((request.CreatorCode, request.DiscountCode), Is.EqualTo(("CREATOR", "SAVE10")));
     }
 
     [Test]
@@ -376,9 +489,9 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await db.SaveChangesAsync();
     }
 
-    [TestCase("l_premium", 727)]
-    [TestCase("l_premium_13", 1484)]
-    [TestCase("l_premium_52", 4984)]
+    [TestCase("l_premium", 865)]
+    [TestCase("l_premium_13", 1766)]
+    [TestCase("l_premium_52", 5931)]
     public async Task PeriodAmountOverridesTheDefaultAmountOfDirectStripe(string slug, long cents)
     {
         await AddPlans();
@@ -393,7 +506,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await AddBlackFridayCode();
         await Controller("BR").StripeSubscribe("buyer", "l_premium", Options("BR", "BF2026"));
         Assert.That(created.ManagedPayments.Enabled, Is.True);
-        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(727));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(727), "net: Stripe adds the tax");
     }
 
     [Test]
@@ -402,7 +515,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         db.DiscountCodes.Add(new DiscountCode { Code = "ONLY13", AmountType = "percent", Amount = 10, PeriodAmounts = new() { [13] = 50 } });
         await db.SaveChangesAsync();
         await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "ONLY13"));
-        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(872));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1038));
     }
 
     [Test]
@@ -411,8 +524,8 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await AddPlans();
         await AddBlackFridayCode();
         await Controller("DE").PayPalSubscribe("buyer", "l_premium_13", Options("DE", "BF2026"));
-        Assert.That(paypalRequest.Price, Is.EqualTo(14.84m));
-        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(14.84m));
+        Assert.That(paypalRequest.Price, Is.EqualTo(17.66m));
+        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(17.66m));
     }
 
     [Test]
@@ -438,7 +551,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await Controller("DE").StripeSubscribe("buyer", "l_premium-slots-4", options);
 
         // 33.69 - 10% creator = 30.32, then -25% = 22.74
-        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(2274));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(2706));
         Assert.That(created.SubscriptionData.Metadata["productSlug"], Is.EqualTo("l_premium-slots-4"));
         Assert.That(created.SubscriptionData.Metadata["discountCode"], Is.EqualTo("BF2026"));
         Assert.That(created.SubscriptionData.Metadata["creatorCode"], Is.EqualTo("CREATOR"));
@@ -450,7 +563,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await AddPlans();
         await AddBlackFridayCode();
         await Controller("DE").PayPalSubscribe("buyer", "l_premium-slots-4", Options("DE", "BF2026"));
-        Assert.That(paypalRequest.Price, Is.EqualTo(25.27m));
+        Assert.That(paypalRequest.Price, Is.EqualTo(30.07m));
         Assert.That(paypalPlans.Single().Price, Is.EqualTo(33.69m));
     }
 
@@ -503,7 +616,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await AddBlackFridayCode();
         var offered = (AutoDiscount)((OkObjectResult)(await Controller("DE").GetAutoDiscount("DE")).Result).Value;
         await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", offered.Code));
-        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(727));
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(865));
         Assert.That((await db.DiscountCodes.AsNoTracking().SingleAsync()).TimesRedeemed, Is.EqualTo(1));
     }
 

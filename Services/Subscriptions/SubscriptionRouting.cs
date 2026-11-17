@@ -31,6 +31,8 @@ public record SubscriptionProviderOption(string Provider, string Mode);
 /// SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED, SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED, SUBSCRIPTIONS:PAYPAL_ENABLED (default false)
 /// switch the new providers on; SUBSCRIPTIONS:LEMONSQUEEZY_CHECKOUT_ENABLED (default true) keeps
 /// Lemon Squeezy as the fallback where nothing else applies.
+/// A direct country without a configured VAT rate (<see cref="SubscriptionTax"/>) is not sold to directly, so no
+/// direct provider is offered for it: it would be undercharged.
 /// </summary>
 public class SubscriptionRouting
 {
@@ -44,12 +46,18 @@ public class SubscriptionRouting
     private readonly bool payPal;
 
     /// <summary>
+    /// VAT rates added on top of the net plan price for direct sales
+    /// </summary>
+    public SubscriptionTax Tax { get; }
+
+    /// <summary>
     /// Whether new Lemon Squeezy subscription checkouts are allowed at all
     /// </summary>
     public bool LemonSqueezyCheckoutEnabled { get; }
 
     public SubscriptionRouting(IConfiguration config)
     {
+        Tax = new SubscriptionTax(config);
         directCountries = ParseCountries(config?["SUBSCRIPTIONS:DIRECT_COUNTRIES"] ?? DefaultDirectCountries);
         stripeDirect = Flag(config, "SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED", false);
         stripeManaged = Flag(config, "SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED", false);
@@ -120,8 +128,17 @@ public class SubscriptionRouting
         LemonSqueezyCheckoutEnabled && (Normalize(country) == null
             || ProvidersFor(country).Any(p => p.Provider == SubscriptionProviders.LemonSqueezy));
 
-    private static bool SellsDirectlyTo(string country) =>
-        !SalesRestrictions.IsCountryBlocked(country) && !SalesRestrictions.IsBlockedForDirectProviders(country);
+    /// <summary>
+    /// Direct countries that are offered no direct provider because their VAT rate is missing or invalid;
+    /// empty while no direct provider is switched on.
+    /// </summary>
+    public IReadOnlyList<string> DirectCountriesWithoutVatRate() => stripeDirect || payPal
+        ? directCountries.Where(c => !Tax.HasRate(c)).Order(StringComparer.Ordinal).ToList()
+        : [];
+
+    private bool SellsDirectlyTo(string country) =>
+        !SalesRestrictions.IsCountryBlocked(country) && !SalesRestrictions.IsBlockedForDirectProviders(country)
+        && Tax.HasRate(country);
 
     private static string Normalize(string country)
     {

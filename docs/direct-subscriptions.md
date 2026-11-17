@@ -9,6 +9,37 @@ Lemon Squeezy is deprecated. New subscriptions (4, 13 or 52 week periods; Premiu
 Switches: `SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED`, `SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED`, `SUBSCRIPTIONS:PAYPAL_ENABLED` (all default
 false), `SUBSCRIPTIONS:LEMONSQUEEZY_CHECKOUT_ENABLED` (default true, only used where no other provider applies).
 
+## Pricing and VAT
+
+Plan prices (e.g. `l_premium` 9.69 EUR per 4 weeks) are NET, as they were with Lemon Squeezy; the buyer pays the net price plus VAT.
+
+- Order: plan price, creator code, then discount code (percent/fixed, with the period amount of the plan's billing period),
+  rounded to cents = the net price.
+- Direct Stripe and PayPal (Coflnet is merchant of record): gross cents = round-half-away-from-zero(net cents * (10000 + bp) / 10000),
+  with `bp` the VAT rate of the buyer's verified (IP matched) country in basis points. 9.69 in DE (1900) = 1153 cents, GB (2000) = 1163,
+  US = 969. `SubscriptionPricing.GrossCents` is the single implementation; checkout, PayPal first/recurring prices, plan switches,
+  the end of a "first payment only" code and the renewal amount checks (`UserSubscription.PriceCents` = what the provider charges) all use it.
+  Stripe gets the final amount (no `tax_behavior`, no automatic tax), PayPal the gross price override.
+- Rates come from `EXPERT_CONFIG:VAT_RATE_BASIS_POINTS:{ISO country}` (the same keys TransactionService uses for expert quotes; defaults in
+  `appsettings.json`). The US defaults to 0 without a key (one-time Stripe/PayPal purchases do not collect US sales tax either). Any
+  other direct country without a rate is refused (error log, `GET /TopUp/subscribe/providers` and `discount/auto` do not list the direct
+  providers for it) instead of being undercharged.
+- Stripe Managed Payments: the net price is sent with `tax_behavior` `exclusive` (`STRIPE:MANAGED_TAX_BEHAVIOR`, default `exclusive`) and
+  Stripe adds and remits the tax. The amount is not verified for these (local currency), only the plan.
+- Records: `PaymentRecord` has `GrossAmount` = paid, `TaxAmount` = VAT contained (direct: split off the gross with the country's rate;
+  Managed Payments: Stripe's invoice tax), `Subtotal`/`NetAmount` = gross minus VAT. The payment event carries the gross; creator
+  shares are based on the net price.
+- The VAT country is fixed at checkout for the subscription's lifetime: the Stripe checkout metadata country, for PayPal the
+  `PaymentRequest.Country` of its checkout (the user's remembered country changes with later purchases and is not used). Direct
+  payments are recorded (and published) under that country, also when the billing address names another one. Stripe does not add
+  tax itself, so the invoice shows no VAT line; the VAT is only in our records.
+- Missing or invalid rates (whole basis points 0-10000; "25.5" is invalid, use 2550) are logged once at startup as an error listing
+  the direct countries that are offered no direct provider.
+- An open checkout is only reused for the same provider, prices and country (a direct US checkout and a Managed Payments one can
+  have the same amount).
+- PayPal subscriptions take their creator and discount code from the checkout's `PaymentRequest` (Stripe from the metadata);
+  creator shares are based on the net part of what a direct sale paid (Managed Payments: the agreed net EUR price).
+
 ## Endpoints
 
 | Route | Purpose |

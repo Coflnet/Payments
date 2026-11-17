@@ -31,7 +31,9 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         periodEnd = DateTime.UtcNow.AddDays(28);
         checkoutMetadata = new Dictionary<string, string>
         {
-            [Keys.UserId] = "buyer", [Keys.ProductSlug] = "l_premium", [Keys.PriceCents] = "969", [Keys.Mode] = "direct"
+            [Keys.UserId] = "buyer", [Keys.ProductSlug] = "l_premium", [Keys.PriceCents] = "969", [Keys.Mode] = "direct",
+            // US: no VAT, so the prices of these tests are the plan prices; VAT cases set another country
+            [Keys.Country] = "US"
         };
         remote = Snapshot();
         stripe = new Mock<IStripeSubscriptionGateway>();
@@ -497,7 +499,7 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         Assert.That(await PaymentRecords("stripe"), Is.EqualTo(1));
         var record = await db.PaymentRecords.SingleAsync();
         Assert.That(record.TaxRemittedByProcessor, Is.False);
-        Assert.That(record.Country, Is.EqualTo("DE"));
+        Assert.That(record.Country, Is.EqualTo("US"), "a direct sale is recorded under its checkout (VAT) country, not the billing address");
         Assert.That(record.ExternalOrderId, Is.EqualTo("in_1"));
     }
 
@@ -538,6 +540,113 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         Assert.That(proration.CoinAmount, Is.Zero);
         Assert.That(proration.IsSubscriptionPayment, Is.True);
         Assert.That(await Grants("stripe-invoice-in_up"), Is.Zero);
+    }
+
+    /// <summary>
+    /// A direct sale charges net + VAT: the record splits the VAT of the checkout country off the paid gross
+    /// (9.69 net + 19% = 11.53 gross, VAT 1.84) and the creator share is based on the net price.
+    /// </summary>
+    [Test]
+    public async Task DirectGrossPaymentIsRecordedWithItsVatSplitOff()
+    {
+        db.CreatorCodes.Add(new CreatorCode { Code = "CREATOR", CreatorUserId = "creator", DiscountPercent = 0,
+            RevenueSharePercent = 10, IsActive = true });
+        await db.SaveChangesAsync();
+        checkoutMetadata[Keys.Country] = "DE";
+        checkoutMetadata[Keys.CreatorCode] = "CREATOR";
+        checkoutMetadata[Keys.PriceCents] = "1153";
+        remote = Snapshot(priceCents: 1153);
+
+        await PostStripe(Service(stripe.Object), "invoice.paid", InvoiceJson(total: 1153));
+
+        var record = await db.PaymentRecords.SingleAsync();
+        Assert.That((record.GrossAmount, record.TaxAmount, record.Subtotal, record.NetAmount), Is.EqualTo((11.53m, 1.84m, 9.69m, 9.69m)));
+        Assert.That((record.TaxRate, record.TaxName, record.TaxRemittedByProcessor), Is.EqualTo((19.0, "VAT", false)));
+        Assert.That((await db.CreatorCodeRevenues.SingleAsync()).FinalPrice, Is.EqualTo(9.69m));
+    }
+
+    /// <summary>
+    /// A plan switch reprices to the target plan's net price plus the VAT of the checkout country
+    /// (35.69 * 1.19 = 42.47), a "first payment only" code returns to the gross plan price (9.69 -> 11.53).
+    /// </summary>
+    [Test]
+    public async Task PlanSwitchAndEndOfFirstPaymentCodeUseTheGrossPrice()
+    {
+        db.DiscountCodes.Add(new DiscountCode { Code = "INTRO", AmountType = "percent", Amount = 50, Duration = DiscountCode.FirstPaymentOnly });
+        await db.SaveChangesAsync();
+        checkoutMetadata[Keys.Country] = "DE";
+        checkoutMetadata[Keys.DiscountCode] = "INTRO";
+        checkoutMetadata[Keys.PriceCents] = "576";
+        remote = Snapshot(priceCents: 576);
+        var service = Service(stripe.Object);
+        var requests = new List<StripePriceChangeRequest>();
+        OnPriceChange(r => new StripePriceChange(remote = Snapshot(plan: r.PlanSlug, priceCents: r.UnitAmount), "in_up", "paid"), requests);
+
+        await service.StripeInvoicePaid(Invoice(total: 576));
+        Assert.That(requests.Single().UnitAmount, Is.EqualTo(1153));
+
+        // the discount ended with the first invoice, so the switch is priced without it
+        await service.ChangePlan("buyer", "sub_1", "l_prem_plus");
+        Assert.That(requests.Last().UnitAmount, Is.EqualTo(4247));
+        Assert.That((await Subscription("sub_1")).PriceCents, Is.EqualTo(4247));
+    }
+
+    /// <summary>
+    /// Regression: the record named the invoice's billing country while the VAT in it is the checkout country's,
+    /// so German VAT was reported under Austria (tax exports group by country).
+    /// </summary>
+    [Test]
+    public async Task DirectSaleIsRecordedUnderTheCountryWhoseVatItContains()
+    {
+        checkoutMetadata[Keys.Country] = "DE";
+        checkoutMetadata[Keys.PriceCents] = "1153";
+        remote = Snapshot(priceCents: 1153);
+
+        await PostStripe(Service(stripe.Object), "invoice.paid", InvoiceJson(total: 1153, country: "AT"));
+
+        var record = await db.PaymentRecords.SingleAsync();
+        Assert.That((record.Country, record.TaxAmount, record.TaxRate), Is.EqualTo(("DE", 1.84m, 19.0)));
+        Assert.That(publishedPayments.Single().Address.CountryCode, Is.EqualTo("DE"));
+    }
+
+    /// <summary>
+    /// Regression: a redelivered first invoice (its recording failed) took the creator base from the agreed price,
+    /// which the end of a "first payment only" code had already raised: the share of 9.69 instead of the paid 4.84.
+    /// </summary>
+    [Test]
+    public async Task RetriedFirstInvoiceKeepsTheCreatorShareOfWhatWasPaid()
+    {
+        db.DiscountCodes.Add(new DiscountCode { Code = "INTRO", AmountType = "percent", Amount = 50, Duration = DiscountCode.FirstPaymentOnly });
+        db.CreatorCodes.Add(new CreatorCode { Code = "CREATOR", CreatorUserId = "creator", DiscountPercent = 0,
+            RevenueSharePercent = 10, IsActive = true });
+        await db.SaveChangesAsync();
+        checkoutMetadata[Keys.Country] = "DE";
+        checkoutMetadata[Keys.DiscountCode] = "INTRO";
+        checkoutMetadata[Keys.CreatorCode] = "CREATOR";
+        checkoutMetadata[Keys.PriceCents] = "576";
+        remote = Snapshot(priceCents: 576);
+        OnPriceChange(r => new StripePriceChange(remote = Snapshot(priceCents: r.UnitAmount), null, null));
+        var service = Service(stripe.Object);
+        failingPublishes = 1;
+
+        await PostStripe(service, "invoice.paid", InvoiceJson(total: 576));
+        Assert.That((await Subscription("sub_1")).PriceCents, Is.EqualTo(1153), "the code ended with the first invoice");
+        await PostStripe(service, "invoice.paid", InvoiceJson(total: 576));
+
+        Assert.That((await db.CreatorCodeRevenues.SingleAsync()).FinalPrice, Is.EqualTo(4.84m));
+        Assert.That((await db.PaymentRecords.SingleAsync()).NetAmount, Is.EqualTo(4.84m));
+    }
+
+    [Test]
+    public async Task DirectInvoiceThatLacksTheVatIsRejected()
+    {
+        checkoutMetadata[Keys.Country] = "DE";
+        checkoutMetadata[Keys.PriceCents] = "1153";
+        remote = Snapshot(priceCents: 1153);
+        var service = Service(stripe.Object);
+
+        Assert.That(await service.StripeInvoicePaid(Invoice(total: 969)), Is.Null, "net only: marked for refund, not granted");
+        Assert.That(await Grants("stripe-invoice-in_1"), Is.Zero);
     }
 
     /// <summary>

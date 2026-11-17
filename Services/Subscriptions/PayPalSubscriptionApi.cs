@@ -18,7 +18,8 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// </summary>
 /// <param name="PlanId">PayPal plan (P-...) with a one cycle TRIAL followed by an infinite REGULAR cycle of the plan's period</param>
 /// <param name="CustomId">Internal reference, at most 127 characters</param>
-/// <param name="Price">VAT-inclusive (and discounted) price of the first cycle (the plan's TRIAL cycle), sent as plan override</param>
+/// <param name="Price">Gross price (discounted net price plus the buyer's VAT, see SubscriptionPricing.GrossCents) of the first cycle
+/// (the plan's TRIAL cycle), sent as plan override; PayPal charges it as is</param>
 /// <param name="RecurringPrice">Price of every following cycle (the REGULAR cycle); equals <paramref name="Price"/> unless a
 /// "first payment only" code applies. Null means the same as <paramref name="Price"/>.</param>
 public record PayPalSubscriptionRequest(string PlanId, string CustomId, decimal Price, string Currency,
