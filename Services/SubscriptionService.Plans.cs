@@ -26,9 +26,25 @@ public partial class SubscriptionService
             : product.Groups?.Any(g => g.Slug == "starter_premium") == true ? 1 : 0
     };
 
+    /// <summary>
+    /// Subscription plans are the recurring service products (tiers, periods, slot bundles).
+    /// Every provider sells the same rows; the provider is recorded on the subscription, not the plan.
+    /// </summary>
+    internal static bool IsSubscriptionPlan(TopUpProduct product) =>
+        product != null && product.Type.HasFlag(Product.ProductType.SERVICE)
+        && !product.Type.HasFlag(Product.ProductType.DISABLED) && product.Price > 0
+        && SubscriptionInterval(product.OwnershipSeconds) != null;
+
+    /// <summary>
+    /// Billing period in weeks for the direct providers (Stripe, PayPal): 4, 13 or 52 weeks.
+    /// </summary>
+    internal static int? IntervalWeeks(long ownershipSeconds) => SubscriptionInterval(ownershipSeconds) switch
+    {
+        "week_4" => 4, "month_3" => 13, "year_1" => 52, _ => null
+    };
+
     private static bool CanChangePlan(Product current, TopUpProduct target) =>
-        target.ProviderSlug == "lemonsqueezy" && target.Type.HasFlag(Product.ProductType.SERVICE)
-        && !target.Type.HasFlag(Product.ProductType.DISABLED) && TierRank(current) > 0
+        IsSubscriptionPlan(target) && TierRank(current) > 0
         && TierRank(target) != TierRank(current) && current.SlotCount == target.SlotCount
         && SubscriptionInterval(current.OwnershipSeconds) is string interval
         && interval == SubscriptionInterval(target.OwnershipSeconds);
@@ -42,12 +58,13 @@ public partial class SubscriptionService
     {
         var subscription = await OwnedSubscription(userId, externalId)
             ?? throw new ApiException("Subscription not found");
-        if (subscription.Status != "active" || subscription.EndsAt != null)
+        var provider = ProviderFor(subscription);
+        if (subscription.Status != "active" || subscription.EndsAt != null || !provider.CanChangePlan(subscription))
             return [];
-        var slugs = lemonSqueezyService.SubscriptionVariants.Keys.ToArray();
-        var products = await context.TopUpProducts.Include(p => p.Groups).Where(p => slugs.Contains(p.Slug)).ToListAsync();
+        var candidates = await context.TopUpProducts.Include(p => p.Groups)
+            .Where(p => p.Type.HasFlag(Product.ProductType.SERVICE)).ToListAsync();
         var access = await AccessProduct(subscription);
-        return products.Where(p => CanChangePlan(subscription.Product, p))
+        return candidates.Where(p => CanChangePlan(subscription.Product, p) && provider.OffersPlan(p))
             .OrderBy(p => p.Price).Select(p => new SubscriptionPlan(p.Slug, p.Title, p.Price,
                 p.CurrencyCode, p.OwnershipSeconds, p.SlotCount, TierRank(p) > TierRank(access))).ToList();
     }
@@ -64,9 +81,17 @@ public partial class SubscriptionService
         if (subscription.Product.Slug == targetProductSlug)
             return new("completed");
         var target = await context.TopUpProducts.Include(p => p.Groups).SingleOrDefaultAsync(p => p.Slug == targetProductSlug);
+        var provider = ProviderFor(subscription);
         if (target == null || !CanChangePlan(subscription.Product, target)
-            || !lemonSqueezyService.SubscriptionVariants.TryGetValue(targetProductSlug, out var variantId))
+            || !provider.CanChangePlan(subscription) || !provider.OffersPlan(target))
             throw new ApiException("This subscription plan change is unavailable.");
+        return await provider.ChangePlan(subscription, target);
+    }
+
+    private async Task<SubscriptionChangeResult> ChangeLemonSqueezyPlan(UserSubscription subscription, TopUpProduct target)
+    {
+        var externalId = subscription.ExternalId;
+        var variantId = lemonSqueezyService.SubscriptionVariants[target.Slug];
         await PrepareOwnership(subscription);
         await lemonSqueezyService.ValidateSubscriptionVariant(target, variantId);
         var remote = await lemonSqueezyService.GetSubscription(externalId);
@@ -143,31 +168,41 @@ public partial class SubscriptionService
             throw new ApiException("Invalid subscription update response.");
         if (!await lemonSqueezyService.ValidateSubscriptionPrice(remote, target))
             return false;
-        await transactionService.WithTransactionAsync(async (_, _) =>
+        await ApplyPlanLocally(subscription, target, invoice?.Id, remote.Attributes.UpdatedAt, s =>
+        {
+            s.ProviderVariantId = remote.Attributes.VariantId;
+            // Billing dates/status may change without extending the paid entitlement.
+            s.RenewsAt = remote.Attributes.RenewsAt.Value;
+            s.Status = remote.Attributes.Status;
+            s.UpdatedAt = remote.Attributes.UpdatedAt;
+        });
+        return true;
+    }
+
+    /// <summary>
+    /// Provider independent part of a plan switch. An upgrade paid by <paramref name="invoiceId"/> raises the
+    /// access tier now (and is recorded so refunding that invoice restores the previous tier);
+    /// a downgrade changes the next bill and the current paid tier lasts until renewal.
+    /// </summary>
+    private Task ApplyPlanLocally(UserSubscription subscription, TopUpProduct target, string invoiceId,
+        DateTime changedAt, Action<UserSubscription> updateBilling) =>
+        transactionService.WithTransactionAsync(async (_, _) =>
         {
             var access = await AccessProduct(subscription);
             if (TierRank(target) > TierRank(access))
             {
-                if (invoice != null)
+                if (invoiceId != null)
                     context.SubscriptionPlanChanges.Add(new SubscriptionPlanChange
                     {
                         SubscriptionId = subscription.ExternalId, PreviousProduct = access, Product = target,
-                        ChangedAt = remote.Attributes.UpdatedAt, PeriodEnd = await AccessExpiry(subscription) ?? subscription.RenewsAt, InvoiceId = invoice.Id
+                        ChangedAt = changedAt, PeriodEnd = await AccessExpiry(subscription) ?? subscription.RenewsAt, InvoiceId = invoiceId
                     });
                 await SetAccessProduct(subscription, target);
             }
-            // A downgrade changes the next bill; the current paid tier lasts until renewal.
-
             subscription.Product = target;
-            subscription.ProviderVariantId = remote.Attributes.VariantId;
-            // Billing dates/status may change without extending the paid entitlement.
-            subscription.RenewsAt = remote.Attributes.RenewsAt.Value;
-            subscription.Status = remote.Attributes.Status;
-            subscription.UpdatedAt = remote.Attributes.UpdatedAt;
+            updateBilling(subscription);
             await context.SaveChangesAsync();
         });
-        return true;
-    }
 
     private async Task<Product> AccessProduct(UserSubscription subscription)
     {
@@ -178,9 +213,10 @@ public partial class SubscriptionService
             .Select(s => s.Tier).FirstOrDefaultAsync();
         if (tier == null || tier == subscription.Product.SlotTier)
             return subscription.Product;
-        return await context.TopUpProducts.Include(p => p.Groups).FirstAsync(p => p.ProviderSlug == "lemonsqueezy"
-            && p.SlotTier == tier && p.SlotCount == subscription.Product.SlotCount
-            && p.OwnershipSeconds == subscription.Product.OwnershipSeconds);
+        var candidates = await context.TopUpProducts.Include(p => p.Groups).OrderBy(p => p.Id)
+            .Where(p => p.SlotTier == tier && p.SlotCount == subscription.Product.SlotCount
+                && p.OwnershipSeconds == subscription.Product.OwnershipSeconds).ToListAsync();
+        return candidates.First(IsSubscriptionPlan);
     }
 
     private Task<DateTime?> AccessExpiry(UserSubscription subscription) => subscription.Product.SlotCount > 0

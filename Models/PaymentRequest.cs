@@ -11,6 +11,11 @@ public class PaymentRequest : HasId
     /// <value></value>
     public decimal Amount { get; set; }
     /// <summary>
+    /// The coins this request buys. Null for requests created before the column existed;
+    /// providers that fulfil from this record require it.
+    /// </summary>
+    public decimal? CoinAmount { get; set; }
+    /// <summary>
     /// The id of the product to pay for
     /// </summary>
     /// <value></value>

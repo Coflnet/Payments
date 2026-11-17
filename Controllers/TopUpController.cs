@@ -18,6 +18,7 @@ using PayPalHttp;
 using RestSharp;
 using Stripe.Checkout;
 using Coflnet.Payments.Models.CoinGate;
+using Coflnet.Payments.Services.Subscriptions;
 
 namespace Payments.Controllers
 {
@@ -26,7 +27,7 @@ namespace Payments.Controllers
     /// </summary>
     [ApiController]
     [Route("[controller]")]
-    public class TopUpController : ControllerBase
+    public partial class TopUpController : ControllerBase
     {
         private readonly ILogger<TopUpController> _logger;
         private readonly PaymentContext db;
@@ -39,6 +40,10 @@ namespace Payments.Controllers
         private readonly CreatorCodeService creatorCodeService;
         private readonly CoinGateService coinGateService;
         private readonly IIpCountryLookup ipCountryLookup;
+        private readonly DiscountCodeService discountCodes;
+        private readonly SubscriptionRouting subscriptionRouting;
+        private readonly IStripeSubscriptionGateway stripeSubscriptions;
+        private readonly IPayPalSubscriptionApi paypalSubscriptions;
 
         /// <summary>
         /// Creates a new instance of the <see cref="TopUpController"/> class
@@ -53,7 +58,11 @@ namespace Payments.Controllers
             LemonSqueezyService lemonSqueezyService,
             CreatorCodeService creatorCodeService,
             CoinGateService coinGateService,
-            IIpCountryLookup ipCountryLookup)
+            IIpCountryLookup ipCountryLookup,
+            DiscountCodeService discountCodes = null,
+            SubscriptionRouting subscriptionRouting = null,
+            IStripeSubscriptionGateway stripeSubscriptions = null,
+            IPayPalSubscriptionApi paypalSubscriptions = null)
         {
             _logger = logger;
             db = context;
@@ -66,6 +75,11 @@ namespace Payments.Controllers
             this.creatorCodeService = creatorCodeService;
             this.coinGateService = coinGateService;
             this.ipCountryLookup = ipCountryLookup;
+            this.discountCodes = discountCodes ?? new DiscountCodeService(context,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<DiscountCodeService>.Instance);
+            this.subscriptionRouting = subscriptionRouting ?? new SubscriptionRouting(config);
+            this.stripeSubscriptions = stripeSubscriptions;
+            this.paypalSubscriptions = paypalSubscriptions;
         }
 
         /// <summary>
@@ -80,21 +94,23 @@ namespace Payments.Controllers
         }
 
         /// <summary>
-        /// Validates a LemonSqueezy discount code
+        /// Validates a discount code. Lemon Squeezy checkouts use codes defined in Lemon Squeezy,
+        /// all other providers (Stripe, PayPal, CoinGate) use the local discount code table.
         /// </summary>
         /// <param name="code">The discount code to validate</param>
         /// <param name="isSubscription">Whether this is for a subscription purchase (optional)</param>
+        /// <param name="provider">The checkout provider; without it local codes are checked first, then Lemon Squeezy</param>
         /// <returns>Discount info if valid, or IsValid=false if invalid</returns>
         [HttpGet]
         [Route("discount/validate")]
-        public async Task<ActionResult<ValidatedDiscount>> ValidateDiscountCode([FromQuery] string code, [FromQuery] bool? isSubscription = null)
+        public async Task<ActionResult<ValidatedDiscount>> ValidateDiscountCode([FromQuery] string code, [FromQuery] bool? isSubscription = null, [FromQuery] string provider = null)
         {
             if (string.IsNullOrWhiteSpace(code))
             {
                 return BadRequest(new ValidatedDiscount { Code = code, IsValid = false, Name = "Discount code is required" });
             }
             
-            var discount = await lemonSqueezyService.ValidateDiscountCodeAsync(code, isSubscription);
+            var discount = await ValidateDiscount(code, isSubscription, provider);
             if (discount == null)
             {
                 return Ok(new ValidatedDiscount { Code = code, IsValid = false, Name = "Invalid or expired discount code" });
@@ -215,7 +231,7 @@ namespace Payments.Controllers
             return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };
         }
 
-        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice)
+        private async Task<PaymentRequest> AttemptBlockFraud(TopUpOptions topupotions, User user, TopUpProduct product, decimal eurPrice, string provider = null)
         {
             PaymentRequest request = null;
             request = await transactionService.WithTransactionAsync<PaymentRequest>(async (transaction, owns) =>
@@ -234,7 +250,8 @@ namespace Payments.Controllers
             if (existingRequests.Count > 5 || existingRequests.Count > 3 && existingRequests.Select(e => e.CreateOnIp).Distinct().Count() < 3)
                 throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
 
-            var match = existingRequests.FirstOrDefault(r => r.User.Id == user.Id && r.ProductId.Id == product.Id && r.State < PaymentRequest.Status.PAID && r.CreatedAt > DateTime.UtcNow.AddMinutes(-10) && r.SessionId != null);
+            var match = existingRequests.FirstOrDefault(r => r.User.Id == user.Id && r.ProductId.Id == product.Id && r.State < PaymentRequest.Status.PAID && r.CreatedAt > DateTime.UtcNow.AddMinutes(-10) && r.SessionId != null
+                && r.Provider == (provider ?? product.ProviderSlug));
             if (match != null)
                 return match; // already existing request, return it
 
@@ -248,7 +265,7 @@ namespace Payments.Controllers
                 CreateOnIp = userIp,
                 DeviceFingerprint = topupotions.Fingerprint,
                 Locale = topupotions?.Locale,
-                Provider = product.ProviderSlug
+                Provider = provider ?? product.ProviderSlug
             };
                 db.Add(request);
                 await db.SaveChangesAsync();
@@ -358,6 +375,7 @@ namespace Payments.Controllers
                 Provider = "paypal",
                 SessionId = result.Id,
                 Amount = decimal.Parse(moneyValue.Value, CultureInfo.InvariantCulture),
+                CoinAmount = coinAmount,
                 State = PaymentRequest.Status.CREATED,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
@@ -380,7 +398,7 @@ namespace Payments.Controllers
         {
             var user = await userService.GetOrCreate(userId);
             TopUpProduct product = await GetTopupProduct(productId, "lemonsqueezy");
-            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: false);
+            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: false, checkoutProvider: SubscriptionProviders.LemonSqueezy);
             var variantId = config["LEMONSQUEEZY:VARIANT_ID"];
             // For LemonSqueezy, pass the discount code to their checkout (they apply it)
             return await lemonSqueezyService.SetupPayment(options, user, product, eurPrice, coinAmount, variantId, false, validatedDiscount);
@@ -395,7 +413,8 @@ namespace Payments.Controllers
             Console.WriteLine(JsonConvert.SerializeObject(product));
             if (!product.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("Product is not a service, can't be subscribed to");
-            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true);
+            EnsureLemonSqueezySubscriptionAllowed(options?.Country);
+            var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true, checkoutProvider: SubscriptionProviders.LemonSqueezy);
             
             // Handle trial options - validate user hasn't already used trial for this product
             bool enableTrial = product.SlotCount == 0 && (options?.EnableTrial ?? false);
@@ -499,7 +518,25 @@ namespace Payments.Controllers
             return new(product);
         }
 
-        private async Task<(decimal eurPrice, decimal coinAmount, CreatorCode validatedCode, ValidatedDiscount validatedDiscount)> GetPriceAndCoins(TopUpOptions options, TopUpProduct product, bool isSubscription = false)
+        /// <summary>
+        /// One rule for the validation endpoint and the checkouts: Lemon Squeezy checkouts use Lemon Squeezy codes;
+        /// everything else uses local codes first. One-time checkouts (and callers that name no provider) fall back to
+        /// Lemon Squeezy codes while they are still answered there; direct subscriptions only accept local codes,
+        /// because Lemon Squeezy's durations can not be applied to a Stripe/PayPal subscription price.
+        /// </summary>
+        private async Task<ValidatedDiscount> ValidateDiscount(string code, bool? isSubscription, string provider)
+        {
+            if (provider == SubscriptionProviders.LemonSqueezy)
+                return await lemonSqueezyService.ValidateDiscountCodeAsync(code, isSubscription);
+            var local = await discountCodes.Validate(code, isSubscription ?? false);
+            if (local != null || isSubscription == true && provider != null)
+                return local;
+            return await lemonSqueezyService.ValidateDiscountCodeAsync(code, isSubscription);
+        }
+
+        private static bool IsLocalDiscount(ValidatedDiscount discount) => discount?.Id?.StartsWith("local-") == true;
+
+        private async Task<(decimal eurPrice, decimal coinAmount, CreatorCode validatedCode, ValidatedDiscount validatedDiscount)> GetPriceAndCoins(TopUpOptions options, TopUpProduct product, bool isSubscription = false, string checkoutProvider = null)
         {
             decimal eurPrice = product.Price;
             decimal coinAmount = product.Cost;
@@ -523,10 +560,10 @@ namespace Payments.Controllers
                     validatedCode.Code, validatedCode.DiscountPercent, product.Slug, product.Price, eurPrice);
             }
 
-            // Validate LemonSqueezy discount code if provided (for Stripe/PayPal we apply it ourselves, for LemonSqueezy it's passed to their checkout)
+            // Lemon Squeezy validates and applies its own codes in its checkout; Stripe/PayPal/CoinGate use local codes we apply ourselves
             if (!string.IsNullOrWhiteSpace(options?.DiscountCode))
             {
-                validatedDiscount = await lemonSqueezyService.ValidateDiscountCodeAsync(options.DiscountCode, isSubscription);
+                validatedDiscount = await ValidateDiscount(options.DiscountCode, isSubscription, checkoutProvider ?? product.ProviderSlug);
                 if (validatedDiscount == null || !validatedDiscount.IsValid)
                 {
                     var errorMessage = validatedDiscount?.Name ?? "Invalid or expired discount code";
@@ -537,6 +574,8 @@ namespace Payments.Controllers
                     throw new ApiException(errorMessage);
                 }
                 
+                if (IsLocalDiscount(validatedDiscount) && !await discountCodes.Redeem(validatedDiscount.Code))
+                    throw new ApiException("This discount code has been used up");
                 _logger.LogInformation("Validated discount code {Code} ({Type}: {Amount}, SubscriptionOnly: {SubOnly})", 
                     validatedDiscount.Code, validatedDiscount.AmountType, validatedDiscount.Amount, validatedDiscount.IsSubscriptionOnly);
             }

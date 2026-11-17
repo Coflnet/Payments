@@ -139,6 +139,64 @@ namespace Payments.Migrations
                     b.ToTable("CreatorCodeRevenues");
                 });
 
+            modelBuilder.Entity("Coflnet.Payments.Models.DiscountCode", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("AmountType")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Duration")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<int?>("MaxRedemptions")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime?>("StartsAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("SubscriptionOnly")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("TimesRedeemed")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("DiscountCodes");
+                });
+
             modelBuilder.Entity("Coflnet.Payments.Models.FiniteTransaction", b =>
                 {
                     b.Property<long>("Id")
@@ -494,6 +552,9 @@ namespace Payments.Migrations
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<decimal>("Amount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal?>("CoinAmount")
                         .HasColumnType("numeric");
 
                     b.Property<IPAddress>("CreateOnIp")
@@ -1005,6 +1066,18 @@ namespace Payments.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("CreatorCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<string>("DiscountCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
                     b.Property<DateTime?>("EndsAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1014,11 +1087,21 @@ namespace Payments.Migrations
                     b.Property<string>("ExternalId")
                         .HasColumnType("text");
 
+                    b.Property<bool>("ManagedPayments")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("PaymentAmount")
                         .HasColumnType("text");
 
+                    b.Property<long?>("PriceCents")
+                        .HasColumnType("bigint");
+
                     b.Property<int?>("ProductId")
                         .HasColumnType("integer");
+
+                    b.Property<string>("ProviderPlanId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<string>("ProviderSlug")
                         .HasColumnType("text");
@@ -1051,6 +1134,9 @@ namespace Payments.Migrations
                     b.HasIndex("ProductId");
 
                     b.HasIndex("UserId");
+
+                    b.HasIndex("ProviderSlug", "ExternalId")
+                        .IsUnique();
 
                     b.ToTable("Subscriptions");
                 });

@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.LemonSqueezy;
+using Coflnet.Payments.Services.Subscriptions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -16,6 +17,9 @@ public partial class SubscriptionService
     private ILogger<SubscriptionService> logger;
     private PaymentContext context;
     private LemonSqueezyService lemonSqueezyService;
+    private readonly IReadOnlyDictionary<string, ISubscriptionProvider> providers;
+    private readonly IStripeSubscriptionGateway stripe;
+    private readonly IPayPalSubscriptionApi paypal;
 
     /// <summary>
     /// Represents a service for managing subscriptions.
@@ -26,13 +30,17 @@ public partial class SubscriptionService
     /// <param name="productService">The product service for managing products.</param>
     /// <param name="context"></param>
     /// <param name="lemonSqueezyService"></param>
+    /// <param name="stripe">Stripe Billing API, null when Stripe subscriptions are not used</param>
+    /// <param name="paypal">PayPal Subscriptions API, null when PayPal subscriptions are not used</param>
     public SubscriptionService(
         ILogger<SubscriptionService> logger,
         TransactionService transactionService,
         UserService userService,
         ProductService productService,
         PaymentContext context,
-        LemonSqueezyService lemonSqueezyService)
+        LemonSqueezyService lemonSqueezyService,
+        IStripeSubscriptionGateway stripe = null,
+        IPayPalSubscriptionApi paypal = null)
     {
         this.logger = logger;
         this.transactionService = transactionService;
@@ -40,6 +48,12 @@ public partial class SubscriptionService
         this.productService = productService;
         this.context = context;
         this.lemonSqueezyService = lemonSqueezyService;
+        this.stripe = stripe;
+        this.paypal = paypal;
+        providers = new ISubscriptionProvider[]
+        {
+            new LemonSqueezyProvider(this), new StripeProvider(this), new PayPalProvider(this)
+        }.ToDictionary(p => p.Slug);
     }
 
     internal async Task<IEnumerable<UserSubscription>> GetUserSubscriptions(string userId)
@@ -47,13 +61,15 @@ public partial class SubscriptionService
         var all = await context.Subscriptions
             .Where(s => s.User.ExternalId == userId)
             .Include(s => s.Product).ToListAsync();
-        var dupplicate = all.GroupBy(s => s.ExternalId).Where(s => s.Count() > 1).FirstOrDefault()?.OrderByDescending(f => f.UpdatedAt).Skip(1).FirstOrDefault();
+        var dupplicate = all.GroupBy(s => (SubscriptionProviders.Normalize(s.ProviderSlug), s.ExternalId)).Where(s => s.Count() > 1).FirstOrDefault()?.OrderByDescending(f => f.UpdatedAt).Skip(1).FirstOrDefault();
         if( dupplicate != null)
         {
             logger.LogWarning("Found duplicate subscription {subscriptionId} for user {userId}, removing", dupplicate.ExternalId, userId);
             context.Subscriptions.Remove(dupplicate);
             await context.SaveChangesAsync();
         }
+        foreach (var subscription in all)
+            DescribeCapabilities(subscription);
         return all.OrderByDescending(s => s.UpdatedAt);
     }
 
@@ -108,7 +124,8 @@ public partial class SubscriptionService
             subscription = new UserSubscription()
             {
                 User = await userService.GetOrCreate(userId),
-                Product = product
+                Product = product,
+                ProviderSlug = SubscriptionProviders.LemonSqueezy
             };
             context.Subscriptions.Add(subscription);
         }
@@ -420,105 +437,7 @@ public partial class SubscriptionService
             logger.LogInformation($"Subscription extended for user {effectiveCustomData.UserId} for product {effectiveCustomData.ProductId}, crediting");
         }
 
-        await using var transaction = await transactionService.StartDbTransaction();
-        try
-        {
-            await transactionService.AddTopUp(effectiveCustomData.ProductId, effectiveCustomData.UserId, referenceId + "-topup");
-            logger.LogInformation("starting purchase");
-            await transactionService.PurchaseService(product.Slug, effectiveCustomData.UserId, 1, referenceId, product,
-                subscriptionId: subscriptionId);
-            await transaction.CommitAsync();
-            logger.LogInformation($"Payment received for user {effectiveCustomData.UserId} for product {effectiveCustomData.ProductId} extended by {product.OwnershipSeconds}");
-        }
-        catch (Exception e)
-        {
-            logger.LogError(e, "Error processing topup/purchase");
-            await transaction.RollbackAsync();
-            throw;
-        }
-    }
-
-    public Task CancelSubscription(string userId, string subscriptionId) => WithSubscriptionLock(subscriptionId, async () =>
-    {
-        await CancelSubscriptionLocked(userId, subscriptionId);
-        return true;
-    });
-
-    private async Task CancelSubscriptionLocked(string userId, string subscriptionId)
-    {
-        var subscription = await context.Subscriptions.Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId).FirstOrDefaultAsync();
-        if (subscription == null)
-        {
-            throw new ApiException("Subscription not found");
-        }
-        var remote = await lemonSqueezyService.CancelSubscription(subscription.ExternalId);
-        if (remote.Attributes.Status != "cancelled" || remote.Attributes.EndsAt == null)
-            throw new ApiException("Lemon Squeezy did not confirm the cancellation.");
-        subscription.Status = remote.Attributes.Status;
-        subscription.EndsAt = remote.Attributes.EndsAt;
-        subscription.UpdatedAt = remote.Attributes.UpdatedAt;
-        await context.SaveChangesAsync();
-    }
-
-    /// <summary>
-    /// Resume a cancelled subscription that is still in grace period.
-    /// </summary>
-    /// <param name="userId">The user ID</param>
-    /// <param name="subscriptionId">The external subscription ID</param>
-    /// <returns>True if successfully resumed</returns>
-    public Task<bool> ResumeSubscription(string userId, string subscriptionId) =>
-        WithSubscriptionLock(subscriptionId, () => ResumeSubscriptionLocked(userId, subscriptionId));
-
-    private async Task<bool> ResumeSubscriptionLocked(string userId, string subscriptionId)
-    {
-        var subscription = await context.Subscriptions
-            .Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId)
-            .FirstOrDefaultAsync();
-        
-        if (subscription == null)
-        {
-            throw new ApiException("Subscription not found");
-        }
-        
-        if (subscription.Status != "cancelled")
-        {
-            throw new ApiException($"Subscription is not cancelled, current status: {subscription.Status}");
-        }
-        
-        if (subscription.EndsAt.HasValue && subscription.EndsAt.Value < DateTime.UtcNow)
-        {
-            throw new ApiException("Subscription grace period has expired and cannot be resumed");
-        }
-        
-        var remote = await lemonSqueezyService.ResumeSubscription(subscription.ExternalId);
-        if (remote.Attributes.Status != "active" || remote.Attributes.EndsAt != null)
-            throw new ApiException("Lemon Squeezy did not confirm reactivation.");
-        subscription.Status = remote.Attributes.Status;
-        subscription.EndsAt = null;
-        subscription.UpdatedAt = remote.Attributes.UpdatedAt;
-        await context.SaveChangesAsync();
-        
-        return true;
-    }
-
-    /// <summary>
-    /// Get all invoices for a subscription
-    /// </summary>
-    /// <param name="userId">The user ID</param>
-    /// <param name="subscriptionId">The external subscription ID</param>
-    /// <returns>List of subscription invoices</returns>
-    public async Task<IEnumerable<SubscriptionInvoice>> GetSubscriptionInvoices(string userId, string subscriptionId)
-    {
-        var subscription = await context.Subscriptions
-            .Where(s => s.User.ExternalId == userId && s.ExternalId == subscriptionId)
-            .FirstOrDefaultAsync();
-        
-        if (subscription == null)
-        {
-            throw new ApiException("Subscription not found");
-        }
-        
-        return await lemonSqueezyService.GetSubscriptionInvoicesAsync(subscription.ExternalId);
+        await GrantPaidPeriodCore(effectiveCustomData.UserId, product, subscriptionId, referenceId);
     }
 
     /// <summary>
@@ -554,63 +473,6 @@ public partial class SubscriptionService
         }
         
         return new InvoiceDownloadResponse { DownloadUrl = downloadUrl };
-    }
-
-    /// <summary>
-    /// Refund a subscription invoice payment. Refunds can only be issued up to 3 days after the invoice was created.
-    /// </summary>
-    /// <param name="userId">The user ID</param>
-    /// <param name="subscriptionId">The external subscription ID from LemonSqueezy</param>
-    /// <param name="invoiceId">The subscription invoice ID</param>
-    /// <param name="request">Optional refund amount in cents. If not specified, a full refund will be issued.</param>
-    /// <returns>RefundResponse containing the updated invoice details</returns>
-    public Task<RefundResponse> RefundSubscriptionPayment(string userId, string subscriptionId, string invoiceId, RefundRequest request) =>
-        WithSubscriptionLock(subscriptionId, () => RefundSubscriptionPaymentLocked(userId, subscriptionId, invoiceId, request));
-
-    private async Task<RefundResponse> RefundSubscriptionPaymentLocked(string userId, string subscriptionId, string invoiceId, RefundRequest request)
-    {
-        // Validate user subscription
-        var subscription = await OwnedSubscription(userId, subscriptionId)
-            ?? throw new ApiException("Subscription not found");
-
-        // Get the invoice details to check the age
-        var invoices = await lemonSqueezyService.GetSubscriptionInvoicesAsync(subscriptionId);
-        var invoice = invoices?.FirstOrDefault(i => i.Id == invoiceId);
-        
-        if (invoice == null || invoice.SubscriptionId.ToString() != subscriptionId)
-            throw new ApiException("Invoice not found");
-        if (invoice.Refunded || invoice.Status == "refunded")
-        {
-            await ApplyInvoiceRefund(subscription, invoice.Id, invoice.BillingReason, invoice.CreatedAt, true);
-            return new RefundResponse { Id = invoice.Id, Refunded = true, RefundedAmount = invoice.RefundedAmount, Status = invoice.Status };
-        }
-        if (invoice.Status is not ("paid" or "partial_refund") || invoice.Total <= 0
-            || request?.Amount <= 0 || request?.Amount > invoice.Total - invoice.RefundedAmount)
-            throw new ApiException("Invalid invoice refund amount or status.");
-        
-        // Check if invoice is within the 3-day refund window
-        var daysSinceCreation = (DateTime.UtcNow - invoice.CreatedAt).TotalDays;
-        if (daysSinceCreation > 3)
-        {
-            throw new ApiException($"Refund window has expired. Invoices can only be refunded within 3 days of creation. This invoice was created {daysSinceCreation:F1} days ago.");
-        }
-        
-        if (invoice.BillingReason == "updated")
-            await SynchronizePlan(subscription, await lemonSqueezyService.GetSubscription(subscriptionId));
-        // Issue the refund
-        var refundResponse = await lemonSqueezyService.RefundInvoiceAsync(invoiceId, request?.Amount);
-        
-        if (refundResponse == null)
-        {
-            throw new ApiException("Failed to process refund. Please try again later.");
-        }
-        
-        await ApplyInvoiceRefund(subscription, invoice.Id, invoice.BillingReason, invoice.CreatedAt,
-            refundResponse.Refunded || refundResponse.Status == "refunded" || refundResponse.RefundedAmount >= invoice.Total);
-        logger.LogInformation("Subscription payment refunded for user {UserId}, subscription {SubscriptionId}, invoice {InvoiceId}: amount={Amount}", 
-            userId, subscriptionId, invoiceId, refundResponse.RefundedAmount);
-        
-        return refundResponse;
     }
 
     internal Task RefundPayment(Webhook webhook) => WithSubscriptionLock(webhook.Data.Attributes.SubscriptionId.ToString(), async () =>
@@ -658,7 +520,7 @@ public partial class SubscriptionService
             }
             else
             {
-                var reference = "ls-invoice-" + invoiceId;
+                var reference = SubscriptionProviders.GrantReference(subscription.ProviderSlug, invoiceId);
                 if (!await context.FiniteTransactions.AnyAsync(t => t.User.Id == subscription.User.Id && t.Reference == reference))
                     reference = subscription.ExternalId + createdAt.Date.ToString("yyyy-MM-dd");
                 await RevertPurchase(subscription.User.ExternalId, reference);

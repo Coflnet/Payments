@@ -109,6 +109,10 @@ namespace Coflnet.Payments
             services.AddScoped<TierSlotService>();
             services.AddScoped<GroupService>();
             services.AddScoped<CreatorCodeService>();
+            services.AddScoped<DiscountCodeService>();
+            services.AddSingleton<Services.Subscriptions.SubscriptionRouting>();
+            services.AddSingleton<Services.Subscriptions.IStripeSubscriptionGateway, Services.Subscriptions.StripeSubscriptionGateway>();
+            services.AddSingleton<Services.Subscriptions.IPayPalSubscriptionApi, Services.Subscriptions.PayPalSubscriptionApi>();
             SalesRestrictions.Configure(Configuration[SalesRestrictions.ConfigKey]);
             services.AddSingleton<CoinGateService>();
             services.AddScoped<CoinGateOrderProcessor>();

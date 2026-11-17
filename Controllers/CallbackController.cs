@@ -34,7 +34,7 @@ namespace Payments.Controllers
     /// </summary>
     [ApiController]
     [Route("[controller]")]
-    public class CallbackController : ControllerBase
+    public partial class CallbackController : ControllerBase
     {
         private readonly ILogger<CallbackController> _logger;
         private readonly PaymentContext db;
@@ -143,6 +143,8 @@ namespace Payments.Controllers
                 );
                 _logger.LogInformation("stripe valiadted");
                 _logger.LogInformation(json);
+                if (await HandleStripeSubscriptionEvent(stripeEvent))
+                    return Ok();
 
                 if (stripeEvent.Type == EventTypes.CheckoutSessionCompleted
                     || stripeEvent.Type == EventTypes.CheckoutSessionAsyncPaymentSucceeded)
@@ -877,6 +879,9 @@ namespace Payments.Controllers
                 var webhook = JObject.Parse(json, new JsonLoadSettings { DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error });
                 if (!await VerifyPayPalWebhook(json))
                     return Unauthorized();
+                var eventType = webhook.Value<string>("event_type");
+                if (IsPayPalSubscriptionEvent(eventType))
+                    return await HandlePayPalSubscriptionEvent(eventType, webhook);
                 var webhookResult = webhook.ToObject<PayPalWebhookData>();
                 if (string.IsNullOrWhiteSpace(webhookResult.Id) || !ValidPayPalId(webhookResult.Resource?.Id))
                     return BadRequest();
@@ -1145,8 +1150,9 @@ namespace Payments.Controllers
         /// <summary>
         /// Only orders created by <see cref="TopUpController.CreatePayPal"/> are captured or fulfilled.
         /// The public client id lets anyone create an order against our merchant account with an
-        /// arbitrary amount and custom_id, so the order's own fields prove nothing by themselves:
-        /// the user, product, amount and currency must all equal what this service priced.
+        /// arbitrary amount and custom_id, and a leaked secret lets them patch custom_id on an order
+        /// this service created, so the order's own fields prove nothing by themselves: the user,
+        /// product, coin amount, price and currency must all equal what this service recorded.
         /// </summary>
         private bool PayPalOrderMatchesRequest(PaymentRequest request, string orderId, PurchaseUnit unit,
             string amountValue, string currencyCode, string stage)
@@ -1161,6 +1167,10 @@ namespace Payments.Controllers
             else if (string.IsNullOrEmpty(request.User?.ExternalId)
                 || request.User.ExternalId != custom[2] || request.User.ExternalId != unit.ReferenceId)
                 reason = "user does not match";
+            else if (request.CoinAmount == null
+                || !decimal.TryParse(custom[1], NumberStyles.Number, CultureInfo.InvariantCulture, out var coins)
+                || coins != request.CoinAmount.Value)
+                reason = "coin amount does not match";
             else if (!decimal.TryParse(amountValue, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount)
                 || amount != request.Amount)
                 reason = "amount does not match";
@@ -1170,9 +1180,9 @@ namespace Payments.Controllers
             else
                 return true;
             _logger.LogError(
-                "Rejected PayPal order {OrderId} at {Stage}: {Reason}. custom_id '{CustomId}' for {Amount} {Currency}, expected {ExpectedAmount} {ExpectedCurrency} from user {UserId}",
+                "Rejected PayPal order {OrderId} at {Stage}: {Reason}. custom_id '{CustomId}' for {Amount} {Currency}, expected {ExpectedCoins} coins for {ExpectedAmount} {ExpectedCurrency} from user {UserId}",
                 orderId, stage, reason, unit?.CustomId, amountValue, currencyCode,
-                request?.Amount, request?.ProductId?.CurrencyCode, request?.User?.ExternalId);
+                request?.CoinAmount, request?.Amount, request?.ProductId?.CurrencyCode, request?.User?.ExternalId);
             return false;
         }
 

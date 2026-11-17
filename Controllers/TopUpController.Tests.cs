@@ -113,6 +113,7 @@ public class TopUpControllerTests
         Assert.That(request.Provider, Is.EqualTo("paypal"));
         Assert.That(request.SessionId, Is.EqualTo("ORDER-1"));
         Assert.That(request.Amount, Is.EqualTo(116.28m));
+        Assert.That(request.CoinAmount, Is.EqualTo(21600m));
         Assert.That(request.ProductId.Id, Is.EqualTo(155));
         Assert.That(request.User.ExternalId, Is.EqualTo("207906"));
         Assert.That(request.State, Is.EqualTo(PaymentRequest.Status.CREATED));

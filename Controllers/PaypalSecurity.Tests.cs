@@ -91,12 +91,12 @@ public class PaypalSecurityTests
     }
 
     /// <summary>Records the order the way <see cref="TopUpController.CreatePayPal"/> does.</summary>
-    private async Task<PaymentRequest> SeedRequest(decimal amount = 10, string orderId = "ORDER", User user = null, TopUpProduct product = null)
+    private async Task<PaymentRequest> SeedRequest(decimal amount = 10, string orderId = "ORDER", User user = null, TopUpProduct product = null, decimal? coins = 100)
     {
         var request = new PaymentRequest
         {
             User = user ?? sender, ProductId = product ?? topup, Provider = "paypal", SessionId = orderId,
-            Amount = amount, State = PaymentRequest.Status.CREATED, CreatedAt = DateTime.UtcNow
+            Amount = amount, CoinAmount = coins, State = PaymentRequest.Status.CREATED, CreatedAt = DateTime.UtcNow
         };
         db.PaymentRequests.Add(request);
         await db.SaveChangesAsync();
@@ -325,7 +325,7 @@ public class PaypalSecurityTests
     [Test]
     public async Task PaidAmountMustEqualTheServerPrice()
     {
-        var request = await SeedRequest(amount: 116.28m);
+        var request = await SeedRequest(amount: 116.28m, coins: 21600);
         SetOrder(customId: $"{topup.Id};21600;sender", amount: "0.01");
         Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<BadRequestResult>());
         Assert.That(sender.Balance, Is.EqualTo(99));
@@ -333,10 +333,34 @@ public class PaypalSecurityTests
         Assert.That(request.State, Is.EqualTo(PaymentRequest.Status.CREATED));
     }
 
+    /// <summary>
+    /// With a leaked REST secret the attacker can PATCH custom_id on an order this service created,
+    /// so the coin count must come from the stored request, never from the order.
+    /// </summary>
+    [Test]
+    public async Task PatchedCustomIdCannotRaiseTheCoinAmount()
+    {
+        var request = await SeedRequest(amount: 10, coins: 100);
+        SetOrder(customId: $"{topup.Id};2160000;sender", amount: "10.00");
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<BadRequestResult>());
+        Assert.That(sender.Balance, Is.EqualTo(99));
+        Assert.That(await db.FiniteTransactions.CountAsync(), Is.Zero);
+        Assert.That(request.State, Is.EqualTo(PaymentRequest.Status.CREATED));
+    }
+
+    [Test]
+    public async Task LegacyRequestWithoutCoinAmountIsNotFulfilled()
+    {
+        await SeedRequest(coins: null);
+        SetOrder();
+        Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<BadRequestResult>());
+        Assert.That(sender.Balance, Is.EqualTo(99));
+    }
+
     [Test]
     public async Task ServerPricedCustomAmountIsCreditedInFull()
     {
-        await SeedRequest(amount: 116.28m);
+        await SeedRequest(amount: 116.28m, coins: 21600);
         SetOrder(customId: $"{topup.Id};21600;sender", amount: "116.28");
         Assert.That(await Controller(Completion).Paypal(), Is.TypeOf<OkResult>());
         Assert.That(sender.Balance, Is.EqualTo(21699));

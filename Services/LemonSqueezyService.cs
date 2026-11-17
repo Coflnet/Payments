@@ -401,7 +401,7 @@ public class LemonSqueezyService : ILemonSqueezyCustomerLookup
     /// <param name="discountCode">The discount code to validate</param>
     /// <param name="isSubscription">Whether this is for a subscription purchase (null = don't filter)</param>
     /// <returns>Validated discount info or null if invalid/not found</returns>
-    public async Task<ValidatedDiscount> ValidateDiscountCodeAsync(string discountCode, bool? isSubscription = null)
+    public virtual async Task<ValidatedDiscount> ValidateDiscountCodeAsync(string discountCode, bool? isSubscription = null)
     {
         if (string.IsNullOrWhiteSpace(discountCode))
         {

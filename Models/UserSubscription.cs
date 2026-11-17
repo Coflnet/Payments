@@ -1,3 +1,6 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace Coflnet.Payments.Models;
 
 public class UserSubscription
@@ -24,6 +27,45 @@ public class UserSubscription
     /// When the user started their trial for this product (used to prevent multiple trials)
     /// </summary>
     public DateTime? TrialUsedAt { get; set; }
+    /// <summary>
+    /// The provider's id for the price/plan currently billed (Stripe price id, PayPal plan id).
+    /// </summary>
+    [MaxLength(64)]
+    public string ProviderPlanId { get; set; }
+    /// <summary>
+    /// True when the provider is merchant of record (Stripe Managed Payments) and remits the tax.
+    /// </summary>
+    public bool ManagedPayments { get; set; }
+    /// <summary>
+    /// The recurring gross price agreed at checkout in minor units of <see cref="Currency"/>.
+    /// Direct providers verify paid amounts against it.
+    /// </summary>
+    public long? PriceCents { get; set; }
+    /// <summary>
+    /// ISO currency of <see cref="PriceCents"/> (upper case)
+    /// </summary>
+    [MaxLength(3)]
+    public string Currency { get; set; }
+    /// <summary>
+    /// Local discount code applied to the recurring price at checkout
+    /// </summary>
+    [MaxLength(50)]
+    public string DiscountCode { get; set; }
+    /// <summary>
+    /// Creator code used at checkout
+    /// </summary>
+    [MaxLength(50)]
+    public string CreatorCode { get; set; }
+    /// <summary>
+    /// Whether a cancelled subscription can be resumed with its provider (response only)
+    /// </summary>
+    [NotMapped]
+    public bool CanResume { get; set; }
+    /// <summary>
+    /// Whether the subscription's provider supports plan switches (response only)
+    /// </summary>
+    [NotMapped]
+    public bool CanChangePlan { get; set; }
 }
 
 /// <summary>

@@ -77,6 +77,10 @@ namespace Coflnet.Payments.Models
         /// </summary>
         public DbSet<CreatorCodeRevenue> CreatorCodeRevenues { get; set; }
         /// <summary>
+        /// Discount codes validated locally for direct providers
+        /// </summary>
+        public DbSet<DiscountCode> DiscountCodes { get; set; }
+        /// <summary>
         /// Authoritative payment records for tax compliance reporting.
         /// Tracks exact amounts paid, taxes, fees, discounts per transaction.
         /// </summary>
@@ -162,6 +166,13 @@ namespace Coflnet.Payments.Models
             modelBuilder.Entity<UserSubscription>(entity =>
             {
                 entity.HasIndex(e => e.ExternalId);
+                // Several providers share this table; one provider subscription maps to one row.
+                entity.HasIndex(e => new { e.ProviderSlug, e.ExternalId }).IsUnique();
+            });
+
+            modelBuilder.Entity<DiscountCode>(entity =>
+            {
+                entity.HasIndex(e => e.Code).IsUnique();
             });
 
             modelBuilder.Entity<SubscriptionPlanChange>(entity =>
