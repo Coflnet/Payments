@@ -372,9 +372,12 @@ namespace Payments.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<int>("RenewalWeeks")
+                        .HasColumnType("integer");
+
                     b.HasKey("Id");
 
-                    b.HasIndex("ProductSlug", "BillingWeeks", "Currency")
+                    b.HasIndex("ProductSlug", "BillingWeeks", "RenewalWeeks", "Currency")
                         .IsUnique();
 
                     b.ToTable("PayPalPlans");
@@ -1214,6 +1217,16 @@ namespace Payments.Migrations
                     b.Property<long?>("ProviderVariantId")
                         .HasColumnType("bigint");
 
+                    b.Property<long?>("RenewalPriceCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("RenewalProductId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RenewalScheduleId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTime>("RenewsAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1237,6 +1250,8 @@ namespace Payments.Migrations
                     b.HasIndex("ExternalId");
 
                     b.HasIndex("ProductId");
+
+                    b.HasIndex("RenewalProductId");
 
                     b.HasIndex("UserId");
 
@@ -1488,11 +1503,17 @@ namespace Payments.Migrations
                         .WithMany()
                         .HasForeignKey("ProductId");
 
+                    b.HasOne("Coflnet.Payments.Models.Product", "RenewalProduct")
+                        .WithMany()
+                        .HasForeignKey("RenewalProductId");
+
                     b.HasOne("Coflnet.Payments.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId");
 
                     b.Navigation("Product");
+
+                    b.Navigation("RenewalProduct");
 
                     b.Navigation("User");
                 });

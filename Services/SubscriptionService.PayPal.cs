@@ -155,6 +155,7 @@ public partial class SubscriptionService
         if (await IsGranted(subscription.User.ExternalId, reference))
             return await PayPalOutcome(subscription, sale, payerCountry);
         var paid = ParseMoney(sale.Amount?.Total) ?? 0;
+        await ConvertPayPalRenewal(subscription);
         if (!PayPalSaleMatchesPrice(subscription, sale))
         {
             await MarkForManualRefund(SubscriptionProviders.PayPal, sale.Id, subscription, paid,
@@ -207,7 +208,16 @@ public partial class SubscriptionService
         return new SubscriptionPaymentOutcome(subscription, (TopUpProduct)subscription.Product, sale.Id, paid,
             sale.Amount?.Currency?.ToUpperInvariant(), country, null, null, null,
             ParseTime(sale.CreateTime) ?? DateTime.UtcNow, net, false, vat, rate,
-            await PayPalEvidence(subscription, country, payerCountry, sale.Id));
+            await PayPalEvidence(subscription, country, payerCountry, sale.Id), !await IsFirstPayPalSale(subscription, sale));
+    }
+
+    /// <summary>Whether the sale's grant is the subscription's first one (also when it is delivered again later)</summary>
+    private async Task<bool> IsFirstPayPalSale(UserSubscription subscription, PayPalSale sale)
+    {
+        var first = await context.FiniteTransactions
+            .Where(t => t.SubscriptionId == subscription.ExternalId && t.User.Id == subscription.User.Id && t.Amount < 0)
+            .OrderBy(t => t.Id).Select(t => t.Reference).FirstOrDefaultAsync();
+        return first == null || first == SubscriptionProviders.GrantReference(SubscriptionProviders.PayPal, sale.Id);
     }
 
     /// <summary>
@@ -287,11 +297,36 @@ public partial class SubscriptionService
             CreatorCode = request.CreatorCode,
             DiscountCode = request.DiscountCode
         };
+        await ApplyPayPalRenewalTerms(subscription, request, remote.PlanId);
         context.Subscriptions.Add(subscription);
         request.State = PaymentRequest.Status.PAID;
         request.UpdatedAt = DateTime.UtcNow;
         await context.SaveChangesAsync();
         return subscription;
+    }
+
+    /// <summary>
+    /// A 13 or 52 week subscription on a plan whose REGULAR cycles last 4 weeks continues as the 4-week plan of its tier at the
+    /// REGULAR price of the checkout. One on a plan made before the 4-week renewal renews for its full period (it can only be
+    /// moved with the payer's approval) and gets no renewal terms.
+    /// </summary>
+    private async Task ApplyPayPalRenewalTerms(UserSubscription subscription, PaymentRequest request, string planId)
+    {
+        var plan = (TopUpProduct)subscription.Product;
+        if (!SubscriptionRenewal.ContinuesAsFourWeeks(plan))
+            return;
+        if (await PayPalPlans.RenewalWeeks(planId, plan) != SubscriptionRenewal.RenewalWeeks)
+        {
+            logger.LogWarning("PayPal subscription {SubscriptionId} is on plan {PlanId}, which renews every {Weeks} weeks; it can not continue every 4 weeks without the payer's approval",
+                subscription.ExternalId, planId, IntervalWeeks(plan.OwnershipSeconds));
+            return;
+        }
+        subscription.RenewalProduct = await renewalPlans.Find(plan);
+        subscription.RenewalPriceCents = subscription.RenewalProduct == null ? null
+            : SubscriptionPricing.ToCents(request.RecurringAmount ?? request.Amount);
+        if (subscription.RenewalProduct == null)
+            logger.LogError("PayPal subscription {SubscriptionId} of {Plan} renews every 4 weeks but no 4-week plan of its tier was found",
+                subscription.ExternalId, plan.Slug);
     }
 
     /// <summary>

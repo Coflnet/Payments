@@ -29,7 +29,7 @@ public record SubscriptionProviderOption(string Provider, string Mode);
 /// Config:
 /// SUBSCRIPTIONS:DIRECT_COUNTRIES (comma separated, default EU-27 + GB + US) get direct Stripe/PayPal,
 /// all other countries get Stripe Managed Payments, but only those Stripe covers for tax (SUBSCRIPTIONS:MANAGED_COUNTRIES);
-/// SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES (default none) removes countries from Managed Payments for non-tax reasons (sanctions);
+/// SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES (default BY) removes countries from Managed Payments for non-tax reasons (sanctions);
 /// SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED, SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED, SUBSCRIPTIONS:PAYPAL_ENABLED (default false)
 /// switch the new providers on; SUBSCRIPTIONS:LEMONSQUEEZY_CHECKOUT_ENABLED (default true) keeps
 /// Lemon Squeezy as the fallback where nothing else applies.
@@ -46,12 +46,14 @@ public class SubscriptionRouting
         "AT,BE,BG,HR,CY,CZ,DK,EE,FI,FR,DE,GR,HU,IE,IT,LV,LT,LU,MT,NL,PL,PT,RO,SK,SI,ES,SE,GB,US";
 
     /// <summary>
-    /// Countries blocked for Stripe Managed Payments although Stripe covers their tax. Empty: the tax-only blocks of
+    /// Countries blocked for Stripe Managed Payments although Stripe covers their tax. Belarus (owner decision 2026-11-18):
+    /// no EU ban on consumer sales was found, but Stripe does not support Belarus (sanctions) and cards of the larger
+    /// Belarusian banks no longer work at EU shops, so such a checkout could not succeed. The tax-only blocks of
     /// <see cref="SalesRestrictions.BlockedCountries"/> (TR, SA, KR, VN, MX, MD) do not apply to Managed Payments, where Stripe is merchant of
     /// record and pays the local tax; CH/LI (Swiss VAT) and Northern Ireland postcodes (BT) are direct-only restrictions too.
-    /// Put countries here (SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES, comma separated) that must not be sold to by any seller, e.g. sanctions.
+    /// SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES (comma separated) replaces this list: countries that must not be sold to by any seller.
     /// </summary>
-    public const string DefaultManagedBlockedCountries = "";
+    public const string DefaultManagedBlockedCountries = "BY";
 
     /// <summary>
     /// Countries in which Managed Payments takes over the indirect tax (cross-border sales of digital products), as

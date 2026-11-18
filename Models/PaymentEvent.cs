@@ -31,4 +31,15 @@ public class PaymentEvent
     public long GrossEurCents { get; set; }
     public long VatEurCents { get; set; }
     public string OrderDetailsJson { get; set; }
+    /// <summary>Direct/Managed Payments subscription payments: the term this payment paid for in weeks (4, 13 or 52; 4 once a 13/52 week subscription continues every 4 weeks)</summary>
+    public int? SubscriptionBillingWeeks { get; set; }
+    /// <summary>Subscription payments: the length of the following cycles in weeks (4 for the 4-week continuation; a legacy plan's own weeks when it repeats its term)</summary>
+    public int? SubscriptionRenewalWeeks { get; set; }
+    /// <summary>
+    /// Subscription payments: what each following cycle charges in <see cref="Currency"/> (direct: incl. VAT; Managed Payments: net,
+    /// Stripe adds the tax). Null when the payment was in another currency than the agreed price (Managed Payments' Adaptive Pricing)
+    /// </summary>
+    public decimal? SubscriptionRenewalAmount { get; set; }
+    /// <summary>Subscription payments: false for the first payment of the subscription, true for every later one</summary>
+    public bool? SubscriptionIsRenewal { get; set; }
 }

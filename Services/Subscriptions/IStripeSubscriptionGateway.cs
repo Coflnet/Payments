@@ -39,7 +39,24 @@ public interface IStripeSubscriptionGateway
     Task<string> EnsureVatTaxRate(string country, int basisPoints);
     /// <summary>Issuing country of the card that paid an invoice (ISO code), null for other payment methods</summary>
     Task<string> GetCardCountry(string invoiceId);
+    /// <summary>
+    /// Makes the subscription continue as <paramref name="request"/> after its current period: attaches a subscription
+    /// schedule (from_subscription, or completes the one already attached) whose current phase ends with the period and
+    /// whose next phase bills the renewal price every 4 weeks; after that phase's first period the schedule releases the
+    /// subscription, which keeps billing every 4 weeks. Returns the schedule id.
+    /// </summary>
+    Task<string> ScheduleRenewal(StripeSubscriptionSnapshot current, StripeRenewalRequest request);
+    /// <summary>Detaches a subscription schedule; the subscription keeps its current price and period</summary>
+    Task<StripeSubscriptionSnapshot> ReleaseSchedule(string scheduleId, string subscriptionId);
+    /// <summary>Whether a schedule is ours (<see cref="StripeRenewalSchedule.MarkerKey"/>) or has changes planned that we did not make</summary>
+    Task<StripeScheduleInfo> GetSchedule(string scheduleId);
 }
+
+/// <summary>
+/// A subscription schedule; <paramref name="HasForeignPhases"/>: someone else planned changes with it; <paramref name="IsRenewalSchedule"/>:
+/// it carries our renewal marker
+/// </summary>
+public record StripeScheduleInfo(string Id, bool HasForeignPhases, bool IsRenewalSchedule = false);
 
 /// <summary>
 /// The parts of a Stripe subscription this service uses
@@ -61,7 +78,8 @@ public record StripeSubscriptionSnapshot(
     string TaxBehavior,
     bool ManagedPayments,
     DateTime Created,
-    bool HasPendingUpdate = false);
+    bool HasPendingUpdate = false,
+    string ScheduleId = null);
 
 /// <summary>
 /// A price swap on the single subscription item
@@ -76,6 +94,19 @@ public record StripeSubscriptionSnapshot(
 /// <param name="PlanName">Product name shown to the buyer</param>
 public record StripePriceChangeRequest(long UnitAmount, string Currency, int IntervalWeeks, bool InvoiceNow,
     string TaxBehavior, string PlanSlug, string PlanName);
+
+/// <summary>
+/// The 4-week price a 13 or 52 week subscription continues with after its current period
+/// </summary>
+/// <param name="UnitAmount">Cents every 4 weeks: gross incl. VAT for direct subscriptions, net for Managed Payments</param>
+/// <param name="Currency">Lower case ISO currency</param>
+/// <param name="TaxBehavior">Kept from the current price ("exclusive" for Managed Payments, null for direct)</param>
+/// <param name="PlanSlug">The 4-week plan; its Stripe product (<see cref="StripePlans.ProductId"/>) identifies it once billed</param>
+/// <param name="PlanName">Product name shown to the buyer</param>
+/// <param name="TermEnd">End of the paid first term (the subscription's current period end), where the renewal phase starts</param>
+/// <param name="TaxRateId">Direct sales with VAT: the inclusive VAT rate shown on the receipts, as on the checkout</param>
+public record StripeRenewalRequest(long UnitAmount, string Currency, string TaxBehavior, string PlanSlug, string PlanName,
+    DateTime TermEnd, string TaxRateId = null);
 
 /// <summary>
 /// Which plan a Stripe subscription bills. Plan switches move the item to a Stripe product with a deterministic id

@@ -18,7 +18,7 @@ public partial class SubscriptionService
         _ => null
     };
 
-    private static int TierRank(Product product) => product.SlotTier switch
+    internal static int TierRank(Product product) => product.SlotTier switch
     {
         "premium_plus" => 3, "premium" => 2, "starter_premium" => 1,
         _ => product.Groups?.Any(g => g.Slug == "premium_plus") == true ? 3
@@ -50,7 +50,7 @@ public partial class SubscriptionService
         && interval == SubscriptionInterval(target.OwnershipSeconds);
 
     private Task<UserSubscription> OwnedSubscription(string userId, string externalId) => context.Subscriptions
-        .Include(s => s.User).Include(s => s.Product).ThenInclude(p => p.Groups)
+        .Include(s => s.User).Include(s => s.Product).ThenInclude(p => p.Groups).Include(s => s.RenewalProduct).ThenInclude(p => p.Groups)
         .Where(s => s.User.ExternalId == userId && s.ExternalId == externalId)
         .OrderByDescending(s => s.UpdatedAt).FirstOrDefaultAsync();
 
@@ -199,6 +199,7 @@ public partial class SubscriptionService
                     });
                 await SetAccessProduct(subscription, target);
             }
+            await UpdateRenewalTerms(subscription, target);
             subscription.Product = target;
             updateBilling(subscription);
             await context.SaveChangesAsync();
@@ -294,7 +295,7 @@ public partial class SubscriptionService
         var exists = await subscriptions.AnyAsync();
         if (exists && await subscriptions.Where(s => s.ChangeLockUntil == null || s.ChangeLockUntil < now)
             .ExecuteUpdateAsync(s => s.SetProperty(p => p.ChangeLockUntil, until)) == 0)
-            throw new ApiException("A subscription change is already being processed. Please retry shortly.");
+            throw new SubscriptionBusyException();
         try { return await action(); }
         finally
         {

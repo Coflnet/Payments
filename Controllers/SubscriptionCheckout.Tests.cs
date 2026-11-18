@@ -657,6 +657,9 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
             new TopUpProduct { Slug = "l_premium-slots-4", Title = "4 slots", Price = 33.69m, Cost = 7200, CurrencyCode = "eur",
                 ProviderSlug = "lemonsqueezy", OwnershipSeconds = FourWeeks, SlotCount = 4, SlotTier = "premium", Type = Product.ProductType.SERVICE });
         await db.SaveChangesAsync();
+        // As provisioned: every period of a tier is in its tier group (the 4-week plan is what the longer ones continue as)
+        foreach (var slug in new[] { "l_premium_13", "l_premium_52" })
+            await groups.AddProductToGroup(await db.TopUpProducts.SingleAsync(p => p.Slug == slug), "premium");
     }
 
     private async Task AddBlackFridayCode(string duration = DiscountCode.EveryRenewal)
@@ -705,7 +708,7 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         await AddBlackFridayCode();
         await Controller("DE").PayPalSubscribe("buyer", "l_premium_13", Options("DE", "BF2026"));
         Assert.That(paypalRequest.Price, Is.EqualTo(17.66m));
-        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(17.66m));
+        Assert.That(paypalRequest.RecurringPrice, Is.EqualTo(8.65m), "then every 4 weeks: l_premium 9.69 - 25% (the 4-week amount) + 19% VAT");
     }
 
     [Test]
@@ -1014,6 +1017,116 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
 
         Assert.That(error.Message, Does.Contain("already used"));
         Assert.That((await db.ServicePerformanceDeclarations.SingleAsync()).PaymentRequestId, Is.EqualTo(paid.Id));
+    }
+
+    private async Task<TopUpOptions> BlackFridayWithCreator(string country)
+    {
+        await AddPlans();
+        await AddBlackFridayCode();
+        db.CreatorCodes.Add(new Coflnet.Payments.Models.CreatorCode { Code = "CREATOR", CreatorUserId = "creator", DiscountPercent = 10, IsActive = true });
+        await db.SaveChangesAsync();
+        var options = Options(country, "BF2026");
+        options.CreatorCode = "CREATOR";
+        // Like a request in production: nothing tracked, so the plan comes without its groups (ProductService does not load them)
+        db.ChangeTracker.Clear();
+        return options;
+    }
+
+    /// <summary>
+    /// Owner decision (§ 309 Nr. 9 b BGB): a year continues every 4 weeks at the 4-week price of its tier. The creator code
+    /// and the 4-week amount of the "forever" code apply to it: 9.69 - 10% = 8.72, -25% = 6.54, + 19% VAT = 7.78.
+    /// </summary>
+    [Test]
+    public async Task StripeYearCheckoutStatesAndRecordsTheFourWeekRenewal()
+    {
+        await Controller("DE").StripeSubscribe("buyer", "l_premium_52", await BlackFridayWithCreator("DE"));
+
+        var line = created.LineItems.Single().PriceData;
+        Assert.That((line.UnitAmount, line.Recurring.IntervalCount), Is.EqualTo((5338L, 52L)), "99.69 - 10% = 89.72, -50% = 44.86, + VAT");
+        Assert.That(created.SubscriptionData.Metadata["renewalProductSlug"], Is.EqualTo("l_premium"));
+        Assert.That(created.SubscriptionData.Metadata["renewalPriceCents"], Is.EqualTo("778"));
+        Assert.That(created.CustomText.Submit.Message, Does.StartWith("After the first 52 weeks it continues every 4 weeks at 7.78 EUR until cancelled."));
+        Assert.That((await db.PaymentRequests.SingleAsync()).RecurringAmount, Is.EqualTo(7.78m), "what every later payment charges");
+    }
+
+    [Test]
+    public async Task ManagedPaymentsYearRenewsAtTheNetFourWeekPrice()
+    {
+        await Controller("NO").StripeSubscribe("buyer", "l_premium_13", await BlackFridayWithCreator("NO"));
+
+        Assert.That(created.ManagedPayments.Enabled, Is.True);
+        Assert.That(created.SubscriptionData.Metadata["renewalPriceCents"], Is.EqualTo("654"), "net: Stripe adds the tax");
+        Assert.That(created.CustomText.Submit.Message, Does.StartWith("After the first 13 weeks it continues every 4 weeks at 6.54 EUR"));
+    }
+
+    /// <summary>
+    /// Regression: the renewal was priced from the year's copy of the code, whose amount already was the 52 week one, so a
+    /// code {amount 0, periodAmounts {52: 50}} renewed at 50% off. It has no 4-week amount: the renewals pay its default 0%.
+    /// </summary>
+    [Test]
+    public async Task RenewalUsesTheFourWeekAmountOfTheCodeNotTheYearsAmount()
+    {
+        await AddPlans();
+        db.DiscountCodes.Add(new DiscountCode
+        {
+            Code = "HALF", AmountType = "percent", Amount = 0, SubscriptionOnly = true, PeriodAmounts = new() { [52] = 50 }
+        });
+        await db.SaveChangesAsync();
+
+        await Controller("DE").StripeSubscribe("buyer", "l_premium_52", Options("DE", "HALF"));
+
+        Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(5931), "the year: 50% off");
+        Assert.That(created.SubscriptionData.Metadata["renewalPriceCents"], Is.EqualTo("1153"), "the 4-week renewal: full price");
+    }
+
+    /// <summary>A "first payment only" code lowers the first year only; the 4-week renewals pay the full 4-week price</summary>
+    [Test]
+    public async Task FirstPaymentOnlyCodeDoesNotLowerTheFourWeekRenewal()
+    {
+        await AddPlans();
+        db.DiscountCodes.Add(new DiscountCode { Code = "INTRO", AmountType = "percent", Amount = 50, Duration = DiscountCode.FirstPaymentOnly });
+        await db.SaveChangesAsync();
+
+        await Controller("DE").StripeSubscribe("buyer", "l_premium_52", Options("DE", "INTRO"));
+
+        Assert.That(created.SubscriptionData.Metadata["firstPriceCents"], Is.EqualTo("5931"));
+        Assert.That(created.SubscriptionData.Metadata["renewalPriceCents"], Is.EqualTo("1153"));
+    }
+
+    /// <summary>
+    /// PayPal: the year is the TRIAL cycle of a plan whose REGULAR cycles last 4 weeks; the subscription prices them at the
+    /// 4-week renewal price
+    /// </summary>
+    [Test]
+    public async Task PayPalYearIsATrialCycleThenFourWeekCyclesAtTheRenewalPrice()
+    {
+        await Controller("DE").PayPalSubscribe("buyer", "l_premium_52", await BlackFridayWithCreator("DE"));
+
+        var plan = paypalPlans.Single();
+        Assert.That((plan.Weeks, plan.Price, plan.RenewalWeeks, plan.RenewalPrice), Is.EqualTo((52, 99.69m, (int?)4, (decimal?)9.69m)));
+        Assert.That((paypalRequest.Price, paypalRequest.RecurringPrice), Is.EqualTo((53.38m, (decimal?)7.78m)));
+        Assert.That((await db.PaymentRequests.SingleAsync()).RecurringAmount, Is.EqualTo(7.78m));
+        Assert.That((await db.PayPalPlans.SingleAsync()).RenewalWeeks, Is.EqualTo(4));
+    }
+
+    /// <summary>
+    /// A 13 or 52 week plan without a 4-week plan of its tier could not renew lawfully: it is not sold, and the code is not
+    /// used up by the refused checkout
+    /// </summary>
+    [Test]
+    public async Task LongPlanWithoutAFourWeekPlanIsNotSoldAndDoesNotUseTheCode()
+    {
+        db.TopUpProducts.Add(new TopUpProduct { Slug = "l_bazaarpro-year", Title = "year", Price = 99.69m, Cost = 1, CurrencyCode = "eur",
+            OwnershipSeconds = FiftyTwoWeeks, Type = Product.ProductType.SERVICE });
+        await AddBlackFridayCode();
+        var controller = Controller("DE");
+        created = null;
+
+        Assert.ThrowsAsync<ApiException>(() => controller.StripeSubscribe("buyer", "l_bazaarpro-year", Options("DE", "BF2026")));
+        Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_bazaarpro-year", Options("DE", "BF2026")));
+
+        Assert.That((await db.DiscountCodes.SingleAsync()).TimesRedeemed, Is.Zero);
+        Assert.That(created, Is.Null);
     }
 
     private static DiscountCode Auto(string code, DateTime? createdAt = null, DateTime? startsAt = null, DateTime? expiresAt = null,

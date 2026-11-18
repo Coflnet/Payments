@@ -507,7 +507,7 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
         api.Setup(a => a.CreatePlan(It.IsAny<PayPalPlanRequest>())).Returns(async () =>
         {
             await using var other = new PaymentContext(new DbContextOptionsBuilder<PaymentContext>().UseSqlite(connection).Options);
-            other.PayPalPlans.Add(new PayPalPlan { ProductSlug = "l_premium", BillingWeeks = 4, Currency = "EUR", PlanId = "P-WINNER" });
+            other.PayPalPlans.Add(new PayPalPlan { ProductSlug = "l_premium", BillingWeeks = 4, RenewalWeeks = 4, Currency = "EUR", PlanId = "P-WINNER" });
             await other.SaveChangesAsync();
             return "P-LOSER";
         });
@@ -517,17 +517,74 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
         Assert.That(await db.PayPalPlans.CountAsync(), Is.EqualTo(1));
     }
 
+    /// <summary>
+    /// Owner decision (§ 309 Nr. 9 b BGB): a 52 week plan is one 52 week TRIAL cycle, then 4-week REGULAR cycles at the
+    /// 4-week list price of the tier; each PayPal billing cycle has its own frequency.
+    /// </summary>
     [Test]
-    public async Task EachBillingPeriodGetsItsOwnPlanOfThatLength()
+    public async Task YearlyPlanIsAYearOfTrialThenFourWeekRegularCycles()
     {
         var (catalog, _) = CatalogWithoutConfig();
-        var year = new TopUpProduct { Slug = "l_premium_52", Title = "year", Price = 99.69m, Cost = 23400, CurrencyCode = "eur",
-            ProviderSlug = "lemonsqueezy", OwnershipSeconds = 31536000, Type = Product.ProductType.SERVICE };
-        await catalog.GetOrCreate(year);
-        var cycle = paypal.Bodies["/v1/billing/plans"]["billing_cycles"]![1]!;
-        Assert.That((int)cycle["frequency"]!["interval_count"]!, Is.EqualTo(52));
-        Assert.That((await db.PayPalPlans.SingleAsync()).BillingWeeks, Is.EqualTo(52));
+        await catalog.GetOrCreate(Year(), premium);
+        var cycles = (JArray)paypal.Bodies["/v1/billing/plans"]["billing_cycles"]!;
+        Assert.That(cycles.Select(c => (string)c["tenure_type"]), Is.EqualTo(new[] { "TRIAL", "REGULAR" }));
+        Assert.That(cycles.Select(c => (int)c["frequency"]!["interval_count"]!), Is.EqualTo(new[] { 52, 4 }));
+        Assert.That(cycles.Select(c => (string)c["pricing_scheme"]!["fixed_price"]!["value"]!), Is.EqualTo(new[] { "99.69", "9.69" }));
+        var row = await db.PayPalPlans.SingleAsync();
+        Assert.That((row.BillingWeeks, row.RenewalWeeks), Is.EqualTo((52, 4)));
     }
+
+    [Test]
+    public void YearlyPlanWithoutAFourWeekPlanIsNotCreated()
+    {
+        var (catalog, _) = CatalogWithoutConfig();
+        Assert.ThrowsAsync<ApiException>(() => catalog.GetOrCreate(Year()));
+    }
+
+    /// <summary>
+    /// Regression: a configured PAYPAL:SUBSCRIPTION_PLANS override was assumed to continue every 4 weeks, also for 13/52 week
+    /// plans, where nothing proves it (one repeating its period would renew unlawfully). It only applies to 4-week plans now.
+    /// </summary>
+    [Test]
+    public async Task ConfiguredPlanIsIgnoredForAYear()
+    {
+        CatalogWithoutConfig();
+        var year = Year();
+        var configured = new PayPalPlanCatalog(db, new PayPalSubscriptionApi(paypal), new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string>
+            {
+                ["PAYPAL:SUBSCRIPTION_PLANS:l_premium_52"] = "P-CONFIGURED-YEAR", ["PAYPAL:SUBSCRIPTION_PLANS:l_premium"] = "P-CONFIGURED"
+            }).Build());
+
+        Assert.That(await configured.GetOrCreate(year, premium), Is.EqualTo("P-NEW"));
+        Assert.That(await configured.IsPlanOf("P-CONFIGURED-YEAR", year), Is.False);
+        Assert.That(await configured.RenewalWeeks("P-CONFIGURED-YEAR", year), Is.Null);
+        Assert.That(await configured.GetOrCreate(premium), Is.EqualTo("P-CONFIGURED"), "4-week plans still use the override");
+    }
+
+    /// <summary>
+    /// A 52 week plan made before the 4-week renewal (it repeats every 52 weeks) is not reused for new checkouts, but
+    /// subscriptions on it are still accepted and keep renewing for their period.
+    /// </summary>
+    [Test]
+    public async Task LegacyYearlyPlanIsReplacedButStillAccepted()
+    {
+        var (catalog, _) = CatalogWithoutConfig();
+        var year = Year();
+        db.PayPalPlans.Add(new PayPalPlan { ProductSlug = year.Slug, BillingWeeks = 52, RenewalWeeks = 52, Currency = "EUR", PlanId = "P-LEGACY" });
+        await db.SaveChangesAsync();
+
+        Assert.That(await catalog.GetOrCreate(year, premium), Is.EqualTo("P-NEW"));
+        Assert.That(await catalog.IsPlanOf("P-LEGACY", year), Is.True);
+        Assert.That(await catalog.RenewalWeeks("P-LEGACY", year), Is.EqualTo(52));
+        Assert.That(await catalog.RenewalWeeks("P-NEW", year), Is.EqualTo(4));
+    }
+
+    private static TopUpProduct Year() => new()
+    {
+        Slug = "l_premium_52", Title = "year", Price = 99.69m, Cost = 23400, CurrencyCode = "eur",
+        ProviderSlug = "lemonsqueezy", OwnershipSeconds = 31536000, Type = Product.ProductType.SERVICE
+    };
 
     [Test]
     public async Task ConfiguredPlanIdOverridesTheCreatedPlan()
@@ -586,6 +643,82 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
 
         Assert.That(await Grants("paypal-sale-SALE-1"), Is.EqualTo(1));
         Assert.That(paypal.Bodies.ContainsKey("/v1/billing/subscriptions/I-SUB/cancel"), Is.False);
+    }
+
+    /// <summary>A 52 week plan in the premium tier group, sold on a PayPal plan of the given REGULAR cycle length</summary>
+    private async Task<TopUpProduct> YearOnPlan(string planId, int renewalWeeks)
+    {
+        var year = Year();
+        db.TopUpProducts.Add(year);
+        db.PayPalPlans.Add(new PayPalPlan { ProductSlug = year.Slug, BillingWeeks = 52, RenewalWeeks = renewalWeeks, Currency = "EUR", PlanId = planId });
+        await db.SaveChangesAsync();
+        await groups.AddProductToGroup(year, "premium");
+        var (catalog, api) = CatalogWithoutConfig();
+        service = Service(paypal: api, paypalPlans: catalog);
+        var request = await SeedCheckout("paypal", "I-SUB", year, 118.63m);
+        request.RecurringAmount = renewalWeeks == 4 ? 11.53m : null;
+        request.Country = "DE";
+        await db.SaveChangesAsync();
+        SetSubscription(planId: planId, customId: SubscriptionService.PayPalCustomId(year.Id, "buyer"));
+        return year;
+    }
+
+    private Task<UserSubscription> Loaded() =>
+        db.Subscriptions.Include(s => s.Product).Include(s => s.RenewalProduct).SingleAsync(s => s.ExternalId == "I-SUB");
+
+    /// <summary>
+    /// Owner decision (§ 309 Nr. 9 b BGB): the year is the TRIAL cycle, every following sale a 4-week REGULAR cycle at the
+    /// 4-week price, which converts the subscription to the 4-week plan and grants 4 weeks.
+    /// </summary>
+    [Test]
+    public async Task YearContinuesAsTheFourWeekPlanFromTheSecondSale()
+    {
+        await YearOnPlan("P-YEAR", 4);
+
+        Assert.That(await Post(SaleCompleted("SALE-1", "118.63")), Is.TypeOf<OkResult>());
+        var subscription = await Loaded();
+        Assert.That(subscription.Product.Slug, Is.EqualTo("l_premium_52"));
+        Assert.That((subscription.RenewalProduct.Slug, subscription.RenewalPriceCents), Is.EqualTo(("l_premium", 1153L)));
+        Assert.That((await Access("I-SUB")).Expires, Is.EqualTo(DateTime.UtcNow.AddSeconds(31536000)).Within(TimeSpan.FromMinutes(1)));
+
+        Assert.That(await Post(SaleCompleted("SALE-2", "11.53")), Is.TypeOf<OkResult>());
+        Assert.That(await Post(SaleCompleted("SALE-3", "118.63")), Is.TypeOf<OkResult>());
+
+        subscription = await Loaded();
+        Assert.That((subscription.Product.Slug, subscription.PriceCents), Is.EqualTo(("l_premium", 1153L)));
+        Assert.That(await Grants("paypal-sale-SALE-2"), Is.EqualTo(1));
+        Assert.That(await Grants("paypal-sale-SALE-3"), Is.Zero, "a renewal at the year's price is not what was agreed");
+        Assert.That((await RefundMark("paypal", "SALE-3")).ToString(), Is.EqualTo(nameof(PaymentRequest.Status.REFUND_PENDING)));
+        var access = await Access("I-SUB");
+        Assert.That(access.Product.Slug, Is.EqualTo("l_premium"));
+        Assert.That(access.Expires, Is.EqualTo(DateTime.UtcNow.AddSeconds(31536000 + FourWeeks)).Within(TimeSpan.FromMinutes(1)));
+        // The purchase confirmation email (SkyEventBroker) reads the terms from the events
+        Assert.That(publishedPayments.Select(p => (p.SubscriptionBillingWeeks, p.SubscriptionRenewalWeeks, p.SubscriptionRenewalAmount, p.SubscriptionIsRenewal)),
+            Is.EqualTo(new (int?, int?, decimal?, bool?)[] { (52, 4, 11.53m, false), (4, 4, 11.53m, true) }));
+        var renewal = await db.PaymentRecords.SingleAsync(r => r.ExternalOrderId == "SALE-2");
+        Assert.That((renewal.GrossAmount, renewal.TaxAmount), Is.EqualTo((11.53m, 1.84m)));
+        Assert.That((renewal.ProductId, renewal.CoinAmount), Is.EqualTo((premium.Id, (long)premium.Cost)), "recorded as the 4-week plan");
+    }
+
+    /// <summary>
+    /// A PayPal plan made before the 4-week renewal can not be changed without the payer: those subscriptions renew for the
+    /// year as before (and are reported by the renewal conversion run)
+    /// </summary>
+    [Test]
+    public async Task YearOnALegacyPlanRenewsForTheYearAsBefore()
+    {
+        await YearOnPlan("P-LEGACY", 52);
+
+        Assert.That(await Post(SaleCompleted("SALE-1", "118.63")), Is.TypeOf<OkResult>());
+        Assert.That(await Post(SaleCompleted("SALE-2", "118.63")), Is.TypeOf<OkResult>());
+
+        var subscription = await Loaded();
+        Assert.That(subscription.RenewalProduct, Is.Null);
+        Assert.That(subscription.Product.Slug, Is.EqualTo("l_premium_52"));
+        Assert.That(await Grants("paypal-sale-SALE-2"), Is.EqualTo(1));
+        Assert.That((await Access("I-SUB")).Expires, Is.EqualTo(DateTime.UtcNow.AddSeconds(2 * 31536000)).Within(TimeSpan.FromMinutes(1)));
+        Assert.That(publishedPayments.Select(p => (p.SubscriptionBillingWeeks, p.SubscriptionRenewalWeeks, p.SubscriptionRenewalAmount, p.SubscriptionIsRenewal)),
+            Is.EqualTo(new (int?, int?, decimal?, bool?)[] { (52, 52, 118.63m, false), (52, 52, 118.63m, true) }), "the legacy plan repeats its year");
     }
 
     private sealed class FakePayPal : PayPalHttpClient

@@ -522,6 +522,16 @@ public class SubscriptionCheckoutTests
     }
 
     [Test]
+    public void BelarusIsBlockedForManagedPaymentsByDefault()
+    {
+        Assert.That(Routing().StripeMode("BY"), Is.Null);
+        Assert.That(Routing().PayPalAvailable("BY"), Is.False);
+        Assert.That(Routing().StripeMode("UA"), Is.EqualTo(StripeCheckoutMode.Managed));
+        Assert.That(Routing(new() { ["SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES"] = "" }).StripeMode("BY"), Is.EqualTo(StripeCheckoutMode.Managed),
+            "the config replaces the default");
+    }
+
+    [Test]
     public void ManagedBlockedCountriesAreConfigurableAndSeparateFromTheTaxBlocks()
     {
         var routing = Routing(new() { ["SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES"] = "tr, NO" });

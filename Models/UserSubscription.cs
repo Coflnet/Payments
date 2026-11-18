@@ -70,6 +70,23 @@ public class UserSubscription
     [MaxLength(3)]
     public string CheckoutRegion { get; set; }
     /// <summary>
+    /// The 4-week plan of the same tier a 13 or 52 week subscription continues as after its first term (§ 309 Nr. 9 b BGB:
+    /// automatic renewals only for an indefinite term cancellable with at most one month's notice). Null for plans that
+    /// bill every 4 weeks anyway, Lemon Squeezy and PayPal subscriptions on a plan without a 4-week regular cycle.
+    /// The subscription is converted once its first renewal is paid: then <see cref="Product"/> is this plan.
+    /// </summary>
+    public Product RenewalProduct { get; set; }
+    /// <summary>
+    /// What every 4-week renewal of <see cref="RenewalProduct"/> charges, like <see cref="PriceCents"/>: direct sales gross
+    /// with the VAT of the checkout country, Managed Payments net. Creator code and "forever" discount code applied, "once" codes not.
+    /// </summary>
+    public long? RenewalPriceCents { get; set; }
+    /// <summary>
+    /// Stripe: the subscription schedule that moves the subscription to <see cref="RenewalProduct"/> at the end of its first term
+    /// </summary>
+    [MaxLength(64)]
+    public string RenewalScheduleId { get; set; }
+    /// <summary>
     /// Whether a cancelled subscription can be resumed with its provider (response only)
     /// </summary>
     [NotMapped]

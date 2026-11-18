@@ -135,7 +135,7 @@ public partial class CallbackController
         var subscription = outcome.Subscription;
         var user = subscription.User;
         var method = outcome.TaxRemittedByProcessor ? "stripe_managed_payments" : provider;
-        await paymentEventProducer.ProduceEvent(new PaymentEvent
+        var payment = new PaymentEvent
         {
             PayedAmount = (double)outcome.Amount,
             ProductId = outcome.Product.Id.ToString(),
@@ -148,7 +148,9 @@ public partial class CallbackController
             PaymentProvider = provider,
             PaymentProviderTransactionId = outcome.PaymentId,
             Timestamp = outcome.PaidAt
-        });
+        };
+        SubscriptionEventTerms.Apply(payment, outcome);
+        await paymentEventProducer.ProduceEvent(payment);
         await RecordSubscriptionCreatorRevenue(outcome);
         await RecordPayment(new PaymentRecord
         {

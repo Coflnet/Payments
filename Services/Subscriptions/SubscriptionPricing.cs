@@ -30,6 +30,19 @@ public static class SubscriptionPricing
     }
 
     /// <summary>
+    /// The net price of every 4-week renewal of a 13 or 52 week subscription (<see cref="SubscriptionRenewal"/>): the 4-week
+    /// list price with the creator code (a lasting discount) and a "forever" discount code with its 4-week amount
+    /// (periodAmounts["4"], else amount). A "first payment only" code does not apply to renewals.
+    /// <paramref name="discount"/> must be the code as validated, not a <see cref="ValidatedDiscount.ForPeriod"/> copy of
+    /// another period (that copy's amount is the other period's).
+    /// </summary>
+    public static decimal RenewalNet(decimal renewalListPrice, CreatorCode creatorCode, ValidatedDiscount discount)
+    {
+        var code = discount?.Duration == DiscountCode.FirstPaymentOnly ? null : discount?.ForPeriod(SubscriptionRenewal.RenewalWeeks);
+        return Apply(renewalListPrice, creatorCode, code);
+    }
+
+    /// <summary>
     /// Net price (after codes) plus VAT, in cents: net cents are rounded first (<see cref="ToCents"/>), then
     /// gross = round-half-away-from-zero(net * (10000 + bp) / 10000).
     /// </summary>

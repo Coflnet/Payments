@@ -17,23 +17,47 @@ public static class StripeSubscriptionDisclosure
     /// </summary>
     public const string SubmitType = "pay";
 
-    /// <summary>{0} weeks, {1} price with currency</summary>
+    /// <summary>{0} weeks, {1} price with currency, {2} account url</summary>
     public const string RenewalTemplate = "Renews every {0} weeks at {1} until cancelled. Cancel anytime in your account at {2}.";
+    /// <summary>
+    /// 13 and 52 week plans (§ 309 Nr. 9 b BGB): {0} weeks of the first term, {1} renewal weeks, {2} renewal price with
+    /// currency, {3} account url
+    /// </summary>
+    public const string ContinuationTemplate =
+        "After the first {0} weeks it continues every {1} weeks at {2} until cancelled. Cancel anytime in your account at {3}.";
+    /// <summary>
+    /// 13 and 52 week plans: the line item's description, shown under the product name next to Stripe's own "per 52 weeks"
+    /// price line: {0} weeks of the first term, {1} renewal weeks, {2} renewal price with currency
+    /// </summary>
+    public const string LineItemTemplate = "First {0} weeks, then every {1} weeks at {2} until cancelled.";
     public const string DirectSuffix = " The price includes VAT.";
     /// <summary>Stripe's own wording: Managed Payments receipts and statements read "Sold through Link"</summary>
     public const string ManagedSuffix = " The price is before taxes. Sold through Link (Stripe's reseller), which charges any applicable taxes.";
 
     /// <summary>
-    /// The text of custom_text.submit.message: renewal terms, for Managed Payments also the reseller notice. The VAT note of
+    /// The text of custom_text.submit.message: renewal terms (13 and 52 week plans: that they continue every 4 weeks at the
+    /// renewal price), for Managed Payments also the reseller notice. The VAT note of
     /// direct sales is only given where VAT is charged (a VAT rate is attached; not for the US, rate 0).
     /// </summary>
-    public static string SubmitMessage(StripeSubscriptionCheckout checkout)
+    public static string SubmitMessage(StripeSubscriptionCheckout checkout) => Renewal(checkout) + Suffix(checkout);
+
+    private static string Renewal(StripeSubscriptionCheckout checkout)
     {
-        var price = (checkout.UnitAmountCents / 100m).ToString("0.00", CultureInfo.InvariantCulture)
-            + " " + checkout.Plan.CurrencyCode.ToUpperInvariant();
-        var message = string.Format(CultureInfo.InvariantCulture, RenewalTemplate, checkout.IntervalWeeks, price, AccountUrl);
-        return message + Suffix(checkout);
+        if (checkout.RenewalUnitAmountCents is long renewal)
+            return string.Format(CultureInfo.InvariantCulture, ContinuationTemplate, checkout.IntervalWeeks,
+                SubscriptionRenewal.RenewalWeeks, Price(renewal, checkout), AccountUrl);
+        return string.Format(CultureInfo.InvariantCulture, RenewalTemplate, checkout.IntervalWeeks,
+            Price(checkout.UnitAmountCents, checkout), AccountUrl);
     }
+
+    /// <summary>The line item description of a 13 or 52 week plan; null for 4-week plans (they keep the plan's description)</summary>
+    public static string LineItemDescription(StripeSubscriptionCheckout checkout) => checkout.RenewalUnitAmountCents is long renewal
+        ? string.Format(CultureInfo.InvariantCulture, LineItemTemplate, checkout.IntervalWeeks, SubscriptionRenewal.RenewalWeeks,
+            Price(renewal, checkout))
+        : null;
+
+    private static string Price(long cents, StripeSubscriptionCheckout checkout) =>
+        (cents / 100m).ToString("0.00", CultureInfo.InvariantCulture) + " " + checkout.Plan.CurrencyCode.ToUpperInvariant();
 
     private static string Suffix(StripeSubscriptionCheckout checkout)
     {

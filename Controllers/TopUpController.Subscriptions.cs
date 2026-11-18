@@ -57,23 +57,25 @@ public partial class TopUpController
         declarations.Validate(options, plan, userId);
         var region = UsDirectSubscriptionCap.NormalizeRegion(options?.Region);
         var (country, mode, vatBasisPoints) = await StripeCountryAndMode(options, subscriptionRouting.Capture(region));
-        var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.Stripe, vatBasisPoints);
-        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.Stripe,
-            RecurringIfDifferent(price, recurringPrice), country, mode == StripeCheckoutMode.Managed, region);
+        var priced = await SubscriptionPrice(options, plan, SubscriptionProviders.Stripe, vatBasisPoints);
+        var request = await AttemptBlockFraud(options, user, plan, priced.First, SubscriptionProviders.Stripe,
+            RecurringIfDifferent(priced.First, priced.Following), country, mode == StripeCheckoutMode.Managed, region);
         if (request.SessionId != null)
             return await ExistingStripeCheckout(stripe, request.SessionId);
         await RememberCountry(user, country, options);
         await declarations.Record(options, user, plan, request);
 
         var checkout = new StripeSubscriptionCheckout(user, plan,
-            SubscriptionPricing.ToCents(recurringPrice), // gross for direct sales, net for Managed Payments (see SubscriptionPrice)
+            SubscriptionPricing.ToCents(priced.Recurring), // gross for direct sales, net for Managed Payments (see SubscriptionPrice)
             SubscriptionService.IntervalWeeks(plan.OwnershipSeconds).Value, mode, country,
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(price), Region: region);
+            options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(priced.First),
+            Region: region, RenewalPlan: priced.RenewalPlan,
+            RenewalUnitAmountCents: priced.Renewal is decimal renewal ? SubscriptionPricing.ToCents(renewal) : null);
         var session = await CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints);
         request.SessionId = session.Id;
         request.CoinAmount = plan.Cost;
-        request.ExpiresAt = discount?.ExpiresAt;
+        request.ExpiresAt = priced.Discount?.ExpiresAt;
         await db.SaveChangesAsync();
         return new TopUpIdResponse { Id = session.Id, DirectLink = session.Url };
     }
@@ -101,27 +103,28 @@ public partial class TopUpController
         EnsureCountryAllowed(country);
         if (!routing.PayPalAvailable(country))
             throw new ApiException($"PayPal subscriptions are not available in your country ({country}).");
-        var (price, recurringPrice, discount) = await SubscriptionPrice(options, plan, SubscriptionProviders.PayPal,
+        var priced = await SubscriptionPrice(options, plan, SubscriptionProviders.PayPal,
             DirectVatBasisPoints(country, "PayPal"));
-        var request = await AttemptBlockFraud(options, user, plan, price, SubscriptionProviders.PayPal,
-            RecurringIfDifferent(price, recurringPrice), country, region: region);
+        var request = await AttemptBlockFraud(options, user, plan, priced.First, SubscriptionProviders.PayPal,
+            RecurringIfDifferent(priced.First, priced.Following), country, region: region);
         if (request.SessionId != null)
             return await ExistingPayPalApproval(paypal, request.SessionId);
         await RememberCountry(user, country, options);
         await declarations.Record(options, user, plan, request);
-        var planId = await PayPalPlans.GetOrCreate(plan);
+        var planId = await PayPalPlans.GetOrCreate(plan, priced.RenewalPlan);
 
+        // The REGULAR cycles: the 4-week renewal price of 13 and 52 week plans, the plan's recurring price otherwise
         var created = await paypal.Create(new PayPalSubscriptionRequest(planId,
-            SubscriptionService.PayPalCustomId(plan.Id, user.ExternalId), price, plan.CurrencyCode.ToUpperInvariant(),
+            SubscriptionService.PayPalCustomId(plan.Id, user.ExternalId), priced.First, plan.CurrencyCode.ToUpperInvariant(),
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail, recurringPrice));
+            options?.UserEmail, priced.Following));
         var approve = ApproveLink(created) ?? throw new ApiException("PayPal did not return an approval link.");
         // The webhook only activates subscriptions recorded here, for exactly this price, and not long after the code expired.
         request.SessionId = created.Id;
         request.CoinAmount = plan.Cost;
-        request.ExpiresAt = discount?.ExpiresAt;
+        request.ExpiresAt = priced.Discount?.ExpiresAt;
         request.CreatorCode = options?.CreatorCode;
-        request.DiscountCode = discount?.Code;
+        request.DiscountCode = priced.Discount?.Code;
         await db.SaveChangesAsync();
         return new TopUpIdResponse { Id = created.Id, DirectLink = approve };
     }
@@ -129,6 +132,9 @@ public partial class TopUpController
     private SubscriptionDeclarationService declarations => subscriptionDeclarations ??=
         new SubscriptionDeclarationService(db, config, _logger);
     private SubscriptionDeclarationService subscriptionDeclarations;
+
+    private SubscriptionRenewalPlans renewalPlans => subscriptionRenewalPlans ??= new SubscriptionRenewalPlans(db, config);
+    private SubscriptionRenewalPlans subscriptionRenewalPlans;
 
     private void EnsureLemonSqueezySubscriptionAllowed(string country, string region)
     {
@@ -197,26 +203,45 @@ public partial class TopUpController
     }
 
     /// <summary>
-    /// What a subscription checkout charges: the first payment, the renewals (they differ for "first payment only"
-    /// codes) and the validated code with the amount of the plan's billing period applied.
-    /// Plan prices are net: both amounts are the discounted net price plus <paramref name="vatBasisPoints"/> of VAT
+    /// What a subscription checkout charges: the first payment, the plan's recurring price (they differ for "first payment
+    /// only" codes), for 13 and 52 week plans the 4-week renewal price, and the validated code with the amount of the plan's
+    /// billing period applied.
+    /// Plan prices are net: all amounts are the discounted net price plus <paramref name="vatBasisPoints"/> of VAT
     /// (0 for Managed Payments, where Stripe adds the tax), i.e. what the provider will charge.
     /// </summary>
-    private async Task<(decimal price, decimal recurringPrice, ValidatedDiscount discount)> SubscriptionPrice(
-        TopUpOptions options, TopUpProduct plan, string provider, int vatBasisPoints)
+    private async Task<SubscriptionCheckoutPrice> SubscriptionPrice(TopUpOptions options, TopUpProduct plan, string provider, int vatBasisPoints)
     {
         if ((options?.TopUpAmount ?? 0) > 0)
             throw new ApiException("Subscriptions have a fixed price.");
+        var renewalPlan = await renewalPlans.Require(plan);
         // GetPriceAndCoins applies the creator code; the discount code is applied by the direct providers themselves.
-        var (creatorPrice, _, _, discount) = await GetPriceAndCoins(options, plan, isSubscription: true, checkoutProvider: provider);
-        discount = discount?.ForPeriod(SubscriptionService.IntervalWeeks(plan.OwnershipSeconds));
+        var (creatorPrice, _, creatorCode, validated) = await GetPriceAndCoins(options, plan, isSubscription: true, checkoutProvider: provider);
+        var discount = validated?.ForPeriod(SubscriptionService.IntervalWeeks(plan.OwnershipSeconds));
         var net = SubscriptionPricing.Apply(creatorPrice, null, discount);
         var recurringNet = discount?.Duration == DiscountCode.FirstPaymentOnly ? creatorPrice : net;
         var price = SubscriptionPricing.GrossCents(net, vatBasisPoints) / 100m;
         var recurringPrice = SubscriptionPricing.GrossCents(recurringNet, vatBasisPoints) / 100m;
-        if (price * 100 < SubscriptionPricing.MinimumCents)
+        var renewal = renewalPlan == null ? (decimal?)null
+            // from the code as validated: the copy above already holds the amount of the plan's own period
+            : SubscriptionPricing.GrossCents(SubscriptionPricing.RenewalNet(renewalPlan.Price, creatorCode, validated), vatBasisPoints) / 100m;
+        if (price * 100 < SubscriptionPricing.MinimumCents || renewal * 100 < SubscriptionPricing.MinimumCents)
             throw new ApiException("The discounted price is below the minimum charge.");
-        return (price, recurringPrice, discount);
+        return new(price, recurringPrice, discount, renewalPlan, renewal);
+    }
+
+    /// <summary>
+    /// The prices of a subscription checkout (see <see cref="SubscriptionPrice"/>)
+    /// </summary>
+    /// <param name="First">The first payment</param>
+    /// <param name="Recurring">The plan's recurring price (the Stripe line item; never charged again for 13/52 week plans)</param>
+    /// <param name="Discount">The validated code with the amount of the plan's period</param>
+    /// <param name="RenewalPlan">13/52 week plans: the 4-week plan the subscription continues as</param>
+    /// <param name="Renewal">13/52 week plans: what every 4-week renewal charges</param>
+    private sealed record SubscriptionCheckoutPrice(decimal First, decimal Recurring, ValidatedDiscount Discount,
+        TopUpProduct RenewalPlan, decimal? Renewal)
+    {
+        /// <summary>What every payment after the first charges</summary>
+        public decimal Following => Renewal ?? Recurring;
     }
 
     private static decimal? RecurringIfDifferent(decimal price, decimal recurringPrice) =>

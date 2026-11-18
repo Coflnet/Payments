@@ -62,10 +62,11 @@ Why each restriction list exists, and where it applies:
 | `SalesRestrictions.BlockedCountries` (TR, AE, SA, KR, VN, CL, MX, PE, MD) | tax only: Coflnet would owe local tax as a foreign seller | blocked | blocked | NOT applied (Stripe is merchant of record and pays the tax) |
 | `SALES:DIRECT_PROVIDER_BLOCKED_COUNTRIES` (default CH, LI) and Northern Ireland postcodes (GB `BT`) | Swiss VAT / Northern Ireland registration, where Coflnet is the seller | blocked | blocked | not applied (Stripe handles it; CH/LI are on Stripe's list) |
 | `SUBSCRIPTIONS:MANAGED_COUNTRIES` | where Stripe takes over the tax (list below) | n/a | n/a | required (AE, CL, PE are not on it) |
-| `SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES` (default empty) | non-tax reasons (sanctions) that apply whoever the seller is | n/a | n/a | blocked |
+| `SUBSCRIPTIONS:MANAGED_BLOCKED_COUNTRIES` (default `BY`) | non-tax reasons (sanctions) that apply whoever the seller is | n/a | n/a | blocked |
 
 So TR, SA, KR, VN, MX and MD get Managed Payments subscriptions (they are on Stripe's list) while staying refused for direct subscriptions and
-one-time purchases; AE, CL and PE get nothing from Stripe. The existing code has no non-tax country block, hence `MANAGED_BLOCKED_COUNTRIES` is empty by default; put sanctioned
+one-time purchases; AE, CL and PE get nothing from Stripe. `MANAGED_BLOCKED_COUNTRIES` defaults to `BY` (owner decision 2026-11-18: Stripe does not support Belarus and the cards of the
+larger Belarusian banks no longer work at EU shops; no EU ban on consumer sales was found); setting it replaces the default. Put sanctioned
 countries there (the blocked list wins over `MANAGED_COUNTRIES`). The Managed Payments country is the buyer's selection (not matched against the IP), so the
 IP country, when the lookup knows it, must be covered by Stripe and not managed-blocked as well; otherwise the Stripe checkout is refused (a buyer located in AE can not pick TR to get Managed Payments; a buyer
 located in TR can pick any covered country for Managed Payments, but never a direct one, where selected and IP country must match). `GET /TopUp/subscribe/providers`, `discount/auto` and the checkout endpoints all read the same
@@ -106,6 +107,11 @@ Plan prices (e.g. `l_premium` 9.69 EUR per 4 weeks) are NET, as they were with L
   checkout and a Managed Payments one have the same amount, so the mode is stored with the payment request).
 - PayPal subscriptions take their creator and discount code from the checkout's `PaymentRequest` (Stripe from the metadata);
   creator shares are based on the net part of what a direct sale paid (Managed Payments: the agreed net EUR price).
+- 13 and 52 week plans continue every 4 weeks after the first term (see "4-week renewal" below). The renewal price is the
+  4-week list price of the same tier, creator code applied, then a `forever` code with its 4-week amount (`periodAmounts["4"]`,
+  else `amount`); a `once` code does not apply. Direct: plus the VAT of the same checkout country; Managed Payments: net
+  (`SubscriptionPricing.RenewalNet`). `PaymentRequests.RecurringAmount` holds what every later payment charges (for 13/52 weeks
+  the 4-week renewal price), so an open checkout is only reused for the same renewal price too.
 
 ## Endpoints
 
@@ -183,12 +189,14 @@ tolerated), so the number of coupons is bounded by the distinct discounts. A cou
 (duration `once`, valid, the same `amount_off` and currency or the same `percent_off`); otherwise an error is logged and the versioned id
 `..._v2` (then `_v3`, up to `_v5`) is checked or created instead, so a coupon edited in the dashboard can never apply a wrong discount. The checkout metadata `priceCents` is the recurring price and
 `firstPriceCents` the first invoice; the first invoice must charge exactly `firstPriceCents` (direct), every other one `priceCents`.
-Nothing is repriced after the first invoice any more. Managed Payments does not list `discounts` or `custom_text` among its disallowed
+13/52 week checkouts also carry `renewalProductSlug` and `renewalPriceCents` (the 4-week renewal, see below); their `priceCents`
+is the line item's 13/52 week price, which is never charged again. Managed Payments does not list `discounts` or `custom_text` among its disallowed
 session parameters; whether a fixed or percentage coupon is taxed on the discounted amount there (and that the coupon is applied together with
 Adaptive Pricing) is not stated by Stripe and needs a live test checkout before the first sale.
 
 Text next to the button (`StripeSubscriptionDisclosure`, one place for the legal wording): `custom_text.submit.message` states "Renews every
-N weeks at X until cancelled. Cancel anytime in your account at sky.coflnet.com/account." plus, direct with VAT (not the US) "The price includes VAT.", managed "... before
+4 weeks at X until cancelled. Cancel anytime in your account at sky.coflnet.com/account." (13/52 week plans: "After the first N weeks it
+continues every 4 weeks at Y until cancelled. Cancel anytime ...", Y = the renewal price, well below `MaxLength` 1200) plus, direct with VAT (not the US) "The price includes VAT.", managed "... before
 taxes. Sold through Link (Stripe's reseller), which charges any applicable taxes." (Stripe's wording: Managed Payments receipts read "Sold through Link") `submit_type=pay` is allowed in
 subscription mode by the Checkout Sessions API (also not on the Managed Payments disallowed list); it labels the button "Buy" instead of the
 default "Subscribe". Both are tested against the request body Stripe.net sends.
@@ -250,18 +258,95 @@ count them as transactions. Lemon Squeezy subscriptions never book creator reven
 its checkout was paid (or it belongs to a prepaid purchase): then it is refused, so a subscription keeps its declaration. Like the prepaid flow it is only mandatory with
 `LEGAL:ENFORCE_SERVICE_PERFORMANCE_DECLARATION=true` (error `service_performance_declaration_required`); otherwise a missing one is logged.
 
+## 4-week renewal of 13 and 52 week plans
+
+§ 309 Nr. 9 b BGB (consumer contracts since March 2022): an automatic renewal in standard terms may only continue for an indefinite
+term that can be cancelled with at most one month's notice. Owner decision: after the first 13 or 52 weeks a subscription continues
+as the 4-week plan of the same tier at that plan's 4-week price until cancelled, for every provider (direct Stripe, Managed Payments,
+PayPal), every country and slot bundles alike.
+
+- The renewal plan (`SubscriptionRenewal`, `SubscriptionRenewalPlans`): a sellable 4-week subscription plan (not disabled, price > 0)
+  with the same tier (`TierRank`: tier groups / `SlotTier`), slot count and currency. Several matches: the one whose slug the long
+  plan's slug starts with (`l_premium` for `l_premium-year`), otherwise none. `SUBSCRIPTIONS:RENEWAL_PLAN:{long slug}` = 4-week slug
+  overrides the choice (only a valid renewal plan is accepted). A 13/52 week plan without a renewal plan is not sold (checkout error,
+  the discount code is not redeemed).
+- Local state: `Subscriptions.RenewalProductId` (the 4-week plan), `RenewalPriceCents` (what each renewal charges, gross for direct,
+  net for Managed Payments) and, Stripe only, `RenewalScheduleId`. The subscription keeps its 13/52 week `Product` until the first
+  renewal is paid; that payment converts it (`Product` = the renewal plan, `PriceCents` = `RenewalPriceCents`) and grants 4 weeks
+  (the 4-week plan's ownership). From then on it is a normal 4-week subscription (plan switches, refunds, ...).
+- Stripe (direct and Managed Payments): Checkout can not create a schedule, so once the first term is granted (`invoice.paid`), and on
+  every `checkout.session.completed` / `customer.subscription.*` event after that, the subscription gets a subscription schedule
+  (`StripeRenewalSchedule`, `from_subscription`, then one update): phase 0 is the current phase as Stripe derived it, ending at the
+  current period end; phase 1 bills `price_data` on the plan product `coflnet_plan_{renewal slug}` (so `StripePlans.SlugOf` names the
+  renewal plan once it is billed) every 4 weeks at `RenewalPriceCents`, `billing_cycle_anchor=phase_start`, `proration_behavior=none`,
+  4 weeks long, phase metadata `priceCents` = the renewal price; `end_behavior=release` (after that period the subscription keeps
+  billing every 4 weeks without a schedule). Direct sales get the inclusive VAT rate on the renewal item as on the checkout, Managed
+  Payments the snapshot's `tax_behavior` (exclusive) and no tax rate. Schedule metadata `coflnet_renewal` = `{slug}:{cents}` marks
+  ours; a schedule someone else made with planned changes is never overwritten (error logged). Lists are only sent when not empty
+  (Stripe.net sends a list that was set to null as an empty value, which would unset it); a kept phase discount is sent as exactly
+  one of `discount` (preferred), `promotion_code`, `coupon`. A schedule created by `from_subscription` is released again when the
+  update fails, so no schedule with only the current phase stays attached.
+  Swapping the price directly is not an option: a price with another interval moves the billing date to the change and charges at once
+  (docs.stripe.com/billing/subscriptions/change-price, "Billing periods"); Stripe recommends schedules for changes at period end.
+  Managed Payments supports subscription schedules since February 2026 (docs.stripe.com/payments/managed-payments/changelog).
+- The first 4-week invoice is granted whether its billing reason is `subscription_cycle` or `subscription_update` (Stripe does not
+  document which one a phase change with a new interval produces): an `updated` invoice while the subscription is in its first term
+  and Stripe bills its renewal plan is that renewal, never a proration. Direct: it must charge exactly `RenewalPriceCents`.
+- Cancel at period end: Stripe refuses `cancel_at_period_end` on a subscription a schedule manages, so the renewal schedule is released
+  first: ours, and for 13/52 week plans any schedule without changes planned by someone else (also one whose id was never stored).
+  Resume schedules it again; when that fails the resume is undone (schedule released, cancelled at period end again), so a resumed year
+  never renews for another year; if even that fails a critical error is logged. A plan switch during the first term releases the schedule, swaps the price, reprices the renewal with the 4-week plan
+  of the new tier (`RecurringPriceCents`) and schedules again (a pending upgrade once it is paid); a target tier without a 4-week plan is
+  refused.
+- `SubscriptionRenewalConversionService` (every `SUBSCRIPTIONS:RENEWAL_CONVERSION_INTERVAL_MINUTES`, default 60, off with
+  `SUBSCRIPTIONS:RENEWAL_CONVERSION_ENABLED=false`) runs `SubscriptionService.ConvertDueRenewals`: active/past_due Stripe subscriptions
+  of 13/52 weeks without a schedule, and scheduled ones within 3 days of their renewal (checked again), are fetched and scheduled. It
+  converts the subscriptions sold before this change (no renewal metadata: renewal plan of their tier, priced like a plan switch from
+  their creator code, discount code terms and checkout country) and retries webhook failures, which are only logged. Each run starts
+  after a random delay of up to a quarter of the interval; a subscription whose change lease another replica or a webhook holds is
+  skipped (debug log) and checked by the next run.
+- Checkout page: Stripe shows the line item as "X per 52 weeks"; the line item's `product_data.description` therefore states the renewal
+  as well ("First 52 weeks, then every 4 weeks at Y until cancelled.", `StripeSubscriptionDisclosure.LineItemTemplate`; not on Managed
+  Payments' disallowed parameter list). 4-week plans keep the plan's description.
+- If a 13/52 week Stripe subscription still renews for its full period (schedule missing), the payment is granted for that period
+  (the buyer paid) and an error is logged: settle the difference by hand. The next run schedules it before its next renewal.
+- PayPal: every plan made now is a TRIAL cycle of the plan's period then infinite 4-week REGULAR cycles (each PayPal billing cycle has
+  its own `frequency`; developer.paypal.com/api/subscriptions/v1, `billing_cycle`), the REGULAR list price the renewal plan's price;
+  a subscription overrides both prices (first price, renewal price). `PayPalPlans.RenewalWeeks` is part of the catalog key, so 13/52
+  week plans made before (REGULAR = their own period) are never reused for checkouts, but subscriptions on them are still accepted.
+  On activation a 13/52 week subscription on a 4-week-renewal plan gets its renewal terms (renewal price = the checkout's
+  `RecurringAmount`); every sale after the first granted one converts it and must charge the renewal price.
+- Existing PayPal 13/52 week subscriptions (on the old plans) can not be converted without the payer: `revise` (switch plan) "requires
+  the buyer's consent", and `PATCH` can only change prices and `total_cycles`, not a cycle's frequency. They keep renewing for their
+  period; the conversion run logs a warning listing the ones that renew within 30 days. Options: ask the payer to approve a revision to
+  the new plan, or cancel at PayPal before the renewal (access runs out with the paid term) and offer a new subscription.
+- Lemon Squeezy subscriptions are not changed (Lemon Squeezy is the seller there).
+- Payment events (Kafka `sky-payments`, read by SkyEventBroker's purchase confirmation) of direct and Managed Payments subscription
+  payments carry `SubscriptionBillingWeeks` (the term paid for: 4, 13 or 52; 4 after the conversion), `SubscriptionRenewalWeeks`
+  (4, or the plan's own weeks for a legacy PayPal plan or a 13/52 week subscription without renewal terms), `SubscriptionRenewalAmount`
+  (what each following cycle charges in the event's `Currency`: direct gross, Managed Payments net; null when a Managed Payments buyer
+  paid in another currency) and `SubscriptionIsRenewal` (false for the first payment). Null on every other event (`SubscriptionEventTerms`).
+
 ## PayPal
 
 Webhook endpoint `/callback/paypal` (id in `PAYPAL:WEBHOOK_ID`), events `BILLING.SUBSCRIPTION.*`, `PAYMENT.SALE.COMPLETED`,
 `PAYMENT.SALE.REFUNDED`, `PAYMENT.SALE.REVERSED`. The REST app needs the Subscriptions feature enabled.
 
 PayPal plans are created automatically on the first checkout of a (product slug, billing weeks, currency): a catalog product
-(`SERVICE`, `SOFTWARE`) and a billing plan (`WEEK` interval, 4/13/52) are created and the plan id is stored in the `PayPalPlans`
-table (unique on slug+weeks+currency; a concurrent first checkout keeps the stored plan, an orphan plan at PayPal is harmless).
-Each plan is a one cycle TRIAL (sequence 1) followed by an infinite REGULAR cycle (sequence 2) at the list price; every
-subscription overrides the price of both cycles, which is how `once` codes work. `PAYPAL:SUBSCRIPTION_PLANS:{slug}` is still
-read as an optional override (that plan must have the same TRIAL + REGULAR structure) and is no longer required.
-Each sale is granted only when it matches the agreed price: the first sale the first-cycle price, later sales the recurring price.
+(`SERVICE`, `SOFTWARE`) and a billing plan (`WEEK` interval) are created and the plan id is stored in the `PayPalPlans`
+table (unique on slug+weeks+renewal weeks+currency; a concurrent first checkout keeps the stored plan, an orphan plan at PayPal is harmless).
+Each plan is a one cycle TRIAL (sequence 1, 4/13/52 weeks) followed by an infinite REGULAR cycle (sequence 2, 4 weeks, see the
+4-week renewal); every subscription overrides the price of both cycles, which is how `once` codes and the renewal price work.
+`PAYPAL:SUBSCRIPTION_PLANS:{slug}` is still read as an optional override for 4-week plans (same TRIAL + REGULAR structure) and is no
+longer required. It is ignored for 13 and 52 week plans (warning logged once): nothing proves the configured plan continues every 4 weeks.
+
+**Deploying the 4-week renewal (and any rollout while 13/52 week plans of both kinds exist):** the release before it looks PayPal plans
+up by (slug, weeks, currency) only. Once a new pod has created a 13/52-to-4-week plan, an old pod may pick it and price its REGULAR cycles
+with the full 13/52 week price, so the buyer would be charged that every 4 weeks. Roll out without old and new pods serving at once:
+use the `Recreate` strategy (or scale to one replica) for this deploy, or set `SUBSCRIPTIONS:PAYPAL_ENABLED=false` on the old
+release before the rollout and back to true afterwards. Later releases are not affected (they look up by renewal weeks).
+Each sale is granted only when it matches the agreed price: the first sale the first-cycle price, later sales the recurring
+(13/52 weeks: the 4-week renewal) price.
 
 ## Database
 
@@ -272,4 +357,14 @@ evidence columns `PaymentRecords.CheckoutCountry/BillingCountry/PaymentMethodCou
 `PaymentRecords.CheckoutRegion/BillingRegion`, and the partial unique index `UX_CreatorCodeRevenues_Reversal` on
 `CreatorCodeRevenues.TransactionReference` for reversal rows only (`LIKE '%#refund:%'`): sale rows written by earlier releases were never checked for
 duplicates, so a full unique index could fail on them and they are never deleted; the script stops if reversal rows are already duplicated
-(existing tables, so no new grants; `Migrations/apply-direct-subscriptions.sh` runs the same file per instance).
+(existing tables, so no new grants; `Migrations/apply-direct-subscriptions.sh` runs the same file per instance). Duplicate rows of a
+user's subscription are removed (newest kept) before the provider backfill, comparing providers as backfilled (NULL/'' =
+`lemonsqueezy`, like `--preview`): the old release keeps writing Lemon Squeezy rows without a provider until the deploy, and a rerun
+would otherwise stop on the unique index when backfilling two of them.
+
+`Migrations/20261118111600_FourWeekRenewal` (EF) and its `.cockroach.sql` (same idempotent style, apply right before the deploy;
+`Migrations/apply-direct-subscriptions.sh` applies it after the two earlier ones, also on databases that already have those)
+add `Subscriptions.RenewalProductId` (FK to `Product`, indexed), `RenewalPriceCents`, `RenewalScheduleId` and
+`PayPalPlans.RenewalWeeks` (existing rows set to their `BillingWeeks`), and replace the PayPal plan unique index by one on
+`(ProductSlug, BillingWeeks, RenewalWeeks, Currency)`. Rows the old release adds between the script and the deploy keep
+`RenewalWeeks` 0, which the new release treats like the old plans.

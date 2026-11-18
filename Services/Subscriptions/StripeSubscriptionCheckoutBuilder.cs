@@ -25,7 +25,9 @@ public record StripeSubscriptionCheckout(
     long? FirstPaymentCents = null, // "first payment only" code: price of the first invoice, below UnitAmountCents
     string CouponId = null, // one-time Stripe coupon that lowers the first invoice to FirstPaymentCents
     string TaxRateId = null, // direct sales: inclusive manual VAT rate shown on Stripe's receipts
-    string Region = null); // the buyer's state at checkout (evidence, per-state US cap)
+    string Region = null, // the buyer's state at checkout (evidence, per-state US cap)
+    TopUpProduct RenewalPlan = null, // 13/52 week plans: the 4-week plan the subscription continues as after its first term
+    long? RenewalUnitAmountCents = null); // 13/52 week plans: what every 4-week renewal charges (direct: gross, managed: net)
 
 /// <summary>
 /// Managed Payments settings (STRIPE:MANAGED_TAX_CODE, STRIPE:MANAGED_TAX_BEHAVIOR)
@@ -48,6 +50,8 @@ public record StripeManagedSettings(string TaxCode, string TaxBehavior)
 /// invoice settings, ...), so it only gets the small set it accepts plus tax_code/tax_behavior.
 /// The price is always inline price_data holding the recurring price; a "first payment only" code is a one-time
 /// coupon (<see cref="StripeFirstPaymentCoupon"/>), every other code lowers the unit amount.
+/// 13 and 52 week plans carry their 4-week renewal plan and price in the metadata; a subscription schedule moves the
+/// subscription to it once the first term is paid (<see cref="StripeRenewalSchedule"/>).
 /// Both modes charge exactly what this service priced.
 /// </summary>
 public static class StripeSubscriptionCheckoutBuilder
@@ -112,7 +116,9 @@ public static class StripeSubscriptionCheckoutBuilder
             ProductData = new SessionLineItemPriceDataProductDataOptions
             {
                 Name = checkout.Plan.Title,
-                Description = string.IsNullOrWhiteSpace(checkout.Plan.Description) ? null : checkout.Plan.Description,
+                // 13/52 week plans: the renewal terms, so Stripe's "per 52 weeks" price line is not the only renewal statement
+                Description = StripeSubscriptionDisclosure.LineItemDescription(checkout)
+                    ?? (string.IsNullOrWhiteSpace(checkout.Plan.Description) ? null : checkout.Plan.Description),
                 TaxCode = taxCode,
                 Metadata = new Dictionary<string, string> { [Keys.ProductSlug] = checkout.Plan.Slug }
             }
@@ -136,6 +142,11 @@ public static class StripeSubscriptionCheckoutBuilder
         AddIfSet(metadata, Keys.Region, checkout.Region);
         AddIfSet(metadata, Keys.DiscountCode, checkout.DiscountCode);
         AddIfSet(metadata, Keys.CreatorCode, checkout.CreatorCode);
+        if (checkout.RenewalPlan != null && checkout.RenewalUnitAmountCents != null)
+        {
+            metadata[Keys.RenewalProductSlug] = checkout.RenewalPlan.Slug;
+            metadata[Keys.RenewalPriceCents] = checkout.RenewalUnitAmountCents.ToString();
+        }
         return metadata;
     }
 

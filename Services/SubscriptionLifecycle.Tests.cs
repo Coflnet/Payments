@@ -281,7 +281,7 @@ public partial class SubscriptionServiceTests
         await SetupPlanSwitch();
         changingSubscription.ChangeLockUntil = DateTime.UtcNow.AddMinutes(2);
         await context.SaveChangesAsync();
-        Assert.ThrowsAsync<ApiException>(() => subscriptionService.ChangePlan("plan-owner", "40001", targetPlan.Slug));
+        Assert.ThrowsAsync<SubscriptionBusyException>(() => subscriptionService.ChangePlan("plan-owner", "40001", targetPlan.Slug));
         planProvider.Verify(p => p.ChangeSubscription(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<bool>()), Times.Never);
     }
     [Test]

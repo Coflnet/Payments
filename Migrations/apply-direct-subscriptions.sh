@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Applies 20261022112747_PaymentRequestCoinAmount and 20261117120348_DirectSubscriptions to one or
-# more Payments CockroachDB databases. Idempotent: every statement tolerates a rerun, and a database
-# that already has both migrations is left unchanged (apart from re-issued GRANTs).
+# Applies 20261022112747_PaymentRequestCoinAmount, 20261117120348_DirectSubscriptions and
+# 20261118111600_FourWeekRenewal, in that order, to one or more Payments CockroachDB databases.
+# Idempotent: every statement tolerates a rerun, and a database that already has some or all of them
+# only gets what is missing (apart from re-issued GRANTs and the SHOW output).
 #
 # Usage:
 #   ./apply-direct-subscriptions.sh [--preview] <instance>=<cockroach url> [<instance>=<url> ...]
-#   e.g. ./apply-direct-subscriptions.sh --preview sky="postgresql://root@host:26257/sky_payments?sslmode=verify-full&..."
+#   e.g. ./apply-direct-subscriptions.sh sky="postgresql://root@host:26257/sky_payments?sslmode=verify-full&..." \
+#          ane="postgresql://root@host:26257/ane?sslmode=verify-full&..."
 #
 # <instance> is sky, ane, dash or tab; table grants go to the instance's SQL user <instance>_payments.
+# The url names the instance's database: sky_payments for sky; ane, dash and tab for the others.
 # The url must use the migration authority (a user allowed to ALTER, CREATE and GRANT).
 # --preview changes nothing: it lists the duplicate subscription rows the migration would delete and
 # any subscription recorded for several users (which stops the migration until resolved by hand).
@@ -19,10 +22,11 @@ set -euo pipefail
 MIGRATIONS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COIN_AMOUNT_SQL="$MIGRATIONS_DIR/20261022112747_PaymentRequestCoinAmount.cockroach.sql"
 DIRECT_SQL="$MIGRATIONS_DIR/20261117120348_DirectSubscriptions.cockroach.sql"
+RENEWAL_SQL="$MIGRATIONS_DIR/20261118111600_FourWeekRenewal.cockroach.sql"
 KNOWN_INSTANCES="sky ane dash tab"
 
 usage() {
-    sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -63,6 +67,8 @@ migration_sql() {
     cat "$COIN_AMOUNT_SQL"
     backup_sql
     sed "s/\bsky_payments\b/${role}/g" "$DIRECT_SQL"
+    # No grants of its own (existing tables only); substituted like the others in case one is added
+    sed "s/\bsky_payments\b/${role}/g" "$RENEWAL_SQL"
 }
 
 run_sql() {

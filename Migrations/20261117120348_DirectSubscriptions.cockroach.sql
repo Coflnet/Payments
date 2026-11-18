@@ -74,26 +74,34 @@ CREATE TABLE IF NOT EXISTS "PayPalPlans" (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_PayPalPlans_ProductSlug_BillingWeeks_Currency" ON "PayPalPlans" ("ProductSlug", "BillingWeeks", "Currency");
 
--- Rows written before providers were recorded are Lemon Squeezy subscriptions.
-UPDATE "Subscriptions" SET "ProviderSlug" = 'lemonsqueezy' WHERE "ProviderSlug" IS NULL OR "ProviderSlug" = '';
+-- Providers are compared as they are after the backfill below (NULL/'' = 'lemonsqueezy'), so duplicates are removed BEFORE the
+-- backfill: the release running until this one ships still writes Lemon Squeezy rows without a provider, which the unique index
+-- below does not catch (NULLs are distinct), and backfilling two of them for one subscription would violate it on a rerun.
+-- Same comparison as the --preview of apply-direct-subscriptions.sh.
 
 -- Stop if one provider subscription is recorded for different users (needs a human decision, never deleted here).
 -- Returns no rows when there is none; otherwise the failing cast names the subscription in the error message.
-SELECT CAST('STOP: subscription ' || s."ProviderSlug" || ' ' || s."ExternalId" || ' is recorded for several users; resolve before migrating' AS INT8)
+SELECT CAST('STOP: subscription ' || coalesce(nullif(s."ProviderSlug", ''), 'lemonsqueezy') || ' ' || s."ExternalId" || ' is recorded for several users; resolve before migrating' AS INT8)
 FROM "Subscriptions" s JOIN "Subscriptions" o
-  ON s."ProviderSlug" = o."ProviderSlug" AND s."ExternalId" = o."ExternalId" AND s."UserId" <> o."UserId"
+  ON coalesce(nullif(s."ProviderSlug", ''), 'lemonsqueezy') = coalesce(nullif(o."ProviderSlug", ''), 'lemonsqueezy')
+ AND s."ExternalId" = o."ExternalId" AND s."UserId" <> o."UserId"
 LIMIT 1;
 
 -- Preview (save this output): the duplicated rows of a user's subscription the next statement removes.
 SELECT s."Id", s."ProviderSlug", s."ExternalId", s."UserId", s."ProductId", s."Status", s."RenewsAt", s."EndsAt", s."UpdatedAt"
 FROM "Subscriptions" s JOIN "Subscriptions" newer
-  ON s."ProviderSlug" = newer."ProviderSlug" AND s."ExternalId" = newer."ExternalId" AND s."UserId" = newer."UserId"
+  ON coalesce(nullif(s."ProviderSlug", ''), 'lemonsqueezy') = coalesce(nullif(newer."ProviderSlug", ''), 'lemonsqueezy')
+ AND s."ExternalId" = newer."ExternalId" AND s."UserId" = newer."UserId"
  AND (s."UpdatedAt" < newer."UpdatedAt" OR (s."UpdatedAt" = newer."UpdatedAt" AND s."Id" < newer."Id"));
 
 -- The subscription list already deleted such duplicates when it read them; keep the newest row.
 DELETE FROM "Subscriptions" s USING "Subscriptions" newer
-WHERE s."ProviderSlug" = newer."ProviderSlug" AND s."ExternalId" = newer."ExternalId" AND s."UserId" = newer."UserId"
+WHERE coalesce(nullif(s."ProviderSlug", ''), 'lemonsqueezy') = coalesce(nullif(newer."ProviderSlug", ''), 'lemonsqueezy')
+  AND s."ExternalId" = newer."ExternalId" AND s."UserId" = newer."UserId"
   AND (s."UpdatedAt" < newer."UpdatedAt" OR (s."UpdatedAt" = newer."UpdatedAt" AND s."Id" < newer."Id"));
+
+-- Rows written before providers were recorded are Lemon Squeezy subscriptions.
+UPDATE "Subscriptions" SET "ProviderSlug" = 'lemonsqueezy' WHERE "ProviderSlug" IS NULL OR "ProviderSlug" = '';
 
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_Subscriptions_ProviderSlug_ExternalId" ON "Subscriptions" ("ProviderSlug", "ExternalId");
 -- Per-state counting of active direct US subscriptions (grouped by region). It replaces the (CheckoutCountry, Status) index

@@ -39,10 +39,11 @@ public record PaymentEvidence(string IpAddress, string CheckoutCountry, string B
 /// <param name="TaxAmount">VAT contained in <paramref name="Amount"/> (direct sales: our VAT; Managed Payments: what Stripe remitted)</param>
 /// <param name="TaxRate">VAT rate in percent, 0 when unknown</param>
 /// <param name="Evidence">Where the buyer was (place of supply evidence), null for prorations</param>
+/// <param name="IsRenewal">False for the subscription's first payment, true for later ones</param>
 public record SubscriptionPaymentOutcome(UserSubscription Subscription, TopUpProduct Product, string PaymentId,
     decimal Amount, string Currency, string Country, string PostalCode, string Email, string Name, DateTime PaidAt,
     decimal? EurAmount = null, bool IsProration = false, decimal TaxAmount = 0, double TaxRate = 0,
-    PaymentEvidence Evidence = null)
+    PaymentEvidence Evidence = null, bool IsRenewal = false)
 {
     /// <summary>Merchant of record (Stripe Managed Payments) remits the tax</summary>
     public bool TaxRemittedByProcessor => Subscription.ManagedPayments;
@@ -116,7 +117,7 @@ public partial class SubscriptionService
     }
 
     private Task<UserSubscription> FindProviderSubscription(string providerSlug, string externalId) => context.Subscriptions
-        .Include(s => s.User).Include(s => s.Product).ThenInclude(p => p.Groups)
+        .Include(s => s.User).Include(s => s.Product).ThenInclude(p => p.Groups).Include(s => s.RenewalProduct).ThenInclude(p => p.Groups)
         .Where(s => s.ProviderSlug == providerSlug && s.ExternalId == externalId)
         .OrderByDescending(s => s.UpdatedAt).FirstOrDefaultAsync();
 

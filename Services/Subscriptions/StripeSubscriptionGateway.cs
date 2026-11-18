@@ -75,6 +75,34 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
         return new StripePriceChange(Snapshot(updated), invoice?.Id, invoice?.Status);
     }
 
+    public Task<string> ScheduleRenewal(StripeSubscriptionSnapshot current, StripeRenewalRequest request) =>
+        StripeRenewalSchedule.Schedule(current, request, new ScheduleCalls(this), DateTime.UtcNow);
+
+    public async Task<StripeScheduleInfo> GetSchedule(string scheduleId)
+    {
+        var schedule = await new SubscriptionScheduleService().GetAsync(scheduleId);
+        return new StripeScheduleInfo(schedule.Id, StripeRenewalSchedule.HasForeignPhases(schedule, DateTime.UtcNow),
+            StripeRenewalSchedule.IsRenewalSchedule(schedule));
+    }
+
+    private sealed class ScheduleCalls(StripeSubscriptionGateway gateway) : IStripeScheduleCalls
+    {
+        private readonly SubscriptionScheduleService schedules = new();
+        public Task<SubscriptionSchedule> CreateFrom(string subscriptionId) =>
+            schedules.CreateAsync(new SubscriptionScheduleCreateOptions { FromSubscription = subscriptionId });
+        public Task<SubscriptionSchedule> Get(string scheduleId) => schedules.GetAsync(scheduleId);
+        public Task<SubscriptionSchedule> Update(string scheduleId, SubscriptionScheduleUpdateOptions options) =>
+            schedules.UpdateAsync(scheduleId, options);
+        public Task Release(string scheduleId) => schedules.ReleaseAsync(scheduleId);
+        public Task<string> EnsurePlanProduct(string planSlug, string planName) => gateway.EnsurePlanProduct(planSlug, planName);
+    }
+
+    public async Task<StripeSubscriptionSnapshot> ReleaseSchedule(string scheduleId, string subscriptionId)
+    {
+        await new SubscriptionScheduleService().ReleaseAsync(scheduleId);
+        return await GetSubscription(subscriptionId);
+    }
+
     private async Task<string> EnsurePlanProduct(string planSlug, string planName)
     {
         var id = StripePlans.ProductId(planSlug);
@@ -238,6 +266,7 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
             new Dictionary<string, string>(subscription.Metadata ?? new Dictionary<string, string>()),
             item?.Id, item?.Price?.Id, item?.Price?.ProductId, item?.Price?.UnitAmount, item?.Price?.Currency,
             item?.Price?.TaxBehavior is "inclusive" or "exclusive" ? item.Price.TaxBehavior : null,
-            subscription.ManagedPayments?.Enabled == true, subscription.Created, subscription.PendingUpdate != null);
+            subscription.ManagedPayments?.Enabled == true, subscription.Created, subscription.PendingUpdate != null,
+            subscription.ScheduleId);
     }
 }

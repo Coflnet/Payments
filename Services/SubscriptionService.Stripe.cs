@@ -34,6 +34,10 @@ public partial class SubscriptionService
         public const string DiscountCode = "discountCode";
         public const string CreatorCode = "creatorCode";
         public const string PaymentRequestId = "paymentRequestId";
+        /// <summary>13/52 week plans: the 4-week plan the subscription continues as after its first term</summary>
+        public const string RenewalProductSlug = "renewalProductSlug";
+        /// <summary>13/52 week plans: what every 4-week renewal charges (direct: gross, Managed Payments: net)</summary>
+        public const string RenewalPriceCents = "renewalPriceCents";
     }
 
     private IStripeSubscriptionGateway StripeApi =>
@@ -57,6 +61,7 @@ public partial class SubscriptionService
                 return false;
             ApplyStripeState(subscription, snapshot);
             await context.SaveChangesAsync();
+            await TryScheduleStripeRenewal(subscription, snapshot);
             return true;
         });
         // Delayed payment methods complete the checkout unpaid; invoice.paid grants once the money arrived.
@@ -66,6 +71,7 @@ public partial class SubscriptionService
 
     /// <summary>
     /// customer.subscription.updated/deleted and invoice.payment_failed: synchronizes status, EndsAt and RenewsAt.
+    /// A 13 or 52 week subscription that will renew without our renewal schedule (e.g. resumed elsewhere) is scheduled again.
     /// </summary>
     public Task StripeSubscriptionChanged(string subscriptionId) => WithSubscriptionLock(subscriptionId, async () =>
     {
@@ -75,6 +81,7 @@ public partial class SubscriptionService
             return false;
         ApplyStripeState(subscription, snapshot);
         await context.SaveChangesAsync();
+        await TryScheduleStripeRenewal(subscription, snapshot);
         return true;
     });
 
@@ -100,9 +107,16 @@ public partial class SubscriptionService
             return await RejectStripeInvoice(null, invoice, "the subscription was not sold by this service");
         ApplyStripeState(subscription, snapshot);
         await context.SaveChangesAsync();
+        // A redelivery of a granted invoice is the same period payment again, whatever the plan is now (the first 4-week
+        // invoice, billing reason "updated", would otherwise look like a proration once the subscription is converted)
+        if (await IsGranted(subscription.User.ExternalId, SubscriptionProviders.GrantReference(SubscriptionProviders.Stripe, invoice.Id)))
+            return await GrantedStripeOutcome(subscription, snapshot, invoice, false);
         return invoice.NormalizedBillingReason switch
         {
             "initial" or "renewal" => await GrantStripeInvoice(subscription, snapshot, invoice),
+            // The first 4-week invoice after the renewal schedule's phase change (Stripe does not document its billing reason)
+            "updated" when BillsRenewalPlan(subscription, StripePlans.SlugOf(snapshot))
+                => await GrantStripeInvoice(subscription, snapshot, invoice),
             "updated" => await RecordStripeProration(subscription, snapshot, invoice),
             _ => await RejectStripeInvoice(subscription, invoice, $"unexpected billing reason {invoice.BillingReason}")
         };
@@ -123,17 +137,35 @@ public partial class SubscriptionService
         var evidence = await StripeEvidence(subscription, snapshot, invoice, invoice.NormalizedBillingReason == "initial");
         if (invoice.NormalizedBillingReason == "initial" && !await AcceptsDirectBuyer(subscription, invoice, evidence))
             return null;
+        WarnOnLongRenewal(subscription, invoice);
         await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
         subscription.PaymentAmount = (invoice.AmountPaid / 100m).ToString("0.00", CultureInfo.InvariantCulture) + " " + invoice.Currency?.ToUpperInvariant();
         await context.SaveChangesAsync();
-        return StripeOutcome(subscription, snapshot, invoice, AgreedCents(subscription, snapshot, invoice) / 100m) with { Evidence = evidence };
+        await TryScheduleStripeRenewal(subscription, snapshot);
+        // A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")
+        return StripeOutcome(subscription, snapshot, invoice, AgreedCents(subscription, snapshot, invoice) / 100m)
+            with { Evidence = evidence, IsProration = false };
     }
 
     private async Task<SubscriptionPaymentOutcome> GrantedStripeOutcome(UserSubscription subscription,
         StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice, bool cardCountryRequired)
     {
         var evidence = await StripeEvidence(subscription, snapshot, invoice, cardCountryRequired);
-        return StripeOutcome(subscription, snapshot, invoice, AgreedCents(subscription, snapshot, invoice) / 100m) with { Evidence = evidence };
+        // A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")
+        return StripeOutcome(subscription, snapshot, invoice, AgreedCents(subscription, snapshot, invoice) / 100m)
+            with { Evidence = evidence, IsProration = false };
+    }
+
+    /// <summary>
+    /// A 13 or 52 week subscription renewed for its full period: its renewal schedule was missing. The payment is granted
+    /// (the buyer paid for it), but the renewal clause was not lawful; the difference has to be settled by hand.
+    /// </summary>
+    private void WarnOnLongRenewal(UserSubscription subscription, StripeInvoiceInfo invoice)
+    {
+        if (invoice.NormalizedBillingReason != "renewal" || !SubscriptionRenewal.ContinuesAsFourWeeks(subscription.Product))
+            return;
+        logger.LogError("Stripe invoice {InvoiceId} renewed {SubscriptionId} for another {Plan} term instead of continuing as {RenewalPlan} every 4 weeks; refund the difference",
+            invoice.Id, subscription.ExternalId, subscription.Product.Slug, subscription.RenewalProduct?.Slug ?? "(no renewal plan found)");
     }
 
     /// <summary>
@@ -186,7 +218,7 @@ public partial class SubscriptionService
         new(subscription, (TopUpProduct)subscription.Product, invoice.Id, paid,
             invoice.Currency?.ToUpperInvariant(), country,
             invoice.CustomerPostalCode, invoice.CustomerEmail, invoice.CustomerName, invoice.Created, eurNet,
-            invoice.NormalizedBillingReason == "updated", vat, rate);
+            invoice.NormalizedBillingReason == "updated", vat, rate, IsRenewal: invoice.NormalizedBillingReason != "initial");
 
     private async Task<SubscriptionPaymentOutcome> RejectStripeInvoice(UserSubscription subscription, StripeInvoiceInfo invoice, string reason)
     {
@@ -204,6 +236,11 @@ public partial class SubscriptionService
         var slug = StripePlans.SlugOf(snapshot);
         if (slug == null || slug == subscription.Product.Slug)
             return true;
+        if (BillsRenewalPlan(subscription, slug))
+        {
+            await ConvertToRenewalPlan(subscription);
+            return true;
+        }
         var target = await PlanBySlug(slug);
         if (target == null || !CanChangePlan(subscription.Product, target))
             return false;
@@ -295,6 +332,7 @@ public partial class SubscriptionService
         {
             await PrepareOwnership(subscription);
             await ApplyPlanLocally(subscription, target, invoice.Id, invoice.Created, s => ApplyStripePrice(s, snapshot));
+            await TryScheduleStripeRenewal(subscription, snapshot); // the paid upgrade continues as the 4-week plan of its tier
         }
         return StripeOutcome(subscription, snapshot, invoice, null);
     }
@@ -355,10 +393,27 @@ public partial class SubscriptionService
             DiscountCode = metadata.GetValueOrDefault(StripeMetadata.DiscountCode),
             CreatorCode = metadata.GetValueOrDefault(StripeMetadata.CreatorCode)
         };
+        await ApplyCheckoutRenewalTerms(subscription, metadata);
         ApplyStripeState(subscription, snapshot);
         context.Subscriptions.Add(subscription);
         await context.SaveChangesAsync();
         return subscription;
+    }
+
+    /// <summary>
+    /// The renewal terms the checkout showed (13/52 week plans). Missing or invalid ones are determined later
+    /// (<see cref="EnsureRenewalTerms"/>) like those of subscriptions sold before the 4-week renewal.
+    /// </summary>
+    private async Task ApplyCheckoutRenewalTerms(UserSubscription subscription, IReadOnlyDictionary<string, string> metadata)
+    {
+        if (!SubscriptionRenewal.ContinuesAsFourWeeks(subscription.Product))
+            return;
+        var renewal = await PlanBySlug(metadata.GetValueOrDefault(StripeMetadata.RenewalProductSlug));
+        if (!SubscriptionRenewal.IsRenewalOf(subscription.Product, renewal)
+            || !long.TryParse(metadata.GetValueOrDefault(StripeMetadata.RenewalPriceCents), out var cents))
+            return;
+        subscription.RenewalProduct = renewal;
+        subscription.RenewalPriceCents = cents;
     }
 
     private static string MetadataCountry(StripeSubscriptionSnapshot snapshot) =>
@@ -441,6 +496,8 @@ public partial class SubscriptionService
 
         public async Task CancelAtPeriodEnd(UserSubscription subscription)
         {
+            if (MayHaveRenewalSchedule(subscription))
+                await service.ReleaseStripeRenewal(subscription, await service.StripeApi.GetSubscription(subscription.ExternalId));
             ApplyStripeState(subscription, await service.StripeApi.SetCancelAtPeriodEnd(subscription.ExternalId, true));
             if (subscription.Status != "cancelled" || subscription.EndsAt == null)
                 throw new ApiException("Stripe did not confirm the cancellation.");
@@ -448,9 +505,11 @@ public partial class SubscriptionService
 
         public async Task Resume(UserSubscription subscription)
         {
-            ApplyStripeState(subscription, await service.StripeApi.SetCancelAtPeriodEnd(subscription.ExternalId, false));
+            var resumed = await service.StripeApi.SetCancelAtPeriodEnd(subscription.ExternalId, false);
+            ApplyStripeState(subscription, resumed);
             if (subscription.Status != "active")
                 throw new ApiException("Stripe did not confirm reactivation.");
+            await service.ScheduleResumedStripeRenewal(subscription, resumed);
         }
 
         public async Task<SubscriptionChangeResult> ChangePlan(UserSubscription subscription, TopUpProduct target)
@@ -463,6 +522,9 @@ public partial class SubscriptionService
             var upgrade = TierRank(target) > TierRank(await service.AccessProduct(subscription));
             var priceCents = await service.RecurringPriceCents(subscription, target, MetadataCountry(current))
                 ?? throw new ApiException($"The plan can not be priced for country {MetadataCountry(current)}: no VAT rate is configured.");
+            if (InFirstLongTerm(subscription))
+                await service.renewalPlans.Require(target); // it must be able to continue every 4 weeks as well
+            current = await service.ReleaseStripeRenewal(subscription, current);
             var change = await service.StripeApi.ChangePrice(current, new StripePriceChangeRequest(priceCents,
                 target.CurrencyCode.ToLowerInvariant(), IntervalWeeks(target.OwnershipSeconds).Value, upgrade,
                 current.TaxBehavior, target.Slug, target.Title));
@@ -471,6 +533,7 @@ public partial class SubscriptionService
                 return new("pending");
             await service.ApplyPlanLocally(subscription, target, upgrade ? change.InvoiceId : null, DateTime.UtcNow,
                 s => ApplyStripePrice(s, change.Subscription));
+            await service.TryScheduleStripeRenewal(subscription, change.Subscription);
             return new("completed");
         }
 

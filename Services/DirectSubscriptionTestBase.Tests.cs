@@ -85,8 +85,9 @@ public abstract class DirectSubscriptionTestBase
         OwnershipSeconds = FourWeeks, Type = Product.ProductType.SERVICE
     };
 
-    protected SubscriptionService Service(IStripeSubscriptionGateway stripe = null, IPayPalSubscriptionApi paypal = null, PayPalPlanCatalog paypalPlans = null) =>
-        new(NullLogger<SubscriptionService>.Instance, transactions, users, products, db,
+    protected SubscriptionService Service(IStripeSubscriptionGateway stripe = null, IPayPalSubscriptionApi paypal = null, PayPalPlanCatalog paypalPlans = null,
+        Microsoft.Extensions.Logging.ILogger<SubscriptionService> logger = null) =>
+        new(logger ?? NullLogger<SubscriptionService>.Instance, transactions, users, products, db,
             new LemonSqueezyService(new ConfigurationBuilder().Build(), NullLogger<LemonSqueezyService>.Instance, db,
                 new VariantCacheService(NullLogger<VariantCacheService>.Instance)),
             stripe, paypal, paypalPlans, Tax());

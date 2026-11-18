@@ -111,6 +111,7 @@ namespace Coflnet.Payments
             services.AddScoped<CreatorCodeService>();
             services.AddScoped<DiscountCodeService>();
             services.AddScoped<Services.Subscriptions.PayPalPlanCatalog>();
+            services.AddScoped<Services.Subscriptions.SubscriptionRenewalPlans>();
             services.AddSingleton<Services.Subscriptions.IDirectSubscriptionCounter, Services.Subscriptions.DbDirectSubscriptionCounter>();
             services.AddSingleton<Services.Subscriptions.UsDirectSubscriptionCap>();
             services.AddSingleton<Services.Subscriptions.SubscriptionRouting>();
@@ -128,6 +129,7 @@ namespace Coflnet.Payments
             services.AddHostedService<PaymentMetricService>();
             services.AddHostedService<CoinGateReconciliationService>();
             services.AddHostedService<PaymentConfirmationOutboxPublisher>();
+            services.AddHostedService<SubscriptionRenewalConversionService>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))
             {

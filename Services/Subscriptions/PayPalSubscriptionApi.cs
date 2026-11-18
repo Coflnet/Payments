@@ -16,20 +16,25 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// <summary>
 /// A new PayPal subscription priced by this service
 /// </summary>
-/// <param name="PlanId">PayPal plan (P-...) with a one cycle TRIAL followed by an infinite REGULAR cycle of the plan's period</param>
+/// <param name="PlanId">PayPal plan (P-...) with a one cycle TRIAL of the plan's period followed by an infinite REGULAR cycle
+/// (4 weeks for plans created since the 4-week renewal)</param>
 /// <param name="CustomId">Internal reference, at most 127 characters</param>
 /// <param name="Price">Gross price (discounted net price plus the buyer's VAT, see SubscriptionPricing.GrossCents) of the first cycle
 /// (the plan's TRIAL cycle), sent as plan override; PayPal charges it as is</param>
-/// <param name="RecurringPrice">Price of every following cycle (the REGULAR cycle); equals <paramref name="Price"/> unless a
-/// "first payment only" code applies. Null means the same as <paramref name="Price"/>.</param>
+/// <param name="RecurringPrice">Price of every following cycle (the REGULAR cycle; for 13 and 52 week plans the 4-week renewal
+/// price); equals <paramref name="Price"/> unless a "first payment only" code applies or the plan continues every 4 weeks.
+/// Null means the same as <paramref name="Price"/>.</param>
 public record PayPalSubscriptionRequest(string PlanId, string CustomId, decimal Price, string Currency,
     string ReturnUrl, string CancelUrl, string Email, decimal? RecurringPrice = null);
 
 /// <summary>
-/// A billing plan to create: a one cycle TRIAL then an infinite REGULAR cycle, both of <paramref name="Weeks"/> weeks
-/// at the list price. The trial cycle exists so a subscription can price its first cycle differently.
+/// A billing plan to create: a one cycle TRIAL of <paramref name="Weeks"/> weeks at the list price, then an infinite REGULAR
+/// cycle of <paramref name="RenewalWeeks"/> weeks (default: <paramref name="Weeks"/>) at <paramref name="RenewalPrice"/>
+/// (default: <paramref name="Price"/>). The trial cycle exists so a subscription can price its first cycle differently, and
+/// so 13 and 52 week plans continue every 4 weeks (each PayPal billing cycle has its own frequency).
 /// </summary>
-public record PayPalPlanRequest(string CatalogProductId, string Name, string Description, int Weeks, decimal Price, string Currency);
+public record PayPalPlanRequest(string CatalogProductId, string Name, string Description, int Weeks, decimal Price, string Currency,
+    int? RenewalWeeks = null, decimal? RenewalPrice = null);
 
 /// <summary>
 /// PayPal Subscriptions v1 (the checkout SDK has no subscriptions API)
@@ -108,7 +113,7 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
     };
 
     /// <summary>
-    /// Sequence 1 is a one cycle TRIAL, sequence 2 the infinite REGULAR cycle; both at the list price.
+    /// Sequence 1 is a one cycle TRIAL of the plan's period, sequence 2 the infinite REGULAR cycle of the renewal period.
     /// </summary>
     internal static JObject PlanBody(PayPalPlanRequest request) => new()
     {
@@ -117,8 +122,8 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
         ["description"] = Truncate(request.Description, 127),
         ["status"] = "ACTIVE",
         ["billing_cycles"] = new JArray(
-            PlanCycle(request, "TRIAL", 1, 1),
-            PlanCycle(request, "REGULAR", 2, 0)),
+            PlanCycle("TRIAL", 1, 1, request.Weeks, request.Price, request.Currency),
+            PlanCycle("REGULAR", 2, 0, request.RenewalWeeks ?? request.Weeks, request.RenewalPrice ?? request.Price, request.Currency)),
         ["payment_preferences"] = new JObject
         {
             ["auto_bill_outstanding"] = true,
@@ -128,13 +133,13 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
         }
     };
 
-    private static JObject PlanCycle(PayPalPlanRequest request, string tenure, int sequence, int totalCycles) => new()
+    private static JObject PlanCycle(string tenure, int sequence, int totalCycles, int weeks, decimal price, string currency) => new()
     {
-        ["frequency"] = new JObject { ["interval_unit"] = "WEEK", ["interval_count"] = request.Weeks },
+        ["frequency"] = new JObject { ["interval_unit"] = "WEEK", ["interval_count"] = weeks },
         ["tenure_type"] = tenure,
         ["sequence"] = sequence,
         ["total_cycles"] = totalCycles,
-        ["pricing_scheme"] = PricingScheme(request.Price, request.Currency)
+        ["pricing_scheme"] = PricingScheme(price, currency)
     };
 
     private static JObject PricingScheme(decimal price, string currency) => new()

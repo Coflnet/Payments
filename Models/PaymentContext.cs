@@ -195,7 +195,7 @@ namespace Coflnet.Payments.Models
 
             modelBuilder.Entity<PayPalPlan>(entity =>
             {
-                entity.HasIndex(e => new { e.ProductSlug, e.BillingWeeks, e.Currency }).IsUnique();
+                entity.HasIndex(e => new { e.ProductSlug, e.BillingWeeks, e.RenewalWeeks, e.Currency }).IsUnique();
             });
 
             modelBuilder.Entity<SubscriptionPlanChange>(entity =>

@@ -22,6 +22,7 @@ public partial class SubscriptionService
     private readonly IStripeSubscriptionGateway stripe;
     private readonly IPayPalSubscriptionApi paypal;
     private readonly PayPalPlanCatalog paypalPlans;
+    private readonly SubscriptionRenewalPlans renewalPlans;
 
     /// <summary>
     /// Represents a service for managing subscriptions.
@@ -36,6 +37,7 @@ public partial class SubscriptionService
     /// <param name="paypal">PayPal Subscriptions API, null when PayPal subscriptions are not used</param>
     /// <param name="paypalPlans">PayPal plans created per product; defaults to one without a config override</param>
     /// <param name="tax">VAT rates for direct sales; without it direct subscriptions can not be priced (plan switches fail)</param>
+    /// <param name="renewalPlans">The 4-week plans 13 and 52 week subscriptions continue as; defaults to one without a config override</param>
     public SubscriptionService(
         ILogger<SubscriptionService> logger,
         TransactionService transactionService,
@@ -46,9 +48,11 @@ public partial class SubscriptionService
         IStripeSubscriptionGateway stripe = null,
         IPayPalSubscriptionApi paypal = null,
         PayPalPlanCatalog paypalPlans = null,
-        SubscriptionTax tax = null)
+        SubscriptionTax tax = null,
+        SubscriptionRenewalPlans renewalPlans = null)
     {
         this.tax = tax;
+        this.renewalPlans = renewalPlans ?? new SubscriptionRenewalPlans(context);
         this.paypalPlans = paypalPlans ?? (paypal == null ? null : new PayPalPlanCatalog(context, paypal, null));
         this.logger = logger;
         this.transactionService = transactionService;
@@ -68,7 +72,7 @@ public partial class SubscriptionService
     {
         var all = await context.Subscriptions
             .Where(s => s.User.ExternalId == userId)
-            .Include(s => s.Product).ToListAsync();
+            .Include(s => s.Product).Include(s => s.RenewalProduct).ToListAsync();
         var dupplicate = all.GroupBy(s => (SubscriptionProviders.Normalize(s.ProviderSlug), s.ExternalId)).Where(s => s.Count() > 1).FirstOrDefault()?.OrderByDescending(f => f.UpdatedAt).Skip(1).FirstOrDefault();
         if( dupplicate != null)
         {
