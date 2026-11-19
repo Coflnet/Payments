@@ -307,7 +307,8 @@ public class SubscriptionCheckoutTests
         Assert.That(direct.CustomText.Submit.Message, Does.Contain("sky.coflnet.com/account").And.Contain("includes VAT"));
         Assert.That(direct.CustomText.Submit.Message, Does.Not.Contain("reseller"));
         Assert.That(managed.CustomText.Submit.Message, Does.Contain("9.69 EUR").And.Contain("Sold through Link (Stripe's reseller), which charges any applicable taxes."));
-        Assert.That(new[] { direct.SubmitType, managed.SubmitType }, Is.All.EqualTo("pay"));
+        // regression: Stripe refuses submit_type "pay" in subscription mode
+        Assert.That(new[] { direct.SubmitType, managed.SubmitType }, Is.All.Null);
         Assert.That(direct.CustomText.Submit.Message.Length, Is.LessThan(StripeSubscriptionDisclosure.MaxLength));
     }
 
@@ -345,7 +346,7 @@ public class SubscriptionCheckoutTests
         var pairs = sent.Body.Split('&').Select(p => Uri.UnescapeDataString(p.Replace('+', ' '))).ToList();
 
         Assert.That(pairs, Does.Contain("discounts[0][coupon]=coflnet_once_pct_5000"));
-        Assert.That(pairs, Does.Contain("submit_type=pay"));
+        Assert.That(pairs.Any(p => p.StartsWith("submit_type=")), Is.False, "Stripe refuses submit_type pay in subscription mode");
         Assert.That(pairs.Any(p => p.StartsWith("custom_text[submit][message]=Renews every 13 weeks")), Is.True);
         Assert.That(pairs, Does.Contain("managed_payments[enabled]=true"));
     }

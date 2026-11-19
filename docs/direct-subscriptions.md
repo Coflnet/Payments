@@ -197,9 +197,9 @@ Adaptive Pricing) is not stated by Stripe and needs a live test checkout before 
 Text next to the button (`StripeSubscriptionDisclosure`, one place for the legal wording): `custom_text.submit.message` states "Renews every
 4 weeks at X until cancelled. Cancel anytime in your account at sky.coflnet.com/account." (13/52 week plans: "After the first N weeks it
 continues every 4 weeks at Y until cancelled. Cancel anytime ...", Y = the renewal price, well below `MaxLength` 1200) plus, direct with VAT (not the US) "The price includes VAT.", managed "... before
-taxes. Sold through Link (Stripe's reseller), which charges any applicable taxes." (Stripe's wording: Managed Payments receipts read "Sold through Link") `submit_type=pay` is allowed in
-subscription mode by the Checkout Sessions API (also not on the Managed Payments disallowed list); it labels the button "Buy" instead of the
-default "Subscribe". Both are tested against the request body Stripe.net sends.
+taxes. Sold through Link (Stripe's reseller), which charges any applicable taxes." (Stripe's wording: Managed Payments receipts read "Sold through Link") No `submit_type` is sent:
+Stripe refuses `submit_type=pay` in subscription mode (seen live 2026-11-19), so the button keeps Stripe's "Subscribe" label. The request
+body Stripe.net sends is tested to contain no `submit_type`.
 
 ### Place of supply evidence
 

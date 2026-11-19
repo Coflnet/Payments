@@ -89,7 +89,6 @@ public static class StripeSubscriptionCheckoutBuilder
         return new SessionCreateOptions
         {
             Mode = "subscription",
-            SubmitType = StripeSubscriptionDisclosure.SubmitType,
             CustomText = new SessionCustomTextOptions
             {
                 Submit = new SessionCustomTextSubmitOptions { Message = StripeSubscriptionDisclosure.SubmitMessage(checkout) }

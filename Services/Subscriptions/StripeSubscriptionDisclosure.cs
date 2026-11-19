@@ -11,11 +11,8 @@ public static class StripeSubscriptionDisclosure
     /// <summary>Stripe's limit for custom_text.submit.message</summary>
     public const int MaxLength = 1200;
     public const string AccountUrl = "sky.coflnet.com/account";
-    /// <summary>
-    /// "pay" labels the button "Buy" (the default for subscriptions is "Subscribe"); allowed in subscription mode
-    /// by the Checkout Sessions API, also with Managed Payments.
-    /// </summary>
-    public const string SubmitType = "pay";
+    // No submit_type: Stripe refuses submit_type "pay" in subscription mode ("You can not pass `submit_type: 'pay'` in
+    // `subscription` mode", live 2026-11-19), so the button keeps Stripe's subscription label.
 
     /// <summary>{0} weeks, {1} price with currency, {2} account url</summary>
     public const string RenewalTemplate = "Renews every {0} weeks at {1} until cancelled. Cancel anytime in your account at {2}.";
