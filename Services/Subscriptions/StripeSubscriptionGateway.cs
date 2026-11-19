@@ -82,7 +82,7 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
     {
         var schedule = await new SubscriptionScheduleService().GetAsync(scheduleId);
         return new StripeScheduleInfo(schedule.Id, StripeRenewalSchedule.HasForeignPhases(schedule, DateTime.UtcNow),
-            StripeRenewalSchedule.IsRenewalSchedule(schedule));
+            StripeRenewalSchedule.IsRenewalSchedule(schedule), schedule.Metadata?.GetValueOrDefault(StripeRenewalSchedule.MarkerKey));
     }
 
     private sealed class ScheduleCalls(StripeSubscriptionGateway gateway) : IStripeScheduleCalls

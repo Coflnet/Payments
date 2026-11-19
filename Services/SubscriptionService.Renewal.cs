@@ -36,16 +36,17 @@ public partial class SubscriptionService
         .AnyAsync(t => t.SubscriptionId == subscription.ExternalId && t.User.Id == subscription.User.Id);
 
     /// <summary>
-    /// The first renewal is paid: from now on the subscription is the 4-week plan at its renewal price
+    /// The first renewal is paid: from now on the subscription is the 4-week plan at its renewal price. Not saved here: the grant
+    /// of that renewal saves it in its own transaction (or the refund mark of a rejected payment), so a failure in between
+    /// leaves the subscription unconverted and the provider's retry converts and grants it again.
     /// </summary>
-    private async Task ConvertToRenewalPlan(UserSubscription subscription)
+    private void ConvertToRenewalPlan(UserSubscription subscription)
     {
         logger.LogInformation("Subscription {SubscriptionId} continues as {RenewalPlan} at {Cents} cents every 4 weeks after its first {Plan} term",
             subscription.ExternalId, subscription.RenewalProduct.Slug, subscription.RenewalPriceCents, subscription.Product.Slug);
         subscription.Product = subscription.RenewalProduct;
         subscription.PriceCents = subscription.RenewalPriceCents ?? subscription.PriceCents;
         subscription.UpdatedAt = DateTime.UtcNow;
-        await context.SaveChangesAsync();
     }
 
     /// <summary>
@@ -225,7 +226,8 @@ public partial class SubscriptionService
     /// <summary>
     /// Converts the 13 and 52 week Stripe subscriptions that are not moved to their 4-week renewal yet (sold before it
     /// existed, or a webhook failed) and checks the scheduled ones again shortly before their renewal. Returns how many were
-    /// scheduled. Also reports legacy PayPal subscriptions, which can not be moved without the payer.
+    /// scheduled. Also reports legacy PayPal subscriptions, which can not be moved without the payer, and links PayPal extensions
+    /// whose activation webhook was lost (<see cref="LinkApprovedPayPalExtensions"/>).
     /// </summary>
     public async Task<int> ConvertDueRenewals(CancellationToken cancellation = default)
     {
@@ -243,6 +245,7 @@ public partial class SubscriptionService
                 scheduled++;
         }
         await WarnAboutLegacyPayPalRenewals(cancellation);
+        await LinkApprovedPayPalExtensions(cancellation);
         return scheduled;
     }
 
@@ -276,7 +279,51 @@ public partial class SubscriptionService
         await context.SaveChangesAsync();
         var before = subscription.RenewalScheduleId;
         await ScheduleStripeRenewal(subscription, snapshot);
-        return subscription.RenewalScheduleId != before;
+        if (subscription.RenewalScheduleId != before)
+            return true;
+        return await CorrectStripeRenewalSchedule(subscription, snapshot);
+    }
+
+    /// <summary>
+    /// Hourly recheck: our attached schedule must plan what is booked. One whose marker differs (e.g. an extension phase left
+    /// after its booking was dropped) is updated to the expected phases.
+    /// </summary>
+    private async Task<bool> CorrectStripeRenewalSchedule(UserSubscription subscription, StripeSubscriptionSnapshot snapshot)
+    {
+        if (!IsOurAttachedSchedule(subscription, snapshot) || subscription.RenewalProduct == null || subscription.RenewalPriceCents == null)
+            return false;
+        var expected = await RenewalRequest(subscription, snapshot);
+        var schedule = await StripeApi.GetSchedule(snapshot.ScheduleId);
+        if (schedule == null || AcceptedMarkers(subscription, expected).Contains(schedule.Marker))
+            return false;
+        logger.LogWarning("Renewal schedule {ScheduleId} of Stripe subscription {SubscriptionId} plans {Marker} instead of {Expected}; correcting it",
+            snapshot.ScheduleId, subscription.ExternalId, schedule.Marker, StripeRenewalSchedule.Marker(expected));
+        subscription.RenewalScheduleId = await StripeApi.ScheduleRenewal(snapshot, expected);
+        subscription.UpdatedAt = DateTime.UtcNow;
+        await context.SaveChangesAsync();
+        return true;
+    }
+
+    /// <summary>A 13 or 52 week subscription that will renew, billing its own plan, with the schedule we attached</summary>
+    private static bool IsOurAttachedSchedule(UserSubscription subscription, StripeSubscriptionSnapshot snapshot) =>
+        SubscriptionRenewal.ContinuesAsFourWeeks(subscription.Product)
+        && (snapshot.Status is "active" or "past_due")
+        && !snapshot.CancelAtPeriodEnd && snapshot.CancelAt == null && !snapshot.HasPendingUpdate
+        && snapshot.CurrentPeriodEnd != null && StripePlans.SlugOf(snapshot) == subscription.Product.Slug
+        && snapshot.ScheduleId != null && snapshot.ScheduleId == subscription.RenewalScheduleId;
+
+    /// <summary>
+    /// The expected marker; during a started extension term also the one the schedule was made with (its extension phase is the
+    /// current one then)
+    /// </summary>
+    private static string[] AcceptedMarkers(UserSubscription subscription, StripeRenewalRequest expected)
+    {
+        var plain = StripeRenewalSchedule.Marker(expected);
+        if (subscription.ExtensionStartsAt is not DateTime start || start > DateTime.UtcNow || subscription.ExtensionPriceCents is not long cents)
+            return [plain];
+        var plan = subscription.Product;
+        var started = new StripeExtensionTerm(cents, plan.Slug, plan.Title, IntervalWeeks(plan.OwnershipSeconds).Value);
+        return [plain, StripeRenewalSchedule.Marker(expected with { Extension = started })];
     }
 
     /// <summary>
@@ -302,6 +349,6 @@ public partial class SubscriptionService
     private async Task ConvertPayPalRenewal(UserSubscription subscription)
     {
         if (InFirstLongTerm(subscription) && await HasGrantedPeriod(subscription))
-            await ConvertToRenewalPlan(subscription);
+            ConvertToRenewalPlan(subscription);
     }
 }

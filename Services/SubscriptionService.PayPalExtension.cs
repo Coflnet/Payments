@@ -28,6 +28,13 @@ public partial class SubscriptionService
     {
         if (string.IsNullOrWhiteSpace(request.ReturnUrl) || string.IsNullOrWhiteSpace(request.CancelUrl))
             throw new ApiException("A PayPal extension needs a return and a cancel url.");
+        // PayPal is authoritative for the term end (a missed webhook leaves RenewsAt behind)
+        var remote = await PayPalApi.Get(subscription.ExternalId)
+            ?? throw new ApiException("PayPal did not return the subscription. Please try again later.");
+        await ApplyPayPalState(subscription, remote);
+        await context.SaveChangesAsync();
+        if (!MayExtendLongTerm(subscription, DateTime.UtcNow, extensionBookingWindow))
+            throw new ApiException("This subscription can not be extended for another term.");
         var termEnd = subscription.RenewsAt;
         var reference = SubscriptionDeclarationService.ExtensionReference(subscription.ExternalId, termEnd);
         var plan = (TopUpProduct)subscription.Product;
@@ -181,18 +188,72 @@ public partial class SubscriptionService
     private static bool StartsWhereItEnds(UserSubscription previous, PayPalSubscription remote) =>
         ParseTime(remote?.StartTime) is not DateTime start || (start - previous.RenewsAt).Duration() <= ContinuationStartTolerance;
 
+    /// <summary>
+    /// The refusal is saved first; a failed cancellation at PayPal is logged and retried by the hourly run
+    /// (<see cref="RetryRefusedContinuationCancels"/>)
+    /// </summary>
     private async Task RefusePayPalContinuation(UserSubscription continuation, UserSubscription previous)
     {
         logger.LogWarning("PayPal subscription {ContinuationId} was approved as the extension of {SubscriptionId} ({Status}), which can no longer be extended; refusing it",
             continuation.ExternalId, previous.ExternalId, previous.Status);
-        var remote = await PayPalApi.Get(continuation.ExternalId);
-        if (remote?.Status is "ACTIVE" or "SUSPENDED")
-            await PayPalApi.Cancel(continuation.ExternalId, RefusedContinuationReason);
         continuation.ContinuationRefusedAt = DateTime.UtcNow;
-        continuation.Status = "cancelled";
         continuation.EndsAt = continuation.RenewsAt;
         continuation.UpdatedAt = DateTime.UtcNow;
         await context.SaveChangesAsync();
+        try
+        {
+            await CancelRefusedContinuation(continuation);
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "Refused PayPal extension {ContinuationId} could not be cancelled; the hourly run retries it", continuation.ExternalId);
+        }
+    }
+
+    /// <summary>Cancels a refused continuation at PayPal (if it still runs there) and marks it cancelled</summary>
+    private async Task<bool> CancelRefusedContinuation(UserSubscription continuation)
+    {
+        var remote = await PayPalApi.Get(continuation.ExternalId);
+        if (remote?.Status is "ACTIVE" or "SUSPENDED")
+            await PayPalApi.Cancel(continuation.ExternalId, RefusedContinuationReason);
+        continuation.Status = "cancelled";
+        continuation.EndsAt ??= continuation.RenewsAt;
+        continuation.UpdatedAt = DateTime.UtcNow;
+        await context.SaveChangesAsync();
+        return true;
+    }
+
+    /// <summary>Hourly: refused continuations not known as cancelled yet are cancelled at PayPal again (a failed cancellation)</summary>
+    private async Task RetryRefusedContinuationCancels(System.Threading.CancellationToken cancellation)
+    {
+        var refused = await context.Subscriptions
+            .Where(s => s.ProviderSlug == SubscriptionProviders.PayPal && s.ContinuationRefusedAt != null
+                && s.Status != "cancelled" && s.Status != "expired")
+            .Select(s => s.ExternalId).ToListAsync(cancellation);
+        foreach (var id in refused)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            await TryCancelRefusedContinuation(id);
+        }
+    }
+
+    private async Task TryCancelRefusedContinuation(string continuationId)
+    {
+        try
+        {
+            await WithSubscriptionLock(continuationId, async () =>
+                await CancelRefusedContinuation(await FindProviderSubscription(SubscriptionProviders.PayPal, continuationId)));
+            logger.LogInformation("Cancelled the refused PayPal extension {ContinuationId}", continuationId);
+        }
+        catch (SubscriptionBusyException)
+        {
+            logger.LogDebug("Refused PayPal extension {ContinuationId} is being changed elsewhere; retried by the next run", continuationId);
+        }
+        catch (Exception e)
+        {
+            context.ChangeTracker.Clear();
+            logger.LogError(e, "Refused PayPal extension {ContinuationId} could not be cancelled; retried by the next run", continuationId);
+        }
     }
 
     /// <summary>The continued subscription stops billing; its paid term (and the access granted for it) runs out as it is</summary>
@@ -206,6 +267,56 @@ public partial class SubscriptionService
         previous.UpdatedAt = DateTime.UtcNow;
         await context.SaveChangesAsync();
         return true;
+    }
+
+    /// <summary>
+    /// Hourly (renewal conversion run): an approved PayPal extension whose activation webhook was lost would leave the old
+    /// subscription billing its 4-week renewal next to it. Pending extensions of active subscriptions whose term has not ended are
+    /// checked at PayPal; an active one is handled like its activation webhook (linked, the old subscription cancelled). A linked
+    /// one whose old subscription is still active (its cancellation failed) is retried the same way.
+    /// </summary>
+    private async Task LinkApprovedPayPalExtensions(System.Threading.CancellationToken cancellation)
+    {
+        if (paypal == null)
+            return;
+        var now = DateTime.UtcNow;
+        // a refused continuation is never linked; its cancellation is retried below instead
+        var pending = await context.Subscriptions.AsNoTracking()
+            .Where(s => s.ProviderSlug == SubscriptionProviders.PayPal && s.ExtensionSubscriptionId != null && s.Status == "active"
+                && s.EndsAt == null && s.RenewsAt > now
+                && !context.Subscriptions.Any(c => c.ProviderSlug == SubscriptionProviders.PayPal
+                    && c.ExternalId == s.ExtensionSubscriptionId && c.ContinuationRefusedAt != null))
+            .Select(s => s.ExtensionSubscriptionId).ToListAsync(cancellation);
+        foreach (var continuationId in pending)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            await TryLinkApprovedPayPalExtension(continuationId);
+        }
+        await RetryRefusedContinuationCancels(cancellation);
+    }
+
+    private async Task TryLinkApprovedPayPalExtension(string continuationId)
+    {
+        try
+        {
+            var remote = await PayPalApi.Get(continuationId);
+            if (remote?.Status is not ("ACTIVE" or "SUSPENDED"))
+                return;
+            logger.LogWarning("PayPal extension {ContinuationId} is active but was not linked (activation webhook missed); linking it now", continuationId);
+            var outcomes = await PayPalSubscriptionChanged(continuationId);
+            if (outcomes.Count > 0)
+                logger.LogWarning("PayPal extension {ContinuationId} had {Count} granted sales; their PAYMENT.SALE.COMPLETED webhooks record them",
+                    continuationId, outcomes.Count);
+        }
+        catch (SubscriptionBusyException)
+        {
+            logger.LogDebug("PayPal extension {ContinuationId} is being changed elsewhere; checked again by the next run", continuationId);
+        }
+        catch (Exception e)
+        {
+            context.ChangeTracker.Clear();
+            logger.LogError(e, "PayPal extension {ContinuationId} could not be checked; retried by the next run", continuationId);
+        }
     }
 
     /// <summary>Whether a PayPal continuation exists and still runs (not cancelled in PayPal or by us)</summary>

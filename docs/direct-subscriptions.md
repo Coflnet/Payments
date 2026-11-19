@@ -365,19 +365,28 @@ PayPal), every country and slot bundles alike.
     (`renewal` or `updated`, created around `ExtensionStartsAt`, Stripe billing the long plan at `ExtensionPriceCents`, no plan change
     recorded for it and no other period granted since the term end, so a proration is never taken for it) must charge
     `ExtensionPriceCents` (direct), grants the long term and does not convert; its full refund revokes that term;
-    the price and term end are saved before Stripe is called (a failed call drops them again); the 4-week invoice after it converts as before. Re-scheduling (webhooks, the hourly run) keeps a
+    the price and term end are saved before Stripe is called (a failed call drops them again, unless the re-read schedule carries the
+    extension's marker: then the update reached Stripe and the booking stays; when the schedule can not be read the plain renewal
+    schedule is applied before the booking is dropped, and the hourly recheck corrects a schedule of ours whose marker differs from
+    what is booked); a redelivered granted extension invoice (up to 5 days
+    after the term end) is still the extension's; an `updated` invoice charging a full term of the current plan without a booking or
+    plan change is marked for a manual refund, except a full 4-week invoice of the renewal plan the subscription converted to,
+    which pays a period and is granted (the conversion itself is saved together with the grant of the first 4-week invoice); the 4-week invoice after it converts as before. Re-scheduling (webhooks, the hourly run) keeps a
     booked extension.
   - PayPal: a new PayPal subscription on the same long plan (TRIAL override = extension price, REGULAR = renewal price, `start_time` =
-    the term end, same `custom_id`), recorded as a `PaymentRequest` with `ExtendsSubscriptionId` (never reused as or counted like a
+    the term end as PayPal reports it, same `custom_id`), recorded as a `PaymentRequest` with `ExtendsSubscriptionId` (never reused as or counted like a
     checkout); the approval link is returned (again while it is
     pending). `ExtensionSubscriptionId` (unique) names it. On activation it is linked as the continuation (`PreviousSubscriptionId`),
     the old subscription is cancelled at PayPal (its paid term and access stay) and gets `ExtensionStartsAt`; the continuation is a
     normal 13/52 week subscription that continues every 4 weeks, adopts the old tier slots with its first sale, whose event is the
     extension's confirmation (`SubscriptionIsExtension` and `SubscriptionIsRenewal` true). One approved when the old subscription can
     no longer be extended (cancelled, converted, its start not at the term end, or less than 24 h left) is cancelled and flagged
-    (`ContinuationRefusedAt`); its sales are marked for a manual refund in either webhook order.
+    (`ContinuationRefusedAt`, saved before the cancellation; a failed cancellation is retried by the hourly run); its sales are
+    marked for a manual refund in either webhook order. The hourly renewal conversion run
+    links approved (ACTIVE) continuations whose activation webhook was lost and retries the cancellation of an old subscription that
+    is still active after its link.
   - Cancelling a subscription cancels its booked extension (Stripe: the released schedule, also when cancelled elsewhere; PayPal: the
-    approved continuation). Plan switches are refused while an extension is booked and for 2 days after it started.
+    approved continuation). Plan switches are refused (and none offered) while an extension is booked and for 2 days after it started.
 - The subscription list adds `currentTermEndsAt`, `canExtendLongTerm`, `extensionPrice`, `extensionTaxTreatment`, `renewalPrice` and
   `extendedUntil` (only while the booked extension stands: Stripe not cancelled, PayPal continuation active).
 

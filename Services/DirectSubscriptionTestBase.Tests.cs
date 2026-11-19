@@ -89,7 +89,12 @@ public abstract class DirectSubscriptionTestBase
         OwnershipSeconds = FourWeeks, Type = Product.ProductType.SERVICE
     };
 
-    /// <summary>"Renew for another term" is on in tests unless a test passes its own <c>config</c></summary>
+    /// <summary>
+    /// "Renew for another term" (SUBSCRIPTIONS:EXTENSIONS_ENABLED) is off like in production; extension tests turn it on with this
+    /// (it applies when a test passes no <c>config</c> of its own)
+    /// </summary>
+    protected bool EnableExtensions;
+
     protected static readonly IConfiguration ExtensionsOn = new ConfigurationBuilder()
         .AddInMemoryCollection(new Dictionary<string, string> { ["SUBSCRIPTIONS:EXTENSIONS_ENABLED"] = "true" }).Build();
 
@@ -98,7 +103,7 @@ public abstract class DirectSubscriptionTestBase
         new(logger ?? NullLogger<SubscriptionService>.Instance, transactions, users, products, db,
             new LemonSqueezyService(new ConfigurationBuilder().Build(), NullLogger<LemonSqueezyService>.Instance, db,
                 new VariantCacheService(NullLogger<VariantCacheService>.Instance)),
-            stripe, paypal, paypalPlans, Tax(), config: config ?? ExtensionsOn);
+            stripe, paypal, paypalPlans, Tax(), config: config ?? (EnableExtensions ? ExtensionsOn : null));
 
     protected CallbackController Callback(SubscriptionService service, IDictionary<string, string> settings = null,
         PayPalHttpClient paypalClient = null)

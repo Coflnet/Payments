@@ -21,6 +21,7 @@ public class SubscriptionRenewalReminderTests : DirectSubscriptionTestBase
     [SetUp]
     public async Task SetUpYearPlan()
     {
+        EnableExtensions = true;
         premiumYear = new TopUpProduct
         {
             Slug = "l_premium-year", Title = "52 weeks premium", Price = 99.69m, Cost = 23400, CurrencyCode = "eur",

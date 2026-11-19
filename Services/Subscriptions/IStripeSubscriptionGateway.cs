@@ -54,9 +54,9 @@ public interface IStripeSubscriptionGateway
 
 /// <summary>
 /// A subscription schedule; <paramref name="HasForeignPhases"/>: someone else planned changes with it; <paramref name="IsRenewalSchedule"/>:
-/// it carries our renewal marker
+/// it carries our renewal marker; <paramref name="Marker"/>: that marker (<see cref="StripeRenewalSchedule.Marker"/>), null without one
 /// </summary>
-public record StripeScheduleInfo(string Id, bool HasForeignPhases, bool IsRenewalSchedule = false);
+public record StripeScheduleInfo(string Id, bool HasForeignPhases, bool IsRenewalSchedule = false, string Marker = null);
 
 /// <summary>
 /// The parts of a Stripe subscription this service uses

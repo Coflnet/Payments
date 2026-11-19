@@ -59,7 +59,8 @@ public partial class SubscriptionService
         var subscription = await OwnedSubscription(userId, externalId)
             ?? throw new ApiException("Subscription not found");
         var provider = ProviderFor(subscription);
-        if (subscription.Status != "active" || subscription.EndsAt != null || !provider.CanChangePlan(subscription))
+        if (subscription.Status != "active" || subscription.EndsAt != null || !provider.CanChangePlan(subscription)
+            || ExtensionBlocksPlanChange(subscription, DateTime.UtcNow))
             return [];
         var candidates = await context.TopUpProducts.Include(p => p.Groups)
             .Where(p => p.Type.HasFlag(Product.ProductType.SERVICE)).ToListAsync();

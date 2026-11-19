@@ -28,6 +28,8 @@ public class StripeRenewalTests : DirectSubscriptionTestBase
     private TopUpProduct premiumPlusYear;
     private readonly List<StripeRenewalRequest> schedules = [];
     private readonly List<string> calls = [];
+    /// <summary>The marker of each schedule the fake Stripe made, as its GetSchedule reports it</summary>
+    private readonly Dictionary<string, string> markers = [];
 
     [SetUp]
     public async Task SetUpYearPlans()
@@ -43,6 +45,7 @@ public class StripeRenewalTests : DirectSubscriptionTestBase
         remote = Snapshot();
         schedules.Clear();
         calls.Clear();
+        markers.Clear();
         stripe = new Mock<IStripeSubscriptionGateway>();
         stripe.Setup(s => s.GetSubscription("sub_1")).ReturnsAsync(() => remote);
         stripe.Setup(s => s.EnsureVatTaxRate("DE", 1900)).ReturnsAsync("txr_de");
@@ -52,8 +55,12 @@ public class StripeRenewalTests : DirectSubscriptionTestBase
                 schedules.Add(request);
                 calls.Add("schedule");
                 remote = remote with { ScheduleId = "sub_sched_" + schedules.Count };
+                markers[remote.ScheduleId] = StripeRenewalSchedule.Marker(request);
                 return remote.ScheduleId;
             });
+        // Our schedules as Stripe reports them (tests set up other schedules themselves)
+        stripe.Setup(s => s.GetSchedule(It.IsAny<string>())).ReturnsAsync((string id) =>
+            markers.TryGetValue(id, out var marker) ? new StripeScheduleInfo(id, false, true, marker) : null);
         stripe.Setup(s => s.ReleaseSchedule(It.IsAny<string>(), "sub_1")).ReturnsAsync((string id, string _) =>
         {
             calls.Add("release " + id);
@@ -525,6 +532,33 @@ public class StripeRenewalTests : DirectSubscriptionTestBase
 
         Assert.That(schedules.Single(), Is.EqualTo(new StripeRenewalRequest(969, "eur", "exclusive", "l_premium", "4 weeks premium", periodEnd)));
         stripe.Verify(s => s.EnsureVatTaxRate(It.IsAny<string>(), It.IsAny<int>()), Times.Never);
+    }
+
+    /// <summary>
+    /// With "renew for another term" off (the default), the hourly recheck shortly before the renewal leaves a schedule that plans
+    /// exactly the renewal alone: no Stripe update, no conversion before the 4-week invoice
+    /// </summary>
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task MatchingScheduleIsLeftAloneByTheHourlyRecheck(bool managed)
+    {
+        periodEnd = DateTime.UtcNow.AddDays(2);
+        if (managed)
+        {
+            checkoutMetadata[Keys.Mode] = "managed";
+            checkoutMetadata[Keys.PriceCents] = "9969";
+            checkoutMetadata[Keys.RenewalPriceCents] = "969";
+        }
+        remote = Snapshot(priceCents: managed ? 9969 : 11863, managed: managed);
+        var service = Service(stripe.Object);
+        Assert.That(await service.StripeInvoicePaid(Invoice()), Is.Not.Null);
+
+        Assert.That(await service.ConvertDueRenewals(), Is.Zero);
+        Assert.That(await service.ConvertDueRenewals(), Is.Zero);
+
+        Assert.That(schedules, Has.Count.EqualTo(1), "only the schedule of the paid year");
+        stripe.Verify(s => s.GetSchedule("sub_sched_1"), Times.Exactly(2));
+        Assert.That((await Loaded()).Product.Slug, Is.EqualTo("l_premium-year"));
     }
 
     [Test]

@@ -161,18 +161,78 @@ public partial class SubscriptionService
 
     private async Task ScheduleStripeExtension(UserSubscription subscription, StripeSubscriptionSnapshot snapshot)
     {
+        StripeRenewalRequest request = null;
         try
         {
-            subscription.RenewalScheduleId = await StripeApi.ScheduleRenewal(snapshot, await RenewalRequest(subscription, snapshot));
+            request = await RenewalRequest(subscription, snapshot);
+            subscription.RenewalScheduleId = await StripeApi.ScheduleRenewal(snapshot, request);
             await context.SaveChangesAsync();
         }
         catch (Exception e)
         {
-            logger.LogError(e, "Stripe subscription {SubscriptionId} could not be scheduled for its extension; the booking is dropped",
+            logger.LogError(e, "Scheduling the extension of Stripe subscription {SubscriptionId} failed; checking whether Stripe applied it",
                 subscription.ExternalId);
-            (subscription.ExtensionStartsAt, subscription.ExtensionPriceCents) = (null, null);
+            await KeepOrDropStripeExtension(subscription, snapshot, request);
+        }
+    }
+
+    /// <summary>
+    /// The schedule update may have reached Stripe although its response (or our save) failed: a schedule carrying this
+    /// extension's marker keeps the booking, otherwise it is dropped and the buyer asked to try again
+    /// </summary>
+    private async Task KeepOrDropStripeExtension(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeRenewalRequest request)
+    {
+        if (request != null && await TryKeepAppliedExtension(subscription, snapshot, request))
+            return;
+        (subscription.ExtensionStartsAt, subscription.ExtensionPriceCents) = (null, null);
+        await context.SaveChangesAsync();
+        throw new ApiException("The extension could not be booked right now. Please try again later.");
+    }
+
+    private async Task<bool> TryKeepAppliedExtension(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeRenewalRequest request)
+    {
+        try
+        {
+            var scheduleId = await AppliedExtensionSchedule(subscription, request);
+            if (scheduleId == null)
+                return false;
+            subscription.RenewalScheduleId = scheduleId;
             await context.SaveChangesAsync();
-            throw new ApiException("The extension could not be booked right now. Please try again later.");
+            return true;
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "The schedule of Stripe subscription {SubscriptionId} could not be read; scheduling it without the extension",
+                subscription.ExternalId);
+            await TryScheduleWithoutExtension(subscription, snapshot, request);
+            return false;
+        }
+    }
+
+    /// <summary>The attached schedule when it carries exactly this extension, else null; throws when Stripe can not be read</summary>
+    private async Task<string> AppliedExtensionSchedule(UserSubscription subscription, StripeRenewalRequest request)
+    {
+        var scheduleId = (await StripeApi.GetSubscription(subscription.ExternalId)).ScheduleId;
+        if (scheduleId == null)
+            return null;
+        var schedule = await StripeApi.GetSchedule(scheduleId);
+        return schedule?.Marker == StripeRenewalSchedule.Marker(request) ? scheduleId : null;
+    }
+
+    /// <summary>
+    /// Whether the extension reached Stripe is unknown: the schedule is set to the plain renewal, so Stripe never bills a term the
+    /// dropped booking does not cover. A failure is left to the hourly recheck (<see cref="CorrectStripeRenewalSchedule"/>).
+    /// </summary>
+    private async Task TryScheduleWithoutExtension(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeRenewalRequest request)
+    {
+        try
+        {
+            subscription.RenewalScheduleId = await StripeApi.ScheduleRenewal(snapshot, request with { Extension = null });
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "Stripe subscription {SubscriptionId} could not be scheduled without the dropped extension; the hourly recheck corrects it",
+                subscription.ExternalId);
         }
     }
 
@@ -193,12 +253,25 @@ public partial class SubscriptionService
     /// </summary>
     internal async Task<bool> IsExtensionInvoice(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice)
     {
-        if (!BillsExtension(subscription, snapshot, invoice))
+        var granted = await IsGranted(subscription.User.ExternalId, SubscriptionProviders.GrantReference(SubscriptionProviders.Stripe, invoice.Id));
+        if (!(granted ? WasGrantedAsExtension(subscription, invoice) : BillsExtension(subscription, snapshot, invoice)))
             return false;
         if (await context.SubscriptionPlanChanges.AnyAsync(c => c.InvoiceId == invoice.Id))
             return false;
-        return !await HasOtherGrantSince(subscription, subscription.ExtensionStartsAt.Value.AddDays(-1), invoice.Id);
+        return granted || !await HasOtherGrantSince(subscription, subscription.ExtensionStartsAt.Value.AddDays(-1), invoice.Id);
     }
+
+    /// <summary>
+    /// A redelivery of a granted invoice (Stripe retries for up to 3 days) is the extension's when it was created around the
+    /// booked term end; what Stripe bills by then (a later price) does not matter
+    /// </summary>
+    private static bool WasGrantedAsExtension(UserSubscription subscription, StripeInvoiceInfo invoice) =>
+        subscription.ExtensionStartsAt is DateTime start && subscription.ExtensionPriceCents != null
+        && invoice.NormalizedBillingReason is "renewal" or "updated"
+        && invoice.Created > start.AddDays(-1) && invoice.Created < start + GrantedExtensionInvoiceWindow;
+
+    /// <summary>How long after the term end a granted invoice can still be the extension's (2 days plus Stripe's 3 retry days)</summary>
+    private static readonly TimeSpan GrantedExtensionInvoiceWindow = TimeSpan.FromDays(5);
 
     private static bool BillsExtension(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice) =>
         subscription.ExtensionStartsAt is DateTime start && subscription.ExtensionPriceCents is long cents && InFirstLongTerm(subscription)
@@ -254,10 +327,27 @@ public partial class SubscriptionService
         subscription.ExtensionTaxTreatment = PriceTaxTreatment(subscription);
         var booked = await HasBookedExtension(subscription, DateTime.UtcNow);
         subscription.ExtendedUntil = booked ? ExtensionEnd(subscription, subscription.RenewsAt) : null;
-        subscription.CanExtendLongTerm = await CanExtendLongTerm(subscription);
-        var extensionCents = booked ? subscription.ExtensionPriceCents
-            : subscription.CanExtendLongTerm ? await ExtensionPriceCents(subscription) : null;
-        subscription.CanExtendLongTerm &= extensionCents != null;
+        try
+        {
+            await DescribeExtensionOffer(subscription, booked);
+        }
+        catch (Exception e)
+        {
+            // e.g. a discount code that can not be read: the list still loads, just without the offer
+            logger.LogError(e, "The extension offer of subscription {SubscriptionId} could not be priced", subscription.ExternalId);
+            (subscription.CanExtendLongTerm, subscription.ExtensionPrice) = (false, booked ? subscription.ExtensionPrice : 0);
+        }
+    }
+
+    private async Task DescribeExtensionOffer(UserSubscription subscription, bool booked)
+    {
+        if (booked)
+        {
+            subscription.ExtensionPrice = MajorUnits(subscription.ExtensionPriceCents, subscription.Currency);
+            return;
+        }
+        var extensionCents = await CanExtendLongTerm(subscription) ? await ExtensionPriceCents(subscription) : null;
+        subscription.CanExtendLongTerm = extensionCents != null;
         subscription.ExtensionPrice = MajorUnits(extensionCents, subscription.Currency);
     }
 

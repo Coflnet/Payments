@@ -33,6 +33,7 @@ public class StripeExtensionTests : DirectSubscriptionTestBase
     [SetUp]
     public async Task SetUpYearPlan()
     {
+        EnableExtensions = true;
         premiumYear = new TopUpProduct
         {
             Slug = "l_premium-year", Title = "52 weeks premium", Price = 99.69m, Cost = 23400, CurrencyCode = "eur",
@@ -566,6 +567,201 @@ public class StripeExtensionTests : DirectSubscriptionTestBase
 
         Assert.That((extension.IsExtension, extension.Product.Slug), Is.EqualTo((true, "l_premium-year")));
         Assert.That(await Grants("stripe-invoice-in_2"), Is.EqualTo(1));
+    }
+
+    /// <summary>
+    /// Regression (review): the schedule update reached Stripe but its response was lost; the booking was dropped while Stripe
+    /// would still bill the extension year
+    /// </summary>
+    [Test]
+    public async Task BookingIsKeptWhenStripeAppliedTheScheduleDespiteAnError()
+    {
+        var service = await PaidYear();
+        stripe.Setup(s => s.ScheduleRenewal(It.IsAny<StripeSubscriptionSnapshot>(), It.IsAny<StripeRenewalRequest>()))
+            .Returns((StripeSubscriptionSnapshot _, StripeRenewalRequest request) =>
+            {
+                schedules.Add(request);
+                remote = remote with { ScheduleId = "sub_sched_applied" };
+                return Task.FromException<string>(new System.Net.Http.HttpRequestException("response lost"));
+            });
+        stripe.Setup(s => s.GetSchedule("sub_sched_applied"))
+            .ReturnsAsync(() => new StripeScheduleInfo("sub_sched_applied", false, true, StripeRenewalSchedule.Marker(schedules.Last())));
+
+        var result = await service.ExtendLongTerm("buyer", "sub_1", Extension());
+
+        Assert.That(result.Extended, Is.True);
+        db.ChangeTracker.Clear();
+        var subscription = await Loaded();
+        Assert.That((subscription.ExtensionPriceCents, subscription.RenewalScheduleId), Is.EqualTo(((long?)11863, "sub_sched_applied")));
+    }
+
+    /// <summary>
+    /// Regression (review): an "updated" invoice charging a whole year of the current plan without a booking or plan change (an
+    /// extension phase left at Stripe) was silently recorded as a proration
+    /// </summary>
+    [Test]
+    public async Task FullTermUpdatedInvoiceWithoutABookingIsMarkedForRefund()
+    {
+        var service = await PaidYear();
+        remote = Snapshot(plan: "l_premium-year", priceCents: 11863, scheduleId: "sub_sched_1", currentPeriodEnd: periodEnd.AddDays(364));
+
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_2", "subscription_update", 11863, periodEnd)), Is.Null);
+
+        Assert.That((await RefundMark("stripe", "in_2")).ToString(), Is.EqualTo(Refund));
+        Assert.That(await Grants("stripe-invoice-in_2"), Is.Zero);
+    }
+
+    /// <summary>Regression (review): a subscription whose extension could not be priced failed the whole subscription list</summary>
+    [Test]
+    public async Task ListLoadsWhenTheExtensionCanNotBePriced()
+    {
+        db.DiscountCodes.Add(new DiscountCode { Code = "BROKEN", AmountType = "percent", Amount = 10, PeriodAmounts = new() { [52] = 50 } });
+        checkoutMetadata[Keys.DiscountCode] = "BROKEN";
+        remote = Snapshot();
+        var service = await PaidYear();
+        await db.Database.ExecuteSqlRawAsync("UPDATE \"DiscountCodes\" SET \"PeriodAmounts\" = 'not json'");
+        db.ChangeTracker.Clear();
+
+        var listed = (await service.GetUserSubscriptions("buyer")).Single();
+
+        Assert.That((listed.CanExtendLongTerm, listed.ExtensionPrice, listed.RenewalPrice), Is.EqualTo((false, 0m, 11.53m)));
+    }
+
+    /// <summary>A Stripe retry of the granted extension invoice still confirms the extension, whatever Stripe bills by then</summary>
+    [Test]
+    public async Task RedeliveredExtensionInvoiceIsStillTheExtension()
+    {
+        var service = await ExtensionPaid();
+        remote = Snapshot(plan: "l_premium-year", priceCents: 12999, scheduleId: "sub_sched_2", currentPeriodEnd: periodEnd.AddDays(364));
+
+        var again = await service.StripeInvoicePaid(Invoice("in_2", "subscription_update", 11863, periodEnd));
+
+        Assert.That((again.IsExtension, again.Declaration?.DeclarationText), Is.EqualTo((true, "Start now")));
+        Assert.That(await Grants("stripe-invoice-in_2"), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task NoPlansAreOfferedWhileAnExtensionIsBooked()
+    {
+        await PremiumPlusYear();
+        var service = await PaidYear();
+        Assert.That((await service.GetAvailablePlans("buyer", "sub_1")).Select(p => p.ProductSlug), Does.Contain("l_prem_plus-year"));
+
+        await service.ExtendLongTerm("buyer", "sub_1", Extension());
+
+        Assert.That(await service.GetAvailablePlans("buyer", "sub_1"), Is.Empty);
+    }
+
+    /// <summary>The subscription is converted to the 4-week plan in the database (its first 4-week invoice not granted yet)</summary>
+    private async Task ConvertedWithoutGrant()
+    {
+        var subscription = await db.Subscriptions.Include(s => s.RenewalProduct).SingleAsync(s => s.ExternalId == "sub_1");
+        (subscription.Product, subscription.PriceCents) = (subscription.RenewalProduct, 1153);
+        await db.SaveChangesAsync();
+        remote = Snapshot(plan: "l_premium", priceCents: 1153, scheduleId: "sub_sched_1", currentPeriodEnd: periodEnd.AddDays(28));
+    }
+
+    /// <summary>
+    /// Regression (review): the conversion was saved before the grant, so after a failure in between Stripe's retry found the
+    /// subscription converted and the first 4-week invoice was marked for a refund without a grant. Now the conversion is saved
+    /// with the grant, and the converted-but-not-granted state grants the invoice as the period it is.
+    /// </summary>
+    [Test]
+    public async Task FirstFourWeekInvoiceDeliveredAfterTheConversionIsGrantedOnce()
+    {
+        var service = await PaidYear();
+        await ConvertedWithoutGrant();
+
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_2", "subscription_update", 1153, periodEnd)), Is.Not.Null);
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_2", "subscription_update", 1153, periodEnd)), Is.Not.Null);
+
+        Assert.That(await Grants("stripe-invoice-in_2"), Is.EqualTo(1));
+        Assert.That(await RefundMark("stripe", "in_2"), Is.Null);
+    }
+
+    [Test]
+    public async Task ConversionIsNotSavedWhenItsGrantFails()
+    {
+        var service = await PaidYear();
+        var blocking = new OwnerShip { User = await Buyer(), Product = premium, SubscriptionId = "other", Expires = DateTime.UtcNow.AddDays(4000) };
+        db.OwnerShips.Add(blocking);
+        await db.SaveChangesAsync();
+        remote = Snapshot(plan: "l_premium", priceCents: 1153, scheduleId: "sub_sched_1", currentPeriodEnd: periodEnd.AddDays(28));
+
+        Assert.ThrowsAsync<ApiException>(() => service.StripeInvoicePaid(Invoice("in_2", "subscription_update", 1153, periodEnd)));
+
+        db.ChangeTracker.Clear();
+        Assert.That((await Loaded()).Product.Slug, Is.EqualTo("l_premium-year"), "the retry still sees the long term");
+        db.OwnerShips.Remove(await db.OwnerShips.SingleAsync(o => o.SubscriptionId == "other"));
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var retry = Service(stripe.Object);
+        Assert.That((await retry.StripeInvoicePaid(Invoice("in_2", "subscription_update", 1153, periodEnd))).Product.Slug, Is.EqualTo("l_premium"));
+        Assert.That(await Grants("stripe-invoice-in_2"), Is.EqualTo(1));
+        Assert.That(await RefundMark("stripe", "in_2"), Is.Null);
+    }
+
+    /// <summary>
+    /// The next cycle invoice paid before the first 4-week one (e.g. after a card update): both pay a period of their own
+    /// (Stripe bills each period once), so both are granted
+    /// </summary>
+    [Test]
+    public async Task CycleInvoicePaidBeforeTheFirstFourWeekInvoiceGrantsBoth()
+    {
+        var service = await PaidYear();
+        remote = Snapshot(plan: "l_premium", priceCents: 1153, scheduleId: "sub_sched_1", currentPeriodEnd: periodEnd.AddDays(56));
+
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_3", "subscription_cycle", 1153, periodEnd.AddDays(28))), Is.Not.Null);
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_2", "subscription_update", 1153, periodEnd)), Is.Not.Null);
+
+        Assert.That((await Grants("stripe-invoice-in_3"), await Grants("stripe-invoice-in_2")), Is.EqualTo((1, 1)));
+        Assert.That(await RefundMark("stripe", "in_2"), Is.Null);
+    }
+
+    /// <summary>
+    /// Regression (review): when Stripe could not be read after a failed schedule update, the booking was dropped while the
+    /// extension phase might be at Stripe; now the plain renewal schedule is applied first
+    /// </summary>
+    [Test]
+    public async Task UnreadableScheduleAfterAFailureIsResetToThePlainRenewal()
+    {
+        var service = await PaidYear();
+        var attempts = 0;
+        stripe.Setup(s => s.ScheduleRenewal(It.IsAny<StripeSubscriptionSnapshot>(), It.IsAny<StripeRenewalRequest>()))
+            .Returns((StripeSubscriptionSnapshot _, StripeRenewalRequest request) =>
+            {
+                schedules.Add(request);
+                return ++attempts == 1 ? Task.FromException<string>(new System.Net.Http.HttpRequestException("timeout"))
+                    : Task.FromResult("sub_sched_plain");
+            });
+        remote = remote with { ScheduleId = "sub_sched_1" };
+        stripe.Setup(s => s.GetSchedule("sub_sched_1")).ThrowsAsync(new System.Net.Http.HttpRequestException("still down"));
+
+        Assert.ThrowsAsync<ApiException>(() => service.ExtendLongTerm("buyer", "sub_1", Extension()));
+
+        Assert.That(schedules.Skip(1).Select(r => r.Extension != null), Is.EqualTo(new[] { true, false }), "booked, then reset without it");
+        db.ChangeTracker.Clear();
+        var subscription = await Loaded();
+        Assert.That((subscription.ExtensionStartsAt, subscription.RenewalScheduleId), Is.EqualTo(((DateTime?)null, "sub_sched_plain")));
+    }
+
+    /// <summary>The hourly recheck corrects a schedule of ours whose phases differ from what is booked (a stray extension phase)</summary>
+    [Test]
+    public async Task HourlyRecheckRemovesAStrayExtensionPhase()
+    {
+        periodEnd = Seconds(DateTime.UtcNow.AddDays(2));
+        remote = Snapshot();
+        var service = await PaidYear();
+        var marker = "l_premium:1153+l_premium-year:11863";
+        stripe.Setup(s => s.GetSchedule("sub_sched_1")).ReturnsAsync(() => new StripeScheduleInfo("sub_sched_1", false, true, marker));
+
+        Assert.That(await service.ConvertDueRenewals(), Is.EqualTo(1));
+        Assert.That((schedules.Count, schedules.Last().Extension), Is.EqualTo((2, (StripeExtensionTerm)null)));
+
+        marker = StripeRenewalSchedule.Marker(schedules.Last());
+        stripe.Setup(s => s.GetSchedule("sub_sched_2")).ReturnsAsync(new StripeScheduleInfo("sub_sched_2", false, true, marker));
+        Assert.That(await service.ConvertDueRenewals(), Is.Zero);
+        Assert.That(schedules, Has.Count.EqualTo(2));
     }
 
     internal static ServicePerformanceDeclaration Evidence(int paymentRequestId, string text, string locale) => new()

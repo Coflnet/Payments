@@ -33,6 +33,7 @@ public class PayPalExtensionTests : DirectSubscriptionTestBase
     [SetUp]
     public async Task SetUpPaidYear()
     {
+        EnableExtensions = true;
         paypal = new FakePayPal();
         termEnd = new DateTime(DateTime.UtcNow.AddDays(30).Ticks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, DateTimeKind.Utc);
         year = new TopUpProduct
@@ -315,6 +316,106 @@ public class PayPalExtensionTests : DirectSubscriptionTestBase
 
         db.ChangeTracker.Clear();
         Assert.That((await service.GetUserSubscriptions("buyer")).Single(s => s.ExternalId == "I-OLD").ExtendedUntil, Is.Null);
+    }
+
+    /// <summary>Regression (review): the term end came from a possibly stale RenewsAt instead of PayPal</summary>
+    [Test]
+    public async Task ExtensionStartsAtTheTermEndPayPalReports()
+    {
+        var old = await Loaded("I-OLD");
+        old.RenewsAt = termEnd.AddDays(-3); // a missed webhook
+        await db.SaveChangesAsync();
+
+        var result = await RequestExtension();
+
+        Assert.That(result.TermEndsAt, Is.EqualTo(termEnd));
+        Assert.That(((DateTime)paypal.Bodies["/v1/billing/subscriptions"]["start_time"]).ToUniversalTime(), Is.EqualTo(termEnd));
+    }
+
+    /// <summary>The hourly run links an approved extension whose activation webhook was lost and cancels the old subscription</summary>
+    [Test]
+    public async Task HourlyRunLinksAnApprovedExtensionWithoutItsWebhook()
+    {
+        await RequestExtension();
+        SetSubscription("I-NEW", "ACTIVE", termEnd);
+        paypal.Replies["/v1/billing/subscriptions/I-OLD/cancel"] = new JObject();
+
+        await service.ConvertDueRenewals();
+
+        Assert.That(paypal.Bodies.ContainsKey("/v1/billing/subscriptions/I-OLD/cancel"), Is.True);
+        Assert.That((await Loaded("I-NEW")).PreviousSubscriptionId, Is.EqualTo("I-OLD"));
+        Assert.That((await Loaded("I-OLD")).Status, Is.EqualTo("cancelled"));
+        paypal.Bodies.Clear();
+        await service.ConvertDueRenewals();
+        Assert.That(paypal.Bodies, Is.Empty, "linked: not checked again");
+    }
+
+    /// <summary>
+    /// Regression (review): a linked extension whose cancellation of the old subscription failed was no longer checked by the
+    /// hourly run, so the old subscription kept billing next to it
+    /// </summary>
+    [Test]
+    public async Task HourlyRunRetriesTheCancellationOfTheOldSubscription()
+    {
+        await RequestExtension();
+        SetSubscription("I-NEW", "ACTIVE", termEnd);
+
+        await service.ConvertDueRenewals(); // PayPal refuses the cancellation (no reply)
+
+        Assert.That((await Loaded("I-NEW")).PreviousSubscriptionId, Is.EqualTo("I-OLD"));
+        Assert.That((await Loaded("I-OLD")).Status, Is.EqualTo("active"));
+        paypal.Replies["/v1/billing/subscriptions/I-OLD/cancel"] = new JObject();
+        paypal.Bodies.Clear();
+        db.ChangeTracker.Clear();
+
+        await service.ConvertDueRenewals();
+
+        Assert.That(paypal.Bodies.ContainsKey("/v1/billing/subscriptions/I-OLD/cancel"), Is.True);
+        db.ChangeTracker.Clear();
+        Assert.That((await Loaded("I-OLD")).Status, Is.EqualTo("cancelled"));
+    }
+
+    /// <summary>
+    /// A refused extension whose cancellation PayPal refused is cancelled by the hourly run (it is never linked, and not reported
+    /// as an unlinked activation every hour)
+    /// </summary>
+    [Test]
+    public async Task HourlyRunRetriesTheCancellationOfARefusedExtension()
+    {
+        await RequestExtension();
+        var old = await Loaded("I-OLD");
+        old.RenewsAt = DateTime.UtcNow.AddHours(12);
+        await db.SaveChangesAsync();
+        SetSubscription("I-NEW", "ACTIVE", termEnd);
+
+        Assert.That(await service.PayPalSubscriptionChanged("I-NEW"), Is.Empty); // refused; PayPal refuses the cancellation (no reply)
+
+        var refused = await Loaded("I-NEW");
+        Assert.That((refused.ContinuationRefusedAt != null, refused.Status), Is.EqualTo((true, "active")));
+        paypal.Replies["/v1/billing/subscriptions/I-NEW/cancel"] = new JObject();
+        paypal.Bodies.Clear();
+        db.ChangeTracker.Clear();
+
+        await service.ConvertDueRenewals();
+
+        Assert.That(paypal.Bodies.Keys, Is.EqualTo(new[] { "/v1/billing/subscriptions/I-NEW/cancel" }), "cancelled, the old subscription untouched");
+        db.ChangeTracker.Clear();
+        Assert.That((await Loaded("I-NEW")).Status, Is.EqualTo("cancelled"));
+        Assert.That((await Loaded("I-OLD")).Status, Is.EqualTo("active"));
+        paypal.Bodies.Clear();
+        await service.ConvertDueRenewals();
+        Assert.That(paypal.Bodies, Is.Empty, "not retried once cancelled");
+    }
+
+    [Test]
+    public async Task HourlyRunLeavesAnExtensionAwaitingApprovalAlone()
+    {
+        await RequestExtension();
+
+        await service.ConvertDueRenewals();
+
+        Assert.That(await db.Subscriptions.AnyAsync(s => s.ExternalId == "I-NEW"), Is.False);
+        Assert.That((await Loaded("I-OLD")).Status, Is.EqualTo("active"));
     }
 
     [Test]

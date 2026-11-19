@@ -242,7 +242,7 @@ public partial class SubscriptionService
             return true;
         if (BillsRenewalPlan(subscription, slug))
         {
-            await ConvertToRenewalPlan(subscription);
+            ConvertToRenewalPlan(subscription);
             return true;
         }
         var target = await PlanBySlug(slug);
@@ -342,6 +342,11 @@ public partial class SubscriptionService
         var target = await PlanBySlug(StripePlans.SlugOf(snapshot));
         if (target == null || target.Id != subscription.Product.Id && !CanChangePlan(subscription.Product, target))
             return await RejectStripeInvoice(subscription, invoice, "paid proration without a valid plan change");
+        if (IsConvertedRenewalPeriod(subscription, target, snapshot, invoice))
+            return await GrantStripeInvoice(subscription, snapshot, invoice, false);
+        if (target.Id == subscription.Product.Id && ChargesFullTerm(snapshot, invoice))
+            return await RejectStripeInvoice(subscription, invoice,
+                "an updated invoice charged a full term of the current plan without a plan change (an extension phase nobody booked?)");
         if (target.Id != subscription.Product.Id)
         {
             await PrepareOwnership(subscription);
@@ -350,6 +355,25 @@ public partial class SubscriptionService
         }
         return await WithStripeDeclaration(StripeOutcome(subscription, snapshot, invoice, null), snapshot, invoice, false, false);
     }
+
+    /// <summary>
+    /// A full 4-week invoice ("updated", without a plan change) of the renewal plan a 13/52 week subscription converted to is a
+    /// period payment, not a proration: the first 4-week invoice after the renewal schedule's phase change, arriving after the
+    /// conversion was saved (a retry after a failure, or a later cycle invoice paid first, e.g. after a card update). Stripe
+    /// bills each period once, so every such invoice pays a period of its own and is granted (once per invoice; a direct one
+    /// must charge the agreed renewal price).
+    /// </summary>
+    private static bool IsConvertedRenewalPeriod(UserSubscription subscription, TopUpProduct target, StripeSubscriptionSnapshot snapshot,
+        StripeInvoiceInfo invoice) =>
+        target.Id == subscription.Product.Id && subscription.RenewalProduct?.Id == target.Id && ChargesFullTerm(snapshot, invoice);
+
+    /// <summary>
+    /// A proration only charges part of a term; an "updated" invoice of at least the whole recurring price is a term (e.g. an
+    /// extension phase left at Stripe after its booking was dropped), which is not granted without a booking
+    /// </summary>
+    private static bool ChargesFullTerm(StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice) =>
+        snapshot.UnitAmount is long unit && unit > 0 && invoice.Total >= unit
+        && string.Equals(invoice.Currency, snapshot.Currency, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The subscription invoice a refunded charge paid, null for one-time payments (credited under the payment intent id).
