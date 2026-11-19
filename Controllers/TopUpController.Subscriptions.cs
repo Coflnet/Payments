@@ -72,7 +72,7 @@ public partial class TopUpController
             options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(priced.First),
             Region: region, RenewalPlan: priced.RenewalPlan,
             RenewalUnitAmountCents: priced.Renewal is decimal renewal ? SubscriptionPricing.ToCents(renewal) : null);
-        var session = await FailRequestOnError(request, () => CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints));
+        var session = await FailRequestOnError(request, () => CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints), priced.Discount);
         request.SessionId = session.Id;
         request.CoinAmount = plan.Cost;
         request.ExpiresAt = priced.Discount?.ExpiresAt;
@@ -111,14 +111,8 @@ public partial class TopUpController
             return await ExistingPayPalApproval(paypal, request.SessionId);
         await RememberCountry(user, country, options);
         await declarations.Record(options, user, plan, request);
-        var created = await FailRequestOnError(request, () => CreatePayPalSubscription(paypal, plan, priced, user, options));
+        var created = await FailRequestOnError(request, () => CreateApprovablePayPalSubscription(paypal, plan, priced, user, options), priced.Discount);
         var approve = ApproveLink(created);
-        if (approve == null)
-        {
-            request.State = PaymentRequest.Status.FAILED;
-            await db.SaveChangesAsync();
-            throw new ApiException("PayPal did not return an approval link.");
-        }
         // The webhook only activates subscriptions recorded here, for exactly this price, and not long after the code expired.
         request.SessionId = created.Id;
         request.CoinAmount = plan.Cost;
@@ -265,6 +259,15 @@ public partial class TopUpController
         if (user.Locale == null && options?.Locale != null)
             user.Locale = options.Locale;
         await db.SaveChangesAsync();
+    }
+
+    private async Task<Coflnet.Payments.Models.PayPal.PayPalSubscription> CreateApprovablePayPalSubscription(IPayPalSubscriptionApi paypal, TopUpProduct plan,
+        SubscriptionCheckoutPrice priced, User user, TopUpOptions options)
+    {
+        var created = await CreatePayPalSubscription(paypal, plan, priced, user, options);
+        if (ApproveLink(created) == null)
+            throw new ApiException("PayPal did not return an approval link.");
+        return created;
     }
 
     private async Task<Session> CreateStripeSubscriptionSession(IStripeSubscriptionGateway stripe, StripeSubscriptionCheckout checkout,

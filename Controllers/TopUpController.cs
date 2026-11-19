@@ -240,7 +240,11 @@ namespace Payments.Controllers
             Session session;
             try
             {
-                session = await FailRequestOnError(instance, () => service.CreateAsync(options));
+                session = await FailRequestOnError(instance, () => service.CreateAsync(options), validatedDiscount);
+            }
+            catch (ApiException)
+            {
+                throw;
             }
             catch (Stripe.StripeException e) when (StripeErrorClassifier.IsCredentialError(e.HttpStatusCode))
             {
@@ -277,19 +281,56 @@ namespace Payments.Controllers
 
         /// <summary>
         /// Runs the provider call that opens a checkout; when it throws the request is marked FAILED, so it
-        /// neither counts toward the anti-fraud limits nor gets reused.
+        /// neither counts toward the anti-fraud limits nor gets reused. A local <paramref name="discount"/> is redeemed
+        /// for this new checkout and released again when it fails (see <see cref="WithRedemption{T}"/>).
         /// </summary>
-        private async Task<T> FailRequestOnError<T>(PaymentRequest request, Func<Task<T>> openCheckout)
+        private async Task<T> FailRequestOnError<T>(PaymentRequest request, Func<Task<T>> openCheckout, ValidatedDiscount discount = null)
         {
             try
             {
-                return await openCheckout();
+                return await WithRedemption(discount, openCheckout);
             }
             catch
             {
                 request.State = PaymentRequest.Status.FAILED;
                 await db.SaveChangesAsync();
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// Counts one use of a local code for a newly opened checkout and gives it back when opening fails.
+        /// Validation only checks availability; counting here (after a matching open checkout was reused and right
+        /// before the provider call) keeps reloads and failed provider calls from using the code up.
+        /// The conditional update in <see cref="DiscountCodeService.Redeem"/> keeps concurrent checkouts within the cap.
+        /// </summary>
+        private async Task<T> WithRedemption<T>(ValidatedDiscount discount, Func<Task<T>> openCheckout)
+        {
+            if (!IsLocalDiscount(discount))
+                return await openCheckout();
+            if (!await discountCodes.Redeem(discount.Code))
+                throw new ApiException("This discount code has been used up");
+            try
+            {
+                return await openCheckout();
+            }
+            catch
+            {
+                await ReleaseQuietly(discount.Code);
+                throw;
+            }
+        }
+
+        /// <summary>A failing release must not replace the provider error; the use then stays counted (an over-count).</summary>
+        private async Task ReleaseQuietly(string code)
+        {
+            try
+            {
+                await discountCodes.Release(code);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Could not give back a use of discount code {Code} after a failed checkout", code);
             }
         }
 
@@ -430,7 +471,7 @@ namespace Payments.Controllers
             var request = new OrdersCreateRequest();
             request.Prefer("return=representation");
             request.RequestBody(order);
-            var response = await paypalClient.Execute(request);
+            var response = await WithRedemption(validatedDiscount, () => paypalClient.Execute(request));
             var statusCode = response.StatusCode;
             var result = response.Result<PayPalCheckoutSdk.Orders.Order>();
             Console.WriteLine("Status: {0}", result.Status);
@@ -561,7 +602,7 @@ namespace Payments.Controllers
             _logger.LogInformation("Creating CoinGate payment for user {UserId} product {ProductId} amount {Amount}", 
                 user.ExternalId, productId, eurPrice);
 
-            return await coinGateService.CreateOrder(user, product, eurPrice, coinAmount, options);
+            return await WithRedemption(validatedDiscount, () => coinGateService.CreateOrder(user, product, eurPrice, coinAmount, options));
         }
 
         private static void EnsureCountryAllowed(string country)
@@ -651,8 +692,6 @@ namespace Payments.Controllers
                     throw new ApiException(errorMessage);
                 }
                 
-                if (IsLocalDiscount(validatedDiscount) && !await discountCodes.Redeem(validatedDiscount.Code))
-                    throw new ApiException("This discount code has been used up");
                 _logger.LogInformation("Validated discount code {Code} ({Type}: {Amount}, SubscriptionOnly: {SubOnly})", 
                     validatedDiscount.Code, validatedDiscount.AmountType, validatedDiscount.Amount, validatedDiscount.IsSubscriptionOnly);
             }

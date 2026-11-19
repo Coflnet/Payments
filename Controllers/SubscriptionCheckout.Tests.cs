@@ -403,6 +403,98 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Once);
     }
 
+    private async Task<DiscountCode> AddCodeWithRedemptions(int max, int redeemed = 0)
+    {
+        var code = new DiscountCode { Code = "LIMITED", AmountType = "percent", Amount = 10, MaxRedemptions = max, TimesRedeemed = redeemed };
+        db.DiscountCodes.Add(code);
+        await db.SaveChangesAsync();
+        return code;
+    }
+
+    private async Task<int> TimesRedeemed() => (await db.DiscountCodes.AsNoTracking().SingleAsync()).TimesRedeemed;
+
+    [Test]
+    public async Task NewCheckoutRedeemsTheCodeOnce()
+    {
+        await AddCodeWithRedemptions(5);
+
+        await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "LIMITED"));
+
+        Assert.That(await TimesRedeemed(), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task ReusedCheckoutDoesNotRedeemTheCodeAgain()
+    {
+        await AddCodeWithRedemptions(5);
+        var controller = Controller("DE");
+        await controller.StripeSubscribe("buyer", "l_premium", Options("DE", "LIMITED"));
+        stripe.Setup(s => s.GetCheckoutSession("cs_1")).ReturnsAsync(new Session { Id = "cs_1", Url = "https://checkout.stripe.com/c/cs_1" });
+
+        var again = await controller.StripeSubscribe("buyer", "l_premium", Options("DE", "LIMITED"));
+
+        Assert.That(again.Id, Is.EqualTo("cs_1"));
+        Assert.That(await TimesRedeemed(), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task FailedStripeCheckoutLeavesTheRedemptionsUnchanged()
+    {
+        await AddCodeWithRedemptions(5, redeemed: 2);
+        stripe.Setup(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>())).ThrowsAsync(new InvalidOperationException("403"));
+
+        Assert.ThrowsAsync<ApiException>(() => Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "LIMITED")));
+
+        Assert.That(await TimesRedeemed(), Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task FailedPayPalCheckoutLeavesTheRedemptionsUnchanged()
+    {
+        await AddCodeWithRedemptions(5);
+        paypal.Setup(p => p.Create(It.IsAny<PayPalSubscriptionRequest>())).ThrowsAsync(new InvalidOperationException("paypal down"));
+
+        Assert.ThrowsAsync<InvalidOperationException>(() => Controller("DE").PayPalSubscribe("buyer", "l_premium", Options("DE", "LIMITED")));
+
+        Assert.That(await TimesRedeemed(), Is.Zero);
+    }
+
+    [Test]
+    public async Task PayPalWithoutApprovalLinkLeavesTheRedemptionsUnchanged()
+    {
+        await AddCodeWithRedemptions(5);
+        paypal.Setup(p => p.Create(It.IsAny<PayPalSubscriptionRequest>()))
+            .ReturnsAsync(new PayPalSubscription { Id = "I-SUB", Status = "APPROVAL_PENDING", Links = [] });
+
+        Assert.ThrowsAsync<ApiException>(() => Controller("DE").PayPalSubscribe("buyer", "l_premium", Options("DE", "LIMITED")));
+
+        Assert.That(await TimesRedeemed(), Is.Zero);
+    }
+
+    [Test]
+    public async Task ExhaustedCodeIsStillRefusedAndNotCountedPastTheCap()
+    {
+        await AddCodeWithRedemptions(2, redeemed: 2);
+
+        Assert.ThrowsAsync<ApiException>(() => Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE", "LIMITED")));
+
+        Assert.That(await TimesRedeemed(), Is.EqualTo(2));
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Never);
+    }
+
+    [Test]
+    public async Task RedeemStopsAtTheCapAndReleaseNeverGoesBelowZero()
+    {
+        await AddCodeWithRedemptions(1);
+        var service = new DiscountCodeService(db, NullLogger<DiscountCodeService>.Instance);
+        Assert.That(await service.Redeem("LIMITED"), Is.True);
+        Assert.That(await service.Redeem("LIMITED"), Is.False);
+        await service.Release("LIMITED");
+        await service.Release("LIMITED");
+
+        Assert.That(await TimesRedeemed(), Is.Zero, "release never goes below 0");
+    }
+
     [Test]
     public async Task FirstPaymentOnlyCodeDiscountsOnlyThePayPalTrialCycle()
     {

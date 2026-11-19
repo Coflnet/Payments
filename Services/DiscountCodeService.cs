@@ -81,6 +81,19 @@ public class DiscountCodeService
     }
 
     /// <summary>
+    /// Gives back one use counted by <see cref="Redeem"/> when the checkout it was for could not be opened; never below 0.
+    /// </summary>
+    public async Task Release(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            return;
+        var normalized = Normalize(code);
+        await db.DiscountCodes
+            .Where(c => c.Code == normalized && c.TimesRedeemed > 0)
+            .ExecuteUpdateAsync(c => c.SetProperty(d => d.TimesRedeemed, d => d.TimesRedeemed - 1));
+    }
+
+    /// <summary>
     /// The terms of a code regardless of its validity, used to reprice an existing subscription on a plan switch.
     /// </summary>
     public async Task<ValidatedDiscount> Terms(string code) =>
