@@ -325,6 +325,7 @@ namespace Payments.Controllers
                 {
                     PayedAmount = (double)product.Price,
                     ProductId = product.Id.ToString(),
+                    ProductTitle = product.Title,
                     UserId = userId,
                     Currency = product.CurrencyCode,
                     PaymentMethod = paymentMethod,

@@ -196,6 +196,18 @@ public class SubscriptionRenewalTests
             Is.EqualTo(((int?)52, (int?)4, (decimal?)11.53m, (bool?)false)));
     }
 
+    [Test]
+    public void EventCarriesTheProductTitle()
+    {
+        var plan = Plan("l_premium", FourWeeks, 9.69m);
+        plan.Title = "Premium (4 weeks)";
+        var payment = new PaymentEvent();
+
+        SubscriptionEventTerms.Apply(payment, Outcome(plan, new UserSubscription { Product = plan }, "EUR", false));
+
+        Assert.That(payment.ProductTitle, Is.EqualTo("Premium (4 weeks)"));
+    }
+
     /// <summary>Managed Payments: the agreed net price, but only when the buyer paid in it (not after Adaptive Pricing)</summary>
     [TestCase("EUR", 7.27)]
     [TestCase("BRL", null)]

@@ -729,6 +729,7 @@ namespace Coflnet.Payments.Services
             var payment = new PaymentEvent
             {
                 ProductId = evidence.ProductSlug,
+                ProductTitle = await db.GetProductTitleAsync(evidence.ProductId),
                 UserId = evidence.UserId,
                 Currency = "CoflCoins",
                 PaymentMethod = "CoflCoin balance",

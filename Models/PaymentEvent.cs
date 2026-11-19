@@ -3,6 +3,8 @@ public class PaymentEvent
 {
     public double PayedAmount { get; set; }
     public string ProductId { get; set; }
+    /// <summary>Human readable title of the product (additive; null on events from older producers)</summary>
+    public string ProductTitle { get; set; }
     public string UserId { get; set; }
     public Address Address { get; set; }
     public string FullName { get; set; }

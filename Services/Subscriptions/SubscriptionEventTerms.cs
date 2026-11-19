@@ -10,6 +10,7 @@ public static class SubscriptionEventTerms
 {
     public static void Apply(PaymentEvent payment, SubscriptionPaymentOutcome outcome)
     {
+        payment.ProductTitle = outcome.Product.Title;
         payment.SubscriptionBillingWeeks = SubscriptionService.IntervalWeeks(outcome.Product.OwnershipSeconds);
         payment.SubscriptionRenewalWeeks = RenewalWeeks(outcome);
         payment.SubscriptionRenewalAmount = RenewalAmount(outcome);

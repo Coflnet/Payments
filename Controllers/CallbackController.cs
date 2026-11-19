@@ -234,6 +234,7 @@ namespace Payments.Controllers
                     {
                         PayedAmount = (session.AmountTotal ?? throw new Exception("wtf need amount")) / 100.0,
                         ProductId = productId.ToString(),
+                        ProductTitle = await db.GetProductTitleAsync(productId),
                         UserId = session.ClientReferenceId,
                         Address = new Coflnet.Payments.Models.Address()
                         {
@@ -481,6 +482,7 @@ namespace Payments.Controllers
                 {
                     PayedAmount = data.Attributes.Total / 100.0,
                     ProductId = meta.CustomData.ProductId.ToString(),
+                    ProductTitle = await db.GetProductTitleAsync(meta.CustomData.ProductId),
                     UserId = meta.CustomData.UserId,
                     Email = data.Attributes.UserEmail,
                     Currency = data.Attributes.Currency,
@@ -622,6 +624,7 @@ namespace Payments.Controllers
                     {
                         PayedAmount = data.Attributes.Total / 100.0,
                         ProductId = effectiveCustomData.ProductId.ToString(),
+                        ProductTitle = await db.GetProductTitleAsync(effectiveCustomData.ProductId),
                         UserId = effectiveCustomData.UserId,
                         Email = data.Attributes.UserEmail,
                         Currency = data.Attributes.Currency,
@@ -1059,6 +1062,7 @@ namespace Payments.Controllers
                 {
                     PayedAmount = double.Parse(amount.Value),
                     ProductId = topupInfo[0],
+                    ProductTitle = await db.GetProductTitleAsync(productId),
                     UserId = product.ReferenceId,
                     FullName = product.ShippingDetail.Name.FullName,
                     FirstName = order.Payer.Name.GivenName,
@@ -1717,6 +1721,7 @@ namespace Payments.Controllers
                 {
                     PayedAmount = (double)product.Price,
                     ProductId = product.Id.ToString(),
+                    ProductTitle = product.Title,
                     UserId = userId,
                     Currency = product.CurrencyCode,
                     PaymentMethod = "googlepay",
@@ -1816,6 +1821,7 @@ namespace Payments.Controllers
                 {
                     PayedAmount = (double)product.Price,
                     ProductId = product.Id.ToString(),
+                    ProductTitle = product.Title,
                     UserId = userId,
                     Currency = product.CurrencyCode,
                     PaymentMethod = "googlepay",

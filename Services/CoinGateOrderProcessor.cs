@@ -89,6 +89,7 @@ public class CoinGateOrderProcessor
             {
                 PayedAmount = (double)order.PriceAmount,
                 ProductId = productId,
+                ProductTitle = await db.GetProductTitleAsync(productIdNumber),
                 UserId = userId,
                 Currency = order.PriceCurrency,
                 PaymentMethod = order.PayCurrency ?? "crypto",
