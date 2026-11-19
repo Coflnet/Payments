@@ -139,11 +139,11 @@ public partial class SubscriptionService
             return null;
         WarnOnLongRenewal(subscription, invoice);
         await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
-        subscription.PaymentAmount = (invoice.AmountPaid / 100m).ToString("0.00", CultureInfo.InvariantCulture) + " " + invoice.Currency?.ToUpperInvariant();
+        subscription.PaymentAmount = StripeAmounts.FromMinorUnits(invoice.AmountPaid, invoice.Currency).ToString("0.00", CultureInfo.InvariantCulture) + " " + invoice.Currency?.ToUpperInvariant();
         await context.SaveChangesAsync();
         await TryScheduleStripeRenewal(subscription, snapshot);
         // A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")
-        return StripeOutcome(subscription, snapshot, invoice, AgreedCents(subscription, snapshot, invoice) / 100m)
+        return StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice))
             with { Evidence = evidence, IsProration = false };
     }
 
@@ -152,7 +152,7 @@ public partial class SubscriptionService
     {
         var evidence = await StripeEvidence(subscription, snapshot, invoice, cardCountryRequired);
         // A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")
-        return StripeOutcome(subscription, snapshot, invoice, AgreedCents(subscription, snapshot, invoice) / 100m)
+        return StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice))
             with { Evidence = evidence, IsProration = false };
     }
 
@@ -204,10 +204,10 @@ public partial class SubscriptionService
     private SubscriptionPaymentOutcome StripeOutcome(UserSubscription subscription, StripeSubscriptionSnapshot snapshot,
         StripeInvoiceInfo invoice, decimal? managedEurAmount)
     {
-        var paid = invoice.AmountPaid / 100m;
+        var paid = StripeAmounts.FromMinorUnits(invoice.AmountPaid, invoice.Currency);
         if (subscription.ManagedPayments)
             return StripeOutcome(subscription, invoice, paid, invoice.CustomerCountry ?? MetadataCountry(snapshot),
-                managedEurAmount, invoice.Tax / 100m, 0);
+                managedEurAmount, StripeAmounts.FromMinorUnits(invoice.Tax, invoice.Currency), 0) with { PriceTaxBehavior = snapshot.TaxBehavior };
         var country = MetadataCountry(snapshot) ?? invoice.CustomerCountry;
         var (net, vat, rate) = VatSplit(paid, country);
         return StripeOutcome(subscription, invoice, paid, country, net, vat, rate);
@@ -222,7 +222,7 @@ public partial class SubscriptionService
 
     private async Task<SubscriptionPaymentOutcome> RejectStripeInvoice(UserSubscription subscription, StripeInvoiceInfo invoice, string reason)
     {
-        await MarkForManualRefund(SubscriptionProviders.Stripe, invoice.Id, subscription, invoice.AmountPaid / 100m,
+        await MarkForManualRefund(SubscriptionProviders.Stripe, invoice.Id, subscription, StripeAmounts.FromMinorUnits(invoice.AmountPaid, invoice.Currency),
             $"Stripe invoice {invoice.Id} of subscription {invoice.SubscriptionId}: {reason}");
         return null;
     }
@@ -250,6 +250,10 @@ public partial class SubscriptionService
         await ApplyPlanLocally(subscription, target, null, DateTime.UtcNow, s => ApplyStripePrice(s, snapshot));
         return true;
     }
+
+    /// <summary>The agreed amount of an invoice in major units of the subscription's currency (null when unknown)</summary>
+    private static decimal? AgreedAmount(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice) =>
+        AgreedCents(subscription, snapshot, invoice) is long cents ? StripeAmounts.FromMinorUnits(cents, subscription.Currency) : null;
 
     /// <summary>
     /// What an invoice must charge: the recurring price, except the first invoice of a "first payment only" code,
@@ -395,9 +399,7 @@ public partial class SubscriptionService
         };
         await ApplyCheckoutRenewalTerms(subscription, metadata);
         ApplyStripeState(subscription, snapshot);
-        context.Subscriptions.Add(subscription);
-        await context.SaveChangesAsync();
-        return subscription;
+        return await GetOrCreateSubscriptionAsync(subscription);
     }
 
     /// <summary>

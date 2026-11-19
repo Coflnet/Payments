@@ -273,9 +273,7 @@ namespace Coflnet.Payments.Services
             }
         }
 
-        internal static bool IsUniqueViolation(DbUpdateException e) =>
-            e.InnerException is Npgsql.PostgresException { SqlState: "23505" }
-            || e.InnerException?.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase) == true;
+        internal static bool IsUniqueViolation(DbUpdateException e) => DbErrors.IsUniqueViolation(e);
 
         private static bool IsRowOfKey(CreatorCodeRevenue revenue, string keyReference) =>
             revenue.TransactionReference == keyReference

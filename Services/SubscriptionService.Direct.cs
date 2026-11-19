@@ -40,10 +40,11 @@ public record PaymentEvidence(string IpAddress, string CheckoutCountry, string B
 /// <param name="TaxRate">VAT rate in percent, 0 when unknown</param>
 /// <param name="Evidence">Where the buyer was (place of supply evidence), null for prorations</param>
 /// <param name="IsRenewal">False for the subscription's first payment, true for later ones</param>
+/// <param name="PriceTaxBehavior">Managed Payments: the Stripe price's tax_behavior ("exclusive": net, "inclusive"), null when unknown</param>
 public record SubscriptionPaymentOutcome(UserSubscription Subscription, TopUpProduct Product, string PaymentId,
     decimal Amount, string Currency, string Country, string PostalCode, string Email, string Name, DateTime PaidAt,
     decimal? EurAmount = null, bool IsProration = false, decimal TaxAmount = 0, double TaxRate = 0,
-    PaymentEvidence Evidence = null, bool IsRenewal = false)
+    PaymentEvidence Evidence = null, bool IsRenewal = false, string PriceTaxBehavior = null)
 {
     /// <summary>Merchant of record (Stripe Managed Payments) remits the tax</summary>
     public bool TaxRemittedByProcessor => Subscription.ManagedPayments;
@@ -120,6 +121,34 @@ public partial class SubscriptionService
         .Include(s => s.User).Include(s => s.Product).ThenInclude(p => p.Groups).Include(s => s.RenewalProduct).ThenInclude(p => p.Groups)
         .Where(s => s.ProviderSlug == providerSlug && s.ExternalId == externalId)
         .OrderByDescending(s => s.UpdatedAt).FirstOrDefaultAsync();
+
+    /// <summary>
+    /// Saves a new local row for a provider subscription. Providers send several events for a new subscription within a
+    /// second (Stripe: checkout.session.completed, invoice.paid, customer.subscription.created), and the subscription lock only
+    /// holds once a row exists, so a concurrent handler may insert the same row first. Its unique index
+    /// (ProviderSlug, ExternalId) then rejects this insert; the failed row is dropped and the existing one returned,
+    /// so the handler continues instead of failing until the provider retries.
+    /// Other pending changes of the context stay tracked and are saved by the caller's next save.
+    /// </summary>
+    private async Task<UserSubscription> GetOrCreateSubscriptionAsync(UserSubscription candidate)
+    {
+        context.Subscriptions.Add(candidate);
+        try
+        {
+            await context.SaveChangesAsync();
+            return candidate;
+        }
+        catch (DbUpdateException e) when (DbErrors.IsUniqueViolation(e))
+        {
+            context.Entry(candidate).State = EntityState.Detached;
+            var existing = await FindProviderSubscription(candidate.ProviderSlug, candidate.ExternalId);
+            if (existing == null)
+                throw;
+            logger.LogInformation("{Provider} subscription {SubscriptionId} was recorded by a concurrent webhook; continuing with that row",
+                candidate.ProviderSlug, candidate.ExternalId);
+            return existing;
+        }
+    }
 
     private async Task<TopUpProduct> PlanBySlug(string slug)
     {

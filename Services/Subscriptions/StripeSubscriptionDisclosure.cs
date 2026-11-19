@@ -54,7 +54,8 @@ public static class StripeSubscriptionDisclosure
         : null;
 
     private static string Price(long cents, StripeSubscriptionCheckout checkout) =>
-        (cents / 100m).ToString("0.00", CultureInfo.InvariantCulture) + " " + checkout.Plan.CurrencyCode.ToUpperInvariant();
+        StripeAmounts.FromMinorUnits(cents, checkout.Plan.CurrencyCode).ToString("0.00", CultureInfo.InvariantCulture) + " "
+        + checkout.Plan.CurrencyCode.ToUpperInvariant();
 
     private static string Suffix(StripeSubscriptionCheckout checkout)
     {

@@ -31,6 +31,8 @@ public abstract class DirectSubscriptionTestBase
     protected TopUpProduct premium;
     protected TopUpProduct premiumPlus;
     protected List<PaymentEvent> publishedPayments;
+    /// <summary>Armed by a test: a concurrent webhook inserts the same subscription row right before <see cref="db"/> does</summary>
+    protected ConcurrentSubscriptionInsert concurrentInsert;
     /// <summary>The next publishes that fail, as Kafka can</summary>
     protected int failingPublishes;
     protected const int FourWeeks = 2430000;
@@ -50,7 +52,9 @@ public abstract class DirectSubscriptionTestBase
     {
         connection = new SqliteConnection("Filename=:memory:");
         await connection.OpenAsync();
-        db = new PaymentContext(new DbContextOptionsBuilder<PaymentContext>().UseSqlite(connection).Options);
+        concurrentInsert = new ConcurrentSubscriptionInsert(connection);
+        db = new PaymentContext(new DbContextOptionsBuilder<PaymentContext>().UseSqlite(connection)
+            .AddInterceptors(concurrentInsert).Options);
         await db.Database.EnsureCreatedAsync();
         users = new UserService(NullLogger<UserService>.Instance, db);
         transactions = new TransactionService(NullLogger<TransactionService>.Instance, db, users,

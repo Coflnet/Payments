@@ -931,9 +931,11 @@ public class LemonSqueezyService : ILemonSqueezyCustomerLookup
         };
         var json = JsonConvert.SerializeObject(createData, new JsonSerializerSettings() { NullValueHandling = NullValueHandling.Ignore });
         request.AddJsonBody(json);
-        logger.LogInformation($"Creating lemonsqueezy checkout with: \n{json}");
+        // The checkout data and its echo in the response carry the buyer's email: log identifiers only
+        logger.LogInformation("Creating Lemon Squeezy checkout of product {ProductId} (variant {VariantId}) for user {UserId}",
+            product.Id, variantId, user.ExternalId);
         var response = await restclient.ExecuteAsync(request);
-        logger.LogInformation(response.StatusCode + response.Content);
+        logger.LogInformation("Lemon Squeezy checkout creation answered {StatusCode}", response.StatusCode);
 
         if (!response.IsSuccessful)
         {

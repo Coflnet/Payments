@@ -24,6 +24,7 @@ public partial class SubscriptionServiceTests
     private LemonSqueezyService lemonSqueezyService;
     private ProductService productService;
     private GroupService groupService;
+    private ConcurrentSubscriptionInsert concurrentInsert;
 
     [SetUp]
     public async Task Setup()
@@ -31,9 +32,11 @@ public partial class SubscriptionServiceTests
         _connection = new SqliteConnection("Filename=:memory:");
         _connection.Open();
 
+        concurrentInsert = new ConcurrentSubscriptionInsert(_connection);
         _contextOptions = new DbContextOptionsBuilder<PaymentContext>()
             .UseSqlite(_connection)
             .EnableSensitiveDataLogging()
+            .AddInterceptors(concurrentInsert)
             .Options;
 
         context = new PaymentContext(_contextOptions);
@@ -433,6 +436,27 @@ public partial class SubscriptionServiceTests
             .FirstOrDefaultAsync();
         Assert.That(subscription, Is.Not.Null);
         Assert.That(subscription.Status, Is.EqualTo("active"));
+    }
+
+    /// <summary>
+    /// Regression: subscription_created and subscription_updated arrive together; when the other one recorded the
+    /// subscription first, this one failed on the unique index (ProviderSlug, ExternalId) until Lemon Squeezy retried.
+    /// </summary>
+    [Test]
+    public async Task SubscriptionCreatedThatLosesTheRaceToRecordTheSubscriptionStillGrantsOnce()
+    {
+        var user = await userService.GetOrCreate("test-user-ls-race");
+        var product = await context.TopUpProducts.FirstAsync();
+        var webhook = CreatePayPalSubscriptionCreatedWebhook(user.ExternalId, product.Id, DateTime.UtcNow.AddDays(30), "ls-race");
+        concurrentInsert.Arm();
+
+        await subscriptionService.UpdateSubscription(webhook);
+
+        Assert.That(concurrentInsert.Raced, Is.True, "a concurrent handler inserted the row first");
+        var subscription = await context.Subscriptions.SingleAsync(s => s.ExternalId == "ls-race");
+        Assert.That(subscription.Status, Is.EqualTo("active"));
+        var grants = await context.FiniteTransactions.CountAsync(t => t.SubscriptionId == "ls-race" && t.Amount < 0);
+        Assert.That(grants, Is.EqualTo(1), "the period is granted once");
     }
 
     [Test]

@@ -97,6 +97,12 @@ Plan prices (e.g. `l_premium` 9.69 EUR per 4 weeks) are NET, as they were with L
 - Records: `PaymentRecord` has `GrossAmount` = paid, `TaxAmount` = VAT contained (direct: split off the gross with the country's rate;
   Managed Payments: Stripe's invoice tax), `Subtotal`/`NetAmount` = gross minus VAT. The payment event carries the gross; creator
   shares are based on the net price.
+- The payment event states how tax relates to its amounts (`SubscriptionEventTerms`; purchase confirmations print it, PAngV):
+  `TaxTreatment` for `PayedAmount` and `RenewalTaxTreatment` for `SubscriptionRenewalAmount` are `included` (direct with VAT, plus
+  `TaxAmount`, `TaxCountry`, `VatRateBasisPoints`) or `none` (direct at rate 0, the US). Managed Payments: the paid amount is
+  `included` (amount_paid is the whole charge; `TaxAmount` only when Stripe reports tax on the invoice), the renewal price follows the
+  Stripe price's `tax_behavior` (`exclusive`/unknown: `net`, `inclusive`: `included`). Null on other events: no claim.
+- Stripe amounts are converted with `StripeAmounts.FromMinorUnits` (zero-decimal currencies such as JPY are whole units).
 - The VAT country is fixed at checkout for the subscription's lifetime: the Stripe checkout metadata country, for PayPal the
   `PaymentRequest.Country` of its checkout (the user's remembered country changes with later purchases and is not used). Direct
   payments are recorded (and published) under that country, also when the billing address names another one. Stripe does not add

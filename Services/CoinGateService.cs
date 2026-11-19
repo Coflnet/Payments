@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -107,10 +108,11 @@ public class CoinGateService
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("CoinGate API error: {StatusCode} - {Response}", response.StatusCode, responseContent);
-            throw new ApiException($"CoinGate payment creation failed: {responseContent}");
+            // the body can echo the order (purchaser email, callback token), so only its error reason is kept
+            var reason = CoinGateErrorReason(responseContent);
+            _logger.LogError("CoinGate API error: {StatusCode} - {Reason}", response.StatusCode, reason);
+            throw new ApiException($"CoinGate payment creation failed: {reason}");
         }
-        _logger.LogInformation("CoinGate API response: {Response}", responseContent);
         var orderResponse = JsonSerializer.Deserialize<CoinGateOrderResponse>(responseContent, new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
@@ -145,9 +147,10 @@ public class CoinGateService
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("CoinGate API error fetching order {OrderId}: {StatusCode} - {Response}", 
-                orderId, response.StatusCode, responseContent);
-            throw new ApiException($"Failed to fetch CoinGate order: {responseContent}");
+            var reason = CoinGateErrorReason(responseContent);
+            _logger.LogError("CoinGate API error fetching order {OrderId}: {StatusCode} - {Reason}",
+                orderId, response.StatusCode, reason);
+            throw new ApiException($"Failed to fetch CoinGate order: {reason}");
         }
 
         var order = JsonSerializer.Deserialize<CoinGateOrderResponse>(responseContent, new JsonSerializerOptions
@@ -189,9 +192,10 @@ public class CoinGateService
             var content = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogError("CoinGate API error listing paid orders page {Page}: {StatusCode} - {Response}",
-                    page, response.StatusCode, content);
-                throw new ApiException($"Failed to list CoinGate orders: {content}");
+                var reason = CoinGateErrorReason(content);
+                _logger.LogError("CoinGate API error listing paid orders page {Page}: {StatusCode} - {Reason}",
+                    page, response.StatusCode, reason);
+                throw new ApiException($"Failed to list CoinGate orders: {reason}");
             }
             var list = JsonSerializer.Deserialize<CoinGateOrderList>(content, new JsonSerializerOptions
             {
@@ -281,4 +285,31 @@ public class CoinGateService
     /// Checks if the service is configured and ready to use
     /// </summary>
     public bool IsConfigured => !string.IsNullOrEmpty(_apiToken);
+
+    /// <summary>
+    /// The error reason of a CoinGate error body ("message" and "reason"), never the body itself:
+    /// it can echo the order with the purchaser's email and the callback token.
+    /// </summary>
+    internal static string CoinGateErrorReason(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return "unreadable error";
+            var message = ReadString(document.RootElement, "message");
+            var reason = ReadString(document.RootElement, "reason");
+            var text = string.Join(" - ", new[] { reason, message }.Where(part => !string.IsNullOrWhiteSpace(part)));
+            return text.Length > 0 ? Truncate(text, 200) : "no error reason";
+        }
+        catch (JsonException)
+        {
+            return "unreadable error";
+        }
+    }
+
+    private static string ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    private static string Truncate(string text, int length) => text.Length <= length ? text : text[..length];
 }

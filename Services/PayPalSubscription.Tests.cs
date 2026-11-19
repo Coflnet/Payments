@@ -173,6 +173,30 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
         Assert.That((await Access("I-SUB")).Product.Slug, Is.EqualTo("l_premium"));
     }
 
+    /// <summary>
+    /// Regression: BILLING.SUBSCRIPTION.ACTIVATED and PAYMENT.SALE.COMPLETED arrive together. When the activation recorded
+    /// the subscription first, the sale failed on the unique index (ProviderSlug, ExternalId) and waited for PayPal's retry.
+    /// </summary>
+    [Test]
+    public async Task SaleCompletedThatLosesTheRaceToRecordTheSubscriptionStillGrantsOnce()
+    {
+        await SeedCheckout("paypal", "I-SUB", premium, 9.69m);
+        SetSubscription();
+        SetSale();
+        concurrentInsert.Arm();
+
+        Assert.That(await Post(SaleCompleted()), Is.TypeOf<OkResult>());
+
+        Assert.That(concurrentInsert.Raced, Is.True, "a concurrent handler inserted the row first");
+        Assert.That(await db.Subscriptions.CountAsync(s => s.ExternalId == "I-SUB"), Is.EqualTo(1));
+        Assert.That(await Grants("paypal-sale-SALE-1"), Is.EqualTo(1));
+        Assert.That(await PaymentRecords("paypal"), Is.EqualTo(1));
+        Assert.That(await db.PaymentRequests.Where(r => r.SessionId == "I-SUB").Select(r => r.State).SingleAsync(),
+            Is.EqualTo(PaymentRequest.Status.PAID), "the checkout is still marked paid");
+        Assert.That(await Post(SaleCompleted()), Is.TypeOf<OkResult>());
+        Assert.That(await Grants("paypal-sale-SALE-1"), Is.EqualTo(1), "the period is granted once");
+    }
+
     [Test]
     public async Task ActivationGrantsTheListedFirstPaymentUnderItsSaleId()
     {

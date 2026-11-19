@@ -87,6 +87,51 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
     }
 
     /// <summary>
+    /// Regression (live purchase 2026-11-19): checkout.session.completed, invoice.paid and customer.subscription.created arrive
+    /// within a second. Another handler recorded the subscription first, so invoice.paid failed on the unique index
+    /// IX_Subscriptions_ProviderSlug_ExternalId and the buyer waited about 25 s for Stripe's retry. It continues with that row.
+    /// </summary>
+    [Test]
+    public async Task InvoicePaidThatLosesTheRaceToRecordTheSubscriptionStillGrantsOnce()
+    {
+        var service = Service(stripe.Object);
+        concurrentInsert.Arm();
+
+        var outcome = await service.StripeInvoicePaid(Invoice());
+
+        Assert.That(concurrentInsert.Raced, Is.True, "a concurrent handler inserted the row first");
+        Assert.That(outcome, Is.Not.Null);
+        Assert.That(await db.Subscriptions.CountAsync(s => s.ExternalId == "sub_1"), Is.EqualTo(1));
+        Assert.That(await Grants("stripe-invoice-in_1"), Is.EqualTo(1));
+        Assert.That(await Grants("stripe-invoice-in_1-topup"), Is.EqualTo(1));
+        Assert.That(await service.StripeInvoicePaid(Invoice()), Is.Not.Null, "a redelivery returns the payment again");
+        Assert.That(await Grants("stripe-invoice-in_1"), Is.EqualTo(1), "the period is granted once");
+        Assert.That((await Access("sub_1")).Expires, Is.EqualTo(DateTime.UtcNow.AddSeconds(FourWeeks)).Within(TimeSpan.FromMinutes(1)));
+    }
+
+    /// <summary>
+    /// The other side of the same race: checkout.session.completed loses it and completes with the recorded row.
+    /// </summary>
+    [Test]
+    public async Task CheckoutCompletedThatLosesTheRaceToRecordTheSubscriptionSucceeds()
+    {
+        var service = Service(stripe.Object);
+        concurrentInsert.Arm();
+
+        await service.StripeCheckoutCompleted(new Stripe.Checkout.Session
+        {
+            Id = "cs_1", SubscriptionId = "sub_1", ClientReferenceId = "buyer", PaymentStatus = "paid",
+            Metadata = new Dictionary<string, string>(checkoutMetadata)
+        });
+
+        Assert.That(concurrentInsert.Raced, Is.True, "a concurrent handler inserted the row first");
+        var subscription = await Subscription("sub_1");
+        Assert.That(subscription.Status, Is.EqualTo("active"));
+        Assert.That(subscription.ExternalCustomerId, Is.EqualTo("cus_1"), "Stripe's state is applied to the existing row");
+        Assert.That(await Grants("stripe-invoice-in_1"), Is.Zero, "only invoice.paid grants");
+    }
+
+    /// <summary>
     /// A slot bundle bought with a discount code is granted as four seats bound to the subscription, and renews them.
     /// </summary>
     [Test]
@@ -172,6 +217,23 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         Assert.That(outcome.EurAmount, Is.EqualTo(9.69m));
         Assert.That((await Subscription("sub_1")).ManagedPayments, Is.True);
         Assert.That(await Grants("stripe-invoice-in_1"), Is.EqualTo(1));
+    }
+
+    /// <summary>
+    /// Regression: Stripe amounts of zero-decimal currencies are whole units; dividing by 100 recorded a 1500 JPY Managed
+    /// Payments charge (Adaptive Pricing) as 15 JPY
+    /// </summary>
+    [Test]
+    public async Task ManagedPaymentsInvoiceInJpyIsReadInWholeYen()
+    {
+        remote = Snapshot(managed: true);
+        var service = Service(stripe.Object);
+
+        var outcome = await service.StripeInvoicePaid(Invoice(total: 1500, currency: "jpy", country: "JP") with { Tax = 136 });
+
+        Assert.That((outcome.Amount, outcome.TaxAmount, outcome.Currency), Is.EqualTo((1500m, 136m, "JPY")));
+        Assert.That(outcome.PriceTaxBehavior, Is.EqualTo("inclusive"), "the Stripe price's tax behaviour reaches the event");
+        Assert.That((await Subscription("sub_1")).PaymentAmount, Is.EqualTo("1500.00 JPY"));
     }
 
     [Test]

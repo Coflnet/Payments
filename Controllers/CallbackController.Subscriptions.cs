@@ -56,7 +56,7 @@ public partial class CallbackController
         // Includes refunds Stripe issues on its own as merchant of record (Managed Payments).
         await subscriptionService.StripeInvoiceRefunded(invoice, charge.Amount, charge.AmountRefunded);
         await ReverseCreatorRevenue(invoice.Id, "charge", charge.Amount > 0 ? charge.AmountRefunded / (decimal)charge.Amount : 0);
-        await MarkPaymentRefunded(invoice.Id, "stripe", charge.AmountRefunded / 100m, charge.AmountRefunded >= charge.Amount);
+        await MarkPaymentRefunded(invoice.Id, "stripe", StripeAmounts.FromMinorUnits(charge.AmountRefunded, charge.Currency), charge.AmountRefunded >= charge.Amount);
         return true;
     }
 

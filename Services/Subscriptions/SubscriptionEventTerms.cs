@@ -15,7 +15,41 @@ public static class SubscriptionEventTerms
         payment.SubscriptionRenewalWeeks = RenewalWeeks(outcome);
         payment.SubscriptionRenewalAmount = RenewalAmount(outcome);
         payment.SubscriptionIsRenewal = outcome.IsRenewal;
+        ApplyTax(payment, outcome);
     }
+
+    /// <summary>
+    /// How tax relates to the paid and the renewal amount. Direct sales charge the VAT of the checkout country (none in the US).
+    /// Managed Payments: the paid amount is the invoice's amount_paid, the whole charge including any tax Stripe added (with
+    /// <see cref="PaymentEvent.TaxAmount"/> when Stripe reports it); the renewal price follows the Stripe price's tax behaviour.
+    /// </summary>
+    private static void ApplyTax(PaymentEvent payment, SubscriptionPaymentOutcome outcome)
+    {
+        payment.TaxTreatment = PaidTaxTreatment(outcome);
+        payment.TaxAmount = payment.TaxTreatment == PaymentTaxTreatment.Included && outcome.TaxAmount > 0 ? outcome.TaxAmount : null;
+        payment.RenewalTaxTreatment = payment.SubscriptionRenewalAmount == null ? null : RenewalTaxTreatment(outcome);
+        if (outcome.TaxRemittedByProcessor)
+            return;
+        payment.TaxCountry = outcome.Country;
+        payment.VatRateBasisPoints = (int)Math.Round(outcome.TaxRate * 100);
+    }
+
+    private static string PaidTaxTreatment(SubscriptionPaymentOutcome outcome) =>
+        outcome.TaxRemittedByProcessor ? PaymentTaxTreatment.Included : DirectTaxTreatment(outcome);
+
+    private static string RenewalTaxTreatment(SubscriptionPaymentOutcome outcome) =>
+        outcome.TaxRemittedByProcessor ? ManagedPriceTaxTreatment(outcome.PriceTaxBehavior) : DirectTaxTreatment(outcome);
+
+    /// <summary>
+    /// Managed Payments prices: "inclusive" contains the tax; "exclusive" (STRIPE:MANAGED_TAX_BEHAVIOR, the default) is net,
+    /// and so is an unknown behaviour (the checkout default)
+    /// </summary>
+    private static string ManagedPriceTaxTreatment(string taxBehavior) =>
+        taxBehavior == "inclusive" ? PaymentTaxTreatment.Included : PaymentTaxTreatment.Net;
+
+    /// <summary>Direct sales: the price contains the checkout country's VAT, or no tax at rate 0 (the US)</summary>
+    private static string DirectTaxTreatment(SubscriptionPaymentOutcome outcome) =>
+        outcome.TaxRate > 0 ? PaymentTaxTreatment.Included : PaymentTaxTreatment.None;
 
     /// <summary>4 for 4-week plans and 13/52 week ones that continue every 4 weeks; a plan's own weeks when it repeats its term</summary>
     private static int? RenewalWeeks(SubscriptionPaymentOutcome outcome) =>
@@ -32,6 +66,6 @@ public static class SubscriptionEventTerms
         var cents = SubscriptionService.InFirstLongTerm(subscription) ? subscription.RenewalPriceCents : subscription.PriceCents;
         if (cents == null || !string.Equals(outcome.Currency, subscription.Currency, StringComparison.OrdinalIgnoreCase))
             return null;
-        return cents.Value / 100m;
+        return StripeAmounts.FromMinorUnits(cents.Value, subscription.Currency);
     }
 }

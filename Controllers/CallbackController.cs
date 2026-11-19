@@ -130,19 +130,20 @@ namespace Payments.Controllers
                 syncIOFeature.AllowSynchronousIO = true;
             }
             string json = "";
+            Event stripeEvent = null;
             try
             {
                 json = new StreamReader(Request.Body).ReadToEnd();
                 if (String.IsNullOrEmpty(json))
                     throw new ApiException("Json body is not set");
 
-                var stripeEvent = EventUtility.ConstructEvent(
+                stripeEvent = EventUtility.ConstructEvent(
                     json,
                     Request.Headers["Stripe-Signature"],
                     signingSecret
                 );
-                _logger.LogInformation("stripe valiadted");
-                _logger.LogInformation(json);
+                // The body carries the buyer's name, address and email: log identifiers only
+                _logger.LogInformation("Verified {StripeEvent}", WebhookLogSummary.OfStripe(stripeEvent));
                 if (await HandleStripeSubscriptionEvent(stripeEvent))
                     return Ok();
 
@@ -350,12 +351,12 @@ namespace Payments.Controllers
                         ex.StripeError?.RequestLogUrl);
                     return StatusCode(500);
                 }
-                _logger.LogError(ex, "Stripe callback failed for payload {Payload}", json);
+                _logger.LogError(ex, "Stripe callback failed for {StripeEvent}", WebhookLogSummary.OfStripe(stripeEvent));
                 return StatusCode(400);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "stripe checkout");
+                _logger.LogError(ex, "Stripe callback failed for {StripeEvent}", WebhookLogSummary.OfStripe(stripeEvent));
                 return StatusCode(400);
             }
         }
@@ -716,7 +717,6 @@ namespace Payments.Controllers
             try
             {
                 json = await new StreamReader(Request.Body).ReadToEndAsync();
-                _logger.LogInformation("CoinGate callback body: {Body}", json);
 
                 if (string.IsNullOrEmpty(json))
                 {
@@ -821,7 +821,7 @@ namespace Payments.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "CoinGate callback processing failed. Body: {Body}", json);
+                _logger.LogError(ex, "CoinGate callback processing failed for user {UserId}, product {ProductId}", userId, productId);
                 return StatusCode(500);
             }
         }
@@ -884,13 +884,14 @@ namespace Payments.Controllers
                 var webhook = JObject.Parse(json, new JsonLoadSettings { DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error });
                 if (!await VerifyPayPalWebhook(json))
                     return Unauthorized();
+                // The body carries the payer's name, address and email: log identifiers only
+                _logger.LogInformation("Verified {PayPalEvent}", WebhookLogSummary.OfPayPal(webhook));
                 var eventType = webhook.Value<string>("event_type");
                 if (IsPayPalSubscriptionEvent(eventType))
                     return await HandlePayPalSubscriptionEvent(eventType, webhook);
                 var webhookResult = webhook.ToObject<PayPalWebhookData>();
                 if (string.IsNullOrWhiteSpace(webhookResult.Id) || !ValidPayPalId(webhookResult.Resource?.Id))
                     return BadRequest();
-                _logger.LogInformation(Newtonsoft.Json.JsonConvert.SerializeObject(webhookResult));
                 if (webhookResult.EventType == "CHECKOUT.ORDER.APPROVED")
                 {
                     var approved = (await paypalClient.Execute(new OrdersGetRequest(webhookResult.Resource.Id))).Result<Order>();
@@ -924,7 +925,8 @@ namespace Payments.Controllers
                             country ?? "UNKNOWN");
                         return Ok();
                     }
-                    _logger.LogInformation($"received order from {userId} {country} {postalCode} {state} {json}");
+                    _logger.LogInformation("Received PayPal order {OrderId} of user {UserId} from {Country} {State}",
+                        approved.Id, userId, country, state);
                     var coinAmount = double.Parse(webhookResult.Resource.PurchaseUnits[0].CustomId.Split(';')[1]);
                     if ((state == "MD" || state == "KY") && country == "US" && coinAmount < 5000)
                     {
@@ -1006,7 +1008,6 @@ namespace Payments.Controllers
 
                 _logger.LogInformation("Status: {0}", order.Status);
 
-                _logger.LogInformation("Order: {0}", Newtonsoft.Json.JsonConvert.SerializeObject(order));
                 _logger.LogInformation("ReferenceId: {0}", referenceId ?? throw new Exception("no reference id"));
                 //if (DateTime.Parse(order.PurchaseUnits[0].Payments.Captures[0].UpdateTime) < DateTime.UtcNow.Subtract(TimeSpan.FromHours(1)))
                 //    throw new Exception("the provied order id is too old, please contact support for manual review");
@@ -1384,7 +1385,7 @@ namespace Payments.Controllers
                     return BadRequest("Invalid notification format");
                 }
 
-                _logger.LogInformation("Processing Google Play notification for package {PackageName}\n{full}", notification.PackageName, json);
+                _logger.LogInformation("Processing {GooglePlayNotification}", WebhookLogSummary.OfGooglePlay(notification));
 
                 // Handle one-time product notifications
                 if (notification.OneTimeProductNotification != null)

@@ -298,11 +298,9 @@ public partial class SubscriptionService
             DiscountCode = request.DiscountCode
         };
         await ApplyPayPalRenewalTerms(subscription, request, remote.PlanId);
-        context.Subscriptions.Add(subscription);
         request.State = PaymentRequest.Status.PAID;
         request.UpdatedAt = DateTime.UtcNow;
-        await context.SaveChangesAsync();
-        return subscription;
+        return await GetOrCreateSubscriptionAsync(subscription);
     }
 
     /// <summary>

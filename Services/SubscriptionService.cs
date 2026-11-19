@@ -131,29 +131,10 @@ public partial class SubscriptionService
             return;
         }
 
-        if (subscription == null)
-        {
-            subscription = new UserSubscription()
-            {
-                User = await userService.GetOrCreate(userId),
-                Product = product,
-                ProviderSlug = SubscriptionProviders.LemonSqueezy
-            };
-            context.Subscriptions.Add(subscription);
-        }
+        subscription ??= await CreateLemonSqueezySubscription(webhook, userId, product);
+        ApplyLemonSqueezyState(subscription, webhook.Data);
         var attributes = webhook.Data.Attributes;
-        if (subscription.ProviderVariantId == null && attributes.VariantId > 0)
-            subscription.ProviderVariantId = attributes.VariantId;
-        if (attributes.RenewsAt.HasValue)
-            subscription.RenewsAt = attributes.RenewsAt.Value;
-        subscription.UpdatedAt = attributes.UpdatedAt;
-        subscription.Status = attributes.Status;
-        subscription.CreatedAt = attributes.CreatedAt;
-        subscription.EndsAt = attributes.EndsAt;
-        subscription.ExternalCustomerId = attributes.CustomerId.ToString();
-        subscription.ExternalId = webhook.Data.Id;
-        subscription.TrialEndsAt = attributes.TrialEndsAt;
-        
+
         // Handle trial subscription: grant access for trial period but don't credit coins
         if (attributes.Status == "on_trial" && attributes.TrialEndsAt.HasValue)
         {
@@ -173,6 +154,37 @@ public partial class SubscriptionService
         
         await context.SaveChangesAsync();
 
+    }
+
+    /// <summary>
+    /// Records a Lemon Squeezy subscription first seen in this webhook (saved at once, see <see cref="GetOrCreateSubscriptionAsync"/>)
+    /// </summary>
+    private async Task<UserSubscription> CreateLemonSqueezySubscription(Webhook webhook, string userId, TopUpProduct product)
+    {
+        var subscription = new UserSubscription
+        {
+            User = await userService.GetOrCreate(userId),
+            Product = product,
+            ProviderSlug = SubscriptionProviders.LemonSqueezy
+        };
+        ApplyLemonSqueezyState(subscription, webhook.Data);
+        return await GetOrCreateSubscriptionAsync(subscription);
+    }
+
+    private static void ApplyLemonSqueezyState(UserSubscription subscription, Data data)
+    {
+        var attributes = data.Attributes;
+        if (subscription.ProviderVariantId == null && attributes.VariantId > 0)
+            subscription.ProviderVariantId = attributes.VariantId;
+        if (attributes.RenewsAt.HasValue)
+            subscription.RenewsAt = attributes.RenewsAt.Value;
+        subscription.UpdatedAt = attributes.UpdatedAt;
+        subscription.Status = attributes.Status;
+        subscription.CreatedAt = attributes.CreatedAt;
+        subscription.EndsAt = attributes.EndsAt;
+        subscription.ExternalCustomerId = attributes.CustomerId.ToString();
+        subscription.ExternalId = data.Id;
+        subscription.TrialEndsAt = attributes.TrialEndsAt;
     }
 
     /// <summary>
