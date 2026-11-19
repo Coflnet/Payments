@@ -240,7 +240,7 @@ namespace Payments.Controllers
             Session session;
             try
             {
-                session = await service.CreateAsync(options);
+                session = await FailRequestOnError(instance, () => service.CreateAsync(options));
             }
             catch (Stripe.StripeException e) when (StripeErrorClassifier.IsCredentialError(e.HttpStatusCode))
             {
@@ -264,6 +264,35 @@ namespace Payments.Controllers
             return new TopUpIdResponse { Id = session.Id, DirctLink = session.Url };
         }
 
+        /// <summary>
+        /// Opened checkouts (with a provider session) a buyer may have within 10 minutes; the next one is refused.
+        /// Allows comparing tiers, durations and card vs PayPal.
+        /// </summary>
+        public const int MaxOpenedCheckoutsPer10Minutes = 4;
+        /// <summary>Opened checkouts within 10 hours after which more are refused (coarse card testing backstop)</summary>
+        public const int MaxOpenedCheckoutsPer10Hours = 10;
+        /// <summary>Opened checkouts within 10 hours after which more are refused when they come from fewer than <see cref="FewIps"/> IPs</summary>
+        public const int MaxOpenedCheckoutsFewIpsPer10Hours = 8;
+        private const int FewIps = 3;
+
+        /// <summary>
+        /// Runs the provider call that opens a checkout; when it throws the request is marked FAILED, so it
+        /// neither counts toward the anti-fraud limits nor gets reused.
+        /// </summary>
+        private async Task<T> FailRequestOnError<T>(PaymentRequest request, Func<Task<T>> openCheckout)
+        {
+            try
+            {
+                return await openCheckout();
+            }
+            catch
+            {
+                request.State = PaymentRequest.Status.FAILED;
+                await db.SaveChangesAsync();
+                throw;
+            }
+        }
+
         /// <param name="recurringAmount">Subscriptions: the renewal price when it differs from <paramref name="eurPrice"/></param>
         /// <param name="country">Subscriptions: the country the price was made for (its VAT for direct sales)</param>
         /// <param name="managedPayments">Subscriptions: sold through Stripe Managed Payments; only checkouts of the same mode are reused</param>
@@ -280,13 +309,10 @@ namespace Payments.Controllers
             var existingRequests = await db.PaymentRequests
                 .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp) && r.CreatedAt > minTime)
                 .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
+                // only opened checkouts count: a request whose provider session was never created (the provider failed) is no attempt to pay
+                .Where(r => r.SessionId != null)
                 .Include(r => r.User).Include(r => r.ProductId)
                 .ToListAsync();
-            if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(-10)) > 1)
-                throw new ApiException("Too many payment requests from you, please try again later");
-            if (existingRequests.Count > 5 || existingRequests.Count > 3 && existingRequests.Select(e => e.CreateOnIp).Distinct().Count() < 3)
-                throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
-
             // Only a checkout of the same prices is reused: one opened with another (or without a) discount code charges other prices,
             // one opened for another country contains another VAT (or none, Managed Payments) even if the amount happens to match,
             // and a direct and a Managed Payments checkout of the same country (US: no VAT) are never mixed up.
@@ -294,7 +320,12 @@ namespace Payments.Controllers
                 && r.Provider == (provider ?? product.ProviderSlug) && r.Amount == eurPrice && r.RecurringAmount == recurringAmount && r.Country == country
                 && r.ManagedPayments == managedPayments && r.CheckoutRegion == region);
             if (match != null)
-                return match; // already existing request, return it
+                return match; // already existing request, return it, nothing new is created so no limit applies
+
+            if (existingRequests.Count(r => r.CreatedAt >= DateTime.UtcNow.AddMinutes(-10)) >= MaxOpenedCheckoutsPer10Minutes)
+                throw new ApiException("Too many payment requests from you, please try again later");
+            if (existingRequests.Count > MaxOpenedCheckoutsPer10Hours || existingRequests.Count > MaxOpenedCheckoutsFewIpsPer10Hours && existingRequests.Select(e => e.CreateOnIp).Distinct().Count() < FewIps)
+                throw new ApiException($"Too many payment requests from you, please ask for support on discord or email support@coflnet.com with {topupotions?.Fingerprint?.Substring(0, 5)}");
 
             request = new PaymentRequest()
             {

@@ -72,7 +72,7 @@ public partial class TopUpController
             options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(priced.First),
             Region: region, RenewalPlan: priced.RenewalPlan,
             RenewalUnitAmountCents: priced.Renewal is decimal renewal ? SubscriptionPricing.ToCents(renewal) : null);
-        var session = await CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints);
+        var session = await FailRequestOnError(request, () => CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints));
         request.SessionId = session.Id;
         request.CoinAmount = plan.Cost;
         request.ExpiresAt = priced.Discount?.ExpiresAt;
@@ -111,14 +111,14 @@ public partial class TopUpController
             return await ExistingPayPalApproval(paypal, request.SessionId);
         await RememberCountry(user, country, options);
         await declarations.Record(options, user, plan, request);
-        var planId = await PayPalPlans.GetOrCreate(plan, priced.RenewalPlan);
-
-        // The REGULAR cycles: the 4-week renewal price of 13 and 52 week plans, the plan's recurring price otherwise
-        var created = await paypal.Create(new PayPalSubscriptionRequest(planId,
-            SubscriptionService.PayPalCustomId(plan.Id, user.ExternalId), priced.First, plan.CurrencyCode.ToUpperInvariant(),
-            options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail, priced.Following));
-        var approve = ApproveLink(created) ?? throw new ApiException("PayPal did not return an approval link.");
+        var created = await FailRequestOnError(request, () => CreatePayPalSubscription(paypal, plan, priced, user, options));
+        var approve = ApproveLink(created);
+        if (approve == null)
+        {
+            request.State = PaymentRequest.Status.FAILED;
+            await db.SaveChangesAsync();
+            throw new ApiException("PayPal did not return an approval link.");
+        }
         // The webhook only activates subscriptions recorded here, for exactly this price, and not long after the code expired.
         request.SessionId = created.Id;
         request.CoinAmount = plan.Cost;
@@ -127,6 +127,17 @@ public partial class TopUpController
         request.DiscountCode = priced.Discount?.Code;
         await db.SaveChangesAsync();
         return new TopUpIdResponse { Id = created.Id, DirectLink = approve };
+    }
+
+    private async Task<Coflnet.Payments.Models.PayPal.PayPalSubscription> CreatePayPalSubscription(IPayPalSubscriptionApi paypal, TopUpProduct plan,
+        SubscriptionCheckoutPrice priced, User user, TopUpOptions options)
+    {
+        var planId = await PayPalPlans.GetOrCreate(plan, priced.RenewalPlan);
+        // The REGULAR cycles: the 4-week renewal price of 13 and 52 week plans, the plan's recurring price otherwise
+        return await paypal.Create(new PayPalSubscriptionRequest(planId,
+            SubscriptionService.PayPalCustomId(plan.Id, user.ExternalId), priced.First, plan.CurrencyCode.ToUpperInvariant(),
+            options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
+            options?.UserEmail, priced.Following));
     }
 
     private SubscriptionDeclarationService declarations => subscriptionDeclarations ??=

@@ -1129,6 +1129,95 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         Assert.That(created, Is.Null);
     }
 
+    private async Task SeedAttempts(int count, TimeSpan age, string sessionId, string ip = "203.0.113.7")
+    {
+        var plan = await db.TopUpProducts.SingleAsync(p => p.Slug == "l_premium");
+        var buyer = await users.GetOrCreate("buyer");
+        for (var i = 0; i < count; i++)
+            db.PaymentRequests.Add(new PaymentRequest
+            {
+                User = buyer, ProductId = plan, Provider = "stripe", SessionId = sessionId == null ? null : $"{sessionId}{i}",
+                Amount = 1 + i, State = PaymentRequest.Status.CREATED, CreatedAt = DateTime.UtcNow - age,
+                CreateOnIp = System.Net.IPAddress.Parse(ip)
+            });
+        await db.SaveChangesAsync();
+    }
+
+    [Test]
+    public async Task RequestsWithoutAnOpenedCheckoutDoNotCountAndDoNotBlock()
+    {
+        await SeedAttempts(8, TimeSpan.FromMinutes(2), null);
+
+        var response = await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE"));
+
+        Assert.That(response.Id, Is.EqualTo("cs_1"));
+    }
+
+    [Test]
+    public async Task FailedCheckoutCreationIsMarkedFailedAndNeverBlocksRetries()
+    {
+        stripe.Setup(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>())).ThrowsAsync(new InvalidOperationException("403"));
+        var controller = Controller("DE");
+
+        for (var i = 0; i < 8; i++)
+            Assert.ThrowsAsync<ApiException>(() => controller.StripeSubscribe("buyer", "l_premium", Options("DE")));
+
+        Assert.That(await db.PaymentRequests.AllAsync(r => r.State == PaymentRequest.Status.FAILED && r.SessionId == null));
+    }
+
+    [Test]
+    public async Task FourOpenedCheckoutsInTenMinutesPassAndTheFifthIsRefused()
+    {
+        await SeedAttempts(MaxOpened - 1, TimeSpan.FromMinutes(2), "cs_old");
+        var controller = Controller("DE");
+
+        await controller.StripeSubscribe("buyer", "l_premium", Options("DE"));
+        var refused = Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_premium", Options("DE")));
+
+        Assert.That(refused.Message, Does.Contain("try again later"));
+    }
+
+    [Test]
+    public async Task IdenticalRetryReturnsTheExistingCheckoutEvenAtTheShortWindowLimit()
+    {
+        var controller = Controller("DE");
+        await controller.StripeSubscribe("buyer", "l_premium", Options("DE"));
+        await SeedAttempts(MaxOpened - 1, TimeSpan.FromMinutes(2), "cs_old");
+        stripe.Setup(s => s.GetCheckoutSession("cs_1")).ReturnsAsync(new Session { Id = "cs_1", Url = "https://checkout.stripe.com/c/cs_1" });
+        stripe.Invocations.Clear();
+
+        var again = await controller.StripeSubscribe("buyer", "l_premium", Options("DE"));
+
+        Assert.That(again.Id, Is.EqualTo("cs_1"));
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Never);
+    }
+
+    [Test]
+    public async Task NineOpenedCheckoutsFromOneIpInTenHoursPassAndMoreNeedSupport()
+    {
+        await SeedAttempts(TopUpController.MaxOpenedCheckoutsFewIpsPer10Hours, TimeSpan.FromHours(2), "cs_old");
+        var controller = Controller("DE");
+
+        await controller.StripeSubscribe("buyer", "l_premium", Options("DE"));
+        var refused = Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", "l_premium", Options("DE")));
+
+        Assert.That(refused.Message, Does.Contain("support"));
+    }
+
+    [Test]
+    public async Task MoreThanTenOpenedCheckoutsFromManyIpsInTenHoursNeedSupport()
+    {
+        await SeedAttempts(4, TimeSpan.FromHours(2), "cs_a", "203.0.113.1");
+        await SeedAttempts(4, TimeSpan.FromHours(2), "cs_b", "203.0.113.2");
+        await SeedAttempts(3, TimeSpan.FromHours(2), "cs_c", "203.0.113.3");
+
+        var refused = Assert.ThrowsAsync<ApiException>(() => Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE")));
+
+        Assert.That(refused.Message, Does.Contain("support"));
+    }
+
+    private const int MaxOpened = TopUpController.MaxOpenedCheckoutsPer10Minutes;
+
     private static DiscountCode Auto(string code, DateTime? createdAt = null, DateTime? startsAt = null, DateTime? expiresAt = null,
         bool active = true, int? maxRedemptions = null, int redeemed = 0) => new()
     {
