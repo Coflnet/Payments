@@ -15,8 +15,43 @@ public static class SubscriptionEventTerms
         payment.SubscriptionRenewalWeeks = RenewalWeeks(outcome);
         payment.SubscriptionRenewalAmount = RenewalAmount(outcome);
         payment.SubscriptionIsRenewal = outcome.IsRenewal;
+        payment.SubscriptionIsExtension = outcome.IsExtension ? true : null;
+        payment.SubscriptionExternalId = outcome.Subscription.ExternalId;
+        payment.LegalLocale = outcome.LegalLocale;
         ApplyTax(payment, outcome);
+        ApplyDeclaration(payment, outcome);
     }
+
+    /// <summary>
+    /// The confirmation of a purchase (first payment, first payment of an extension term) repeats the buyer's early performance
+    /// declaration and the term it covers: from the payment to the end of the paid term
+    /// </summary>
+    private static void ApplyDeclaration(PaymentEvent payment, SubscriptionPaymentOutcome outcome)
+    {
+        var declaration = outcome.Declaration;
+        if (declaration == null)
+            return;
+        payment.DeclarationVersion = declaration.DeclarationVersion;
+        payment.DeclarationText = declaration.DeclarationText;
+        payment.LegalLocale = declaration.Locale;
+        payment.ServiceStartsAtUtc = outcome.PaidAt;
+        payment.ServiceEndsAtUtc = PaidTermEnd(outcome);
+    }
+
+    /// <summary>The provider's period end once it moved past the payment, else the plan's length from the payment</summary>
+    private static DateTime PaidTermEnd(SubscriptionPaymentOutcome outcome)
+    {
+        var renewsAt = outcome.Subscription.RenewsAt;
+        return renewsAt > outcome.PaidAt.AddDays(1) ? renewsAt : outcome.PaidAt.AddSeconds(outcome.Product.OwnershipSeconds);
+    }
+
+    /// <summary>
+    /// How tax relates to a price of a subscription (renewal or extension price): direct sales by the VAT rate of the checkout
+    /// country, Managed Payments by the Stripe price's tax behaviour (null: net)
+    /// </summary>
+    public static string PriceTaxTreatment(bool managedPayments, string managedTaxBehavior, int vatBasisPoints) =>
+        managedPayments ? ManagedPriceTaxTreatment(managedTaxBehavior)
+            : vatBasisPoints > 0 ? PaymentTaxTreatment.Included : PaymentTaxTreatment.None;
 
     /// <summary>
     /// How tax relates to the paid and the renewal amount. Direct sales charge the VAT of the checkout country (none in the US).

@@ -177,6 +177,8 @@ namespace Coflnet.Payments.Models
                 entity.HasIndex(e => new { e.ProviderSlug, e.ExternalId }).IsUnique();
                 // Counting the active direct subscriptions of a checkout country (US cap)
                 entity.HasIndex(e => new { e.CheckoutCountry, e.CheckoutRegion, e.Status });
+                // A PayPal extension (new PayPal subscription) continues exactly one subscription
+                entity.HasIndex(e => e.ExtensionSubscriptionId).IsUnique();
             });
 
             modelBuilder.Entity<DiscountCode>(entity =>

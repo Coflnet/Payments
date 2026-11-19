@@ -78,6 +78,8 @@ public partial class SubscriptionService
             ?? throw new ApiException("Subscription not found");
         if (subscription.Status != "active" || subscription.EndsAt != null)
             throw new ApiException("Only an active, uncancelled subscription can change plans.");
+        if (ExtensionBlocksPlanChange(subscription, DateTime.UtcNow))
+            throw new ApiException("The plan can not be changed while another term is booked or has just started.");
         if (subscription.Product.Slug == targetProductSlug)
             return new("completed");
         var target = await context.TopUpProducts.Include(p => p.Groups).SingleOrDefaultAsync(p => p.Slug == targetProductSlug);

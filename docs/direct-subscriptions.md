@@ -333,6 +333,54 @@ PayPal), every country and slot bundles alike.
   (what each following cycle charges in the event's `Currency`: direct gross, Managed Payments net; null when a Managed Payments buyer
   paid in another currency) and `SubscriptionIsRenewal` (false for the first payment). Null on every other event (`SubscriptionEventTerms`).
 
+## Purchase confirmations, renewal reminders and "renew for another term"
+
+- Early performance declaration in the confirmation (lawyer decision): the first payment of a direct/Managed Payments subscription
+  carries the checkout's declaration (`DeclarationVersion`, `DeclarationText`, `LegalLocale` = its locale, `ServiceStartsAtUtc` = the
+  payment, `ServiceEndsAtUtc` = the end of the paid term). The checkout's `ServicePerformanceDeclaration` is found by its
+  `PaymentRequestId`: Stripe names the checkout request in the subscription metadata (`paymentRequestId`), a PayPal checkout request has
+  the PayPal subscription id as `SessionId`. The first payment of an extension term carries the extension's declaration. Renewals carry
+  no declaration, every subscription event the `LegalLocale` of the latest one when known; a missing declaration is logged (warning)
+  and the event published anyway. Every direct subscription event also names `SubscriptionExternalId`.
+- `SubscriptionRenewalReminderService` (every `SUBSCRIPTIONS:RENEWAL_REMINDER_INTERVAL_MINUTES`, default 60, off with
+  `SUBSCRIPTIONS:RENEWAL_REMINDERS_ENABLED=false`, each publish bounded by `SUBSCRIPTIONS:RENEWAL_REMINDER_PUBLISH_TIMEOUT_SECONDS`,
+  default 30, at most `SUBSCRIPTIONS:RENEWAL_REMINDERS_PER_RUN`, default 50, per run) publishes one `subscription_renewal_reminder` event per term end for active, uncancelled Stripe/PayPal subscriptions in a
+  paid 13/52 week term that continues every 4 weeks, ending within 35 days and not extended for that end
+  (`PaymentProviderTransactionId` = `renewal-reminder:{subscription id}:{term end yyyyMMdd}`, `PayedAmount` 0, the email of the
+  latest payment record, `SubscriptionTermEndsAt`, the 4-week `SubscriptionRenewalAmount`, `SubscriptionExtensionAmount` = one more
+  term, null when it can not be extended). `Subscriptions.RenewalReminderSentFor` is set only after the publish succeeded (at least
+  once, the broker dedupes); a failed or timed out publish ends the run and the next run retries; a reminder that can not be built
+  is logged and skipped (retried by the next run).
+- Extension (owner decision), only while `SUBSCRIPTIONS:EXTENSIONS_ENABLED=true` (default false until tried in Stripe test mode and the
+  PayPal sandbox; off: `canExtendLongTerm` false, the endpoint answers `extension_unavailable`, reminders carry no
+  `SubscriptionExtensionAmount`; an extension booked while it was on is billed, granted and shown either way):
+  `POST /api/Subscription/u/{userId}/{subscriptionId}/extend` with a valid declaration (early performance
+  requested) books one more term of the same length instead of continuing every 4 weeks, within the last
+  `SUBSCRIPTIONS:EXTENSION_BOOKING_WINDOW_DAYS` (default 60) days but more than 24 h before the term ends, once per term end. Price: the long plan's current list price with the subscription's creator code and "forever" code (`RecurringPriceCents`,
+  like the renewal price; "once" codes not), stored as `ExtensionPriceCents` with `ExtensionStartsAt` (the term end). Its declaration
+  is stored under the purchase reference `subscription-extension-{subscription id}-{term end yyyyMMdd}`.
+  - Stripe: the renewal schedule gets an extension phase between the current phase and the 4-week phase: `price_data` on
+    `coflnet_plan_{long slug}` at the extension price, the long interval, `end_date` = term end + the plan's weeks, `billing_cycle_anchor=phase_start`, no
+    prorations, no coupon (codes are in the price); marker `{renewal slug}:{cents}+{long slug}:{cents}`. The extension invoice
+    (`renewal` or `updated`, created around `ExtensionStartsAt`, Stripe billing the long plan at `ExtensionPriceCents`, no plan change
+    recorded for it and no other period granted since the term end, so a proration is never taken for it) must charge
+    `ExtensionPriceCents` (direct), grants the long term and does not convert; its full refund revokes that term;
+    the price and term end are saved before Stripe is called (a failed call drops them again); the 4-week invoice after it converts as before. Re-scheduling (webhooks, the hourly run) keeps a
+    booked extension.
+  - PayPal: a new PayPal subscription on the same long plan (TRIAL override = extension price, REGULAR = renewal price, `start_time` =
+    the term end, same `custom_id`), recorded as a `PaymentRequest` with `ExtendsSubscriptionId` (never reused as or counted like a
+    checkout); the approval link is returned (again while it is
+    pending). `ExtensionSubscriptionId` (unique) names it. On activation it is linked as the continuation (`PreviousSubscriptionId`),
+    the old subscription is cancelled at PayPal (its paid term and access stay) and gets `ExtensionStartsAt`; the continuation is a
+    normal 13/52 week subscription that continues every 4 weeks, adopts the old tier slots with its first sale, whose event is the
+    extension's confirmation (`SubscriptionIsExtension` and `SubscriptionIsRenewal` true). One approved when the old subscription can
+    no longer be extended (cancelled, converted, its start not at the term end, or less than 24 h left) is cancelled and flagged
+    (`ContinuationRefusedAt`); its sales are marked for a manual refund in either webhook order.
+  - Cancelling a subscription cancels its booked extension (Stripe: the released schedule, also when cancelled elsewhere; PayPal: the
+    approved continuation). Plan switches are refused while an extension is booked and for 2 days after it started.
+- The subscription list adds `currentTermEndsAt`, `canExtendLongTerm`, `extensionPrice`, `extensionTaxTreatment`, `renewalPrice` and
+  `extendedUntil` (only while the booked extension stands: Stripe not cancelled, PayPal continuation active).
+
 ## PayPal
 
 Webhook endpoint `/callback/paypal` (id in `PAYPAL:WEBHOOK_ID`), events `BILLING.SUBSCRIPTION.*`, `PAYMENT.SALE.COMPLETED`,

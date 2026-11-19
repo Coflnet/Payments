@@ -137,7 +137,8 @@ public partial class SubscriptionService
     {
         var plan = (TopUpProduct)subscription.RenewalProduct;
         return new StripeRenewalRequest(subscription.RenewalPriceCents.Value, plan.CurrencyCode.ToLowerInvariant(), snapshot.TaxBehavior,
-            plan.Slug, plan.Title, snapshot.CurrentPeriodEnd.Value, await RenewalTaxRate(subscription, snapshot));
+            plan.Slug, plan.Title, snapshot.CurrentPeriodEnd.Value, await RenewalTaxRate(subscription, snapshot),
+            ExtensionTerm(subscription, snapshot));
     }
 
     /// <summary>Direct sales with VAT show the inclusive VAT rate on the receipts, as the checkout did</summary>

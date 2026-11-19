@@ -98,6 +98,12 @@ public class PaymentRequest : HasId
     /// </summary>
     public DateTime? ExpiresAt { get; set; }
     /// <summary>
+    /// PayPal extensions: the subscription this request (a new PayPal subscription starting when its term ends) extends.
+    /// Such a request is no checkout: it is never reused for one and does not count toward the checkout limits.
+    /// </summary>
+    [MaxLength(64)]
+    public string ExtendsSubscriptionId { get; set; }
+    /// <summary>
     /// States a payment request can be in
     /// </summary>
     public enum Status

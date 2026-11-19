@@ -41,10 +41,15 @@ public record PaymentEvidence(string IpAddress, string CheckoutCountry, string B
 /// <param name="Evidence">Where the buyer was (place of supply evidence), null for prorations</param>
 /// <param name="IsRenewal">False for the subscription's first payment, true for later ones</param>
 /// <param name="PriceTaxBehavior">Managed Payments: the Stripe price's tax_behavior ("exclusive": net, "inclusive"), null when unknown</param>
+/// <param name="Declaration">The early performance declaration of the term this payment starts (the subscription's first payment
+/// or the first payment of an extension term); null for other payments</param>
+/// <param name="LegalLocale">Locale of the buyer's latest declaration for the subscription, null when unknown</param>
+/// <param name="IsExtension">The first payment of a term the buyer opted in to extend</param>
 public record SubscriptionPaymentOutcome(UserSubscription Subscription, TopUpProduct Product, string PaymentId,
     decimal Amount, string Currency, string Country, string PostalCode, string Email, string Name, DateTime PaidAt,
     decimal? EurAmount = null, bool IsProration = false, decimal TaxAmount = 0, double TaxRate = 0,
-    PaymentEvidence Evidence = null, bool IsRenewal = false, string PriceTaxBehavior = null)
+    PaymentEvidence Evidence = null, bool IsRenewal = false, string PriceTaxBehavior = null,
+    ServicePerformanceDeclaration Declaration = null, string LegalLocale = null, bool IsExtension = false)
 {
     /// <summary>Merchant of record (Stripe Managed Payments) remits the tax</summary>
     public bool TaxRemittedByProcessor => Subscription.ManagedPayments;

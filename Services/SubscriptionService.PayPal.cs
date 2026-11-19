@@ -51,6 +51,8 @@ public partial class SubscriptionService
                 return [];
             await ApplyPayPalState(subscription, remote);
             await context.SaveChangesAsync();
+            if (!await LinkPayPalContinuation(subscription, remote))
+                return [];
             if (!IsPastApproval(remote.Status) || remote.BillingInfo?.LastPayment == null)
                 return [];
             return await GrantListedPayPalSales(subscription, remote);
@@ -73,6 +75,12 @@ public partial class SubscriptionService
             {
                 await MarkForManualRefund(SubscriptionProviders.PayPal, sale.Id, null, ParseMoney(sale.Amount?.Total) ?? 0,
                     $"PayPal sale {sale.Id} of subscription {remote.Id}, which was not sold by this service");
+                return null;
+            }
+            if (!await LinkPayPalContinuation(subscription, remote))
+            {
+                await MarkForManualRefund(SubscriptionProviders.PayPal, sale.Id, subscription, ParseMoney(sale.Amount?.Total) ?? 0,
+                    $"PayPal sale {sale.Id} of {remote.Id}, a refused extension of a subscription that could no longer be extended");
                 return null;
             }
             var outcome = await GrantPayPalSale(subscription, sale, PayerCountry(remote));
@@ -162,6 +170,7 @@ public partial class SubscriptionService
                 $"PayPal sale {sale.Id} of {subscription.ExternalId} paid {sale.Amount?.Total} {sale.Amount?.Currency}, agreed {subscription.PriceCents} cents {subscription.Currency}");
             return null;
         }
+        await AdoptPreviousSlots(subscription);
         await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
         subscription.PaymentAmount = sale.Amount.Total + " " + sale.Amount.Currency;
         await SwitchToRecurringPrice(subscription);
@@ -205,10 +214,12 @@ public partial class SubscriptionService
         var paid = ParseMoney(sale.Amount?.Total) ?? 0;
         var country = await PayPalVatCountry(subscription);
         var (net, vat, rate) = VatSplit(paid, country);
-        return new SubscriptionPaymentOutcome(subscription, (TopUpProduct)subscription.Product, sale.Id, paid,
+        var first = await IsFirstPayPalSale(subscription, sale);
+        var outcome = new SubscriptionPaymentOutcome(subscription, (TopUpProduct)subscription.Product, sale.Id, paid,
             sale.Amount?.Currency?.ToUpperInvariant(), country, null, null, null,
             ParseTime(sale.CreateTime) ?? DateTime.UtcNow, net, false, vat, rate,
-            await PayPalEvidence(subscription, country, payerCountry, sale.Id), !await IsFirstPayPalSale(subscription, sale));
+            await PayPalEvidence(subscription, country, payerCountry, sale.Id), !first);
+        return await WithPayPalDeclaration(outcome, first);
     }
 
     /// <summary>Whether the sale's grant is the subscription's first one (also when it is delivered again later)</summary>
@@ -412,7 +423,9 @@ public partial class SubscriptionService
 
         public async Task CancelAtPeriodEnd(UserSubscription subscription)
         {
-            await service.PayPalApi.Cancel(subscription.ExternalId, PayPalCancelReason);
+            // A subscription continued by its extension was cancelled at PayPal already; cancelling it again cancels the extension
+            if (subscription.Status is not ("cancelled" or "expired"))
+                await service.PayPalApi.Cancel(subscription.ExternalId, PayPalCancelReason);
             subscription.Status = "cancelled";
             subscription.EndsAt = await service.AccessExpiry(subscription) ?? subscription.RenewsAt;
             subscription.UpdatedAt = DateTime.UtcNow;

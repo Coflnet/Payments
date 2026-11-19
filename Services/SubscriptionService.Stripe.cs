@@ -109,60 +109,64 @@ public partial class SubscriptionService
         await context.SaveChangesAsync();
         // A redelivery of a granted invoice is the same period payment again, whatever the plan is now (the first 4-week
         // invoice, billing reason "updated", would otherwise look like a proration once the subscription is converted)
+        var extension = await IsExtensionInvoice(subscription, snapshot, invoice);
         if (await IsGranted(subscription.User.ExternalId, SubscriptionProviders.GrantReference(SubscriptionProviders.Stripe, invoice.Id)))
-            return await GrantedStripeOutcome(subscription, snapshot, invoice, false);
+            return await GrantedStripeOutcome(subscription, snapshot, invoice, false, extension);
         return invoice.NormalizedBillingReason switch
         {
-            "initial" or "renewal" => await GrantStripeInvoice(subscription, snapshot, invoice),
-            // The first 4-week invoice after the renewal schedule's phase change (Stripe does not document its billing reason)
-            "updated" when BillsRenewalPlan(subscription, StripePlans.SlugOf(snapshot))
-                => await GrantStripeInvoice(subscription, snapshot, invoice),
+            "initial" or "renewal" => await GrantStripeInvoice(subscription, snapshot, invoice, extension),
+            // The first 4-week invoice after the renewal schedule's phase change (Stripe does not document its billing reason),
+            // or the first invoice of the extension term the buyer opted in to
+            "updated" when BillsRenewalPlan(subscription, StripePlans.SlugOf(snapshot)) || extension
+                => await GrantStripeInvoice(subscription, snapshot, invoice, extension),
             "updated" => await RecordStripeProration(subscription, snapshot, invoice),
             _ => await RejectStripeInvoice(subscription, invoice, $"unexpected billing reason {invoice.BillingReason}")
         };
     }
 
+    /// <param name="extension">The invoice is the first one of an extension term (<see cref="IsExtensionInvoice"/>)</param>
     private async Task<SubscriptionPaymentOutcome> GrantStripeInvoice(UserSubscription subscription,
-        StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice)
+        StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice, bool extension)
     {
         var reference = SubscriptionProviders.GrantReference(SubscriptionProviders.Stripe, invoice.Id);
         if (await IsGranted(subscription.User.ExternalId, reference))
-            return await GrantedStripeOutcome(subscription, snapshot, invoice, false); // a redelivery: recording is retried
+            return await GrantedStripeOutcome(subscription, snapshot, invoice, false, extension); // a redelivery: recording is retried
         if (!await ReconcileStripePlan(subscription, snapshot))
             return await RejectStripeInvoice(subscription, invoice,
                 $"Stripe bills plan {StripePlans.SlugOf(snapshot)}, which is no valid change from {subscription.Product.Slug}");
-        var rejection = StripeAmountRejection(subscription, snapshot, invoice);
+        var rejection = StripeAmountRejection(subscription, snapshot, invoice, extension);
         if (rejection != null)
             return await RejectStripeInvoice(subscription, invoice, rejection);
         var evidence = await StripeEvidence(subscription, snapshot, invoice, invoice.NormalizedBillingReason == "initial");
         if (invoice.NormalizedBillingReason == "initial" && !await AcceptsDirectBuyer(subscription, invoice, evidence))
             return null;
-        WarnOnLongRenewal(subscription, invoice);
+        WarnOnLongRenewal(subscription, invoice, extension);
         await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
         subscription.PaymentAmount = StripeAmounts.FromMinorUnits(invoice.AmountPaid, invoice.Currency).ToString("0.00", CultureInfo.InvariantCulture) + " " + invoice.Currency?.ToUpperInvariant();
         await context.SaveChangesAsync();
         await TryScheduleStripeRenewal(subscription, snapshot);
         // A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")
-        return StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice))
-            with { Evidence = evidence, IsProration = false };
+        return await WithStripeDeclaration(StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice, extension))
+            with { Evidence = evidence, IsProration = false }, snapshot, invoice, true, extension);
     }
 
     private async Task<SubscriptionPaymentOutcome> GrantedStripeOutcome(UserSubscription subscription,
-        StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice, bool cardCountryRequired)
+        StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice, bool cardCountryRequired, bool extension)
     {
         var evidence = await StripeEvidence(subscription, snapshot, invoice, cardCountryRequired);
         // A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")
-        return StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice))
-            with { Evidence = evidence, IsProration = false };
+        return await WithStripeDeclaration(StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice, extension))
+            with { Evidence = evidence, IsProration = false }, snapshot, invoice, true, extension);
     }
 
     /// <summary>
     /// A 13 or 52 week subscription renewed for its full period: its renewal schedule was missing. The payment is granted
     /// (the buyer paid for it), but the renewal clause was not lawful; the difference has to be settled by hand.
+    /// An extension term the buyer opted in to is no such renewal.
     /// </summary>
-    private void WarnOnLongRenewal(UserSubscription subscription, StripeInvoiceInfo invoice)
+    private void WarnOnLongRenewal(UserSubscription subscription, StripeInvoiceInfo invoice, bool extension)
     {
-        if (invoice.NormalizedBillingReason != "renewal" || !SubscriptionRenewal.ContinuesAsFourWeeks(subscription.Product))
+        if (invoice.NormalizedBillingReason != "renewal" || !SubscriptionRenewal.ContinuesAsFourWeeks(subscription.Product) || extension)
             return;
         logger.LogError("Stripe invoice {InvoiceId} renewed {SubscriptionId} for another {Plan} term instead of continuing as {RenewalPlan} every 4 weeks; refund the difference",
             invoice.Id, subscription.ExternalId, subscription.Product.Slug, subscription.RenewalProduct?.Slug ?? "(no renewal plan found)");
@@ -252,15 +256,20 @@ public partial class SubscriptionService
     }
 
     /// <summary>The agreed amount of an invoice in major units of the subscription's currency (null when unknown)</summary>
-    private static decimal? AgreedAmount(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice) =>
-        AgreedCents(subscription, snapshot, invoice) is long cents ? StripeAmounts.FromMinorUnits(cents, subscription.Currency) : null;
+    private static decimal? AgreedAmount(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice,
+        bool extension) =>
+        AgreedCents(subscription, snapshot, invoice, extension) is long cents ? StripeAmounts.FromMinorUnits(cents, subscription.Currency) : null;
 
     /// <summary>
     /// What an invoice must charge: the recurring price, except the first invoice of a "first payment only" code,
-    /// which the checkout's one-time coupon lowers to the discounted price (checkout metadata).
+    /// which the checkout's one-time coupon lowers to the discounted price (checkout metadata), and the first invoice of an
+    /// extension term, which charges the price the extension was booked at.
     /// </summary>
-    private static long? AgreedCents(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice)
+    private static long? AgreedCents(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice,
+        bool extension)
     {
+        if (extension)
+            return subscription.ExtensionPriceCents;
         if (invoice.NormalizedBillingReason == "initial"
             && long.TryParse(snapshot.Metadata.GetValueOrDefault(StripeMetadata.FirstPriceCents), out var first)
             && first < subscription.PriceCents)
@@ -272,11 +281,12 @@ public partial class SubscriptionService
     /// Direct invoices must charge exactly the price this service set. Managed Payments may charge in the
     /// buyer's local currency (Adaptive Pricing), so only the plan is verified for those.
     /// </summary>
-    private static string StripeAmountRejection(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice)
+    private static string StripeAmountRejection(UserSubscription subscription, StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice,
+        bool extension)
     {
         if (subscription.ManagedPayments)
             return null;
-        var agreed = AgreedCents(subscription, snapshot, invoice);
+        var agreed = AgreedCents(subscription, snapshot, invoice, extension);
         if (agreed == null || invoice.Total != agreed)
             return $"total {invoice.Total} differs from the agreed price {agreed}";
         if (!string.Equals(invoice.Currency, subscription.Currency, StringComparison.OrdinalIgnoreCase))
@@ -326,7 +336,7 @@ public partial class SubscriptionService
     {
         // A Managed Payments proration may be paid in a local currency: its EUR amount is unknown.
         if (await context.SubscriptionPlanChanges.AnyAsync(c => c.InvoiceId == invoice.Id))
-            return StripeOutcome(subscription, snapshot, invoice, null);
+            return await WithStripeDeclaration(StripeOutcome(subscription, snapshot, invoice, null), snapshot, invoice, false, false);
         if (snapshot.HasPendingUpdate)
             throw new ApiException($"Stripe has not applied the upgrade paid by {invoice.Id} yet; retry later");
         var target = await PlanBySlug(StripePlans.SlugOf(snapshot));
@@ -338,7 +348,7 @@ public partial class SubscriptionService
             await ApplyPlanLocally(subscription, target, invoice.Id, invoice.Created, s => ApplyStripePrice(s, snapshot));
             await TryScheduleStripeRenewal(subscription, snapshot); // the paid upgrade continues as the 4-week plan of its tier
         }
-        return StripeOutcome(subscription, snapshot, invoice, null);
+        return await WithStripeDeclaration(StripeOutcome(subscription, snapshot, invoice, null), snapshot, invoice, false, false);
     }
 
     /// <summary>
@@ -436,6 +446,9 @@ public partial class SubscriptionService
         };
         if (snapshot.CurrentPeriodEnd.HasValue)
             subscription.RenewsAt = snapshot.CurrentPeriodEnd.Value;
+        // A cancelled subscription has no extension (one cancelled elsewhere must not come back with a resume)
+        if (subscription.EndsAt != null && HasPendingExtension(subscription, DateTime.UtcNow))
+            (subscription.ExtensionStartsAt, subscription.ExtensionPriceCents) = (null, null);
         subscription.ExternalCustomerId = snapshot.CustomerId ?? subscription.ExternalCustomerId;
         subscription.ManagedPayments |= snapshot.ManagedPayments;
         subscription.ProviderPlanId = snapshot.PriceId ?? subscription.ProviderPlanId;
@@ -496,6 +509,7 @@ public partial class SubscriptionService
 
         public bool OffersPlan(TopUpProduct plan) => IsSubscriptionPlan(plan);
 
+        // Releasing the renewal schedule also drops an extension booked in it
         public async Task CancelAtPeriodEnd(UserSubscription subscription)
         {
             if (MayHaveRenewalSchedule(subscription))

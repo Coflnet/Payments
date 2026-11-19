@@ -1221,6 +1221,31 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
         Assert.That(created, Is.Null);
     }
 
+    /// <summary>
+    /// Regression (review): a PayPal extension request (a new subscription starting when the buyer's current term ends) of the
+    /// same plan and price was handed out as the open checkout of a new subscription, and counted toward the checkout limits
+    /// </summary>
+    [Test]
+    public async Task PayPalExtensionRequestsAreNoOpenCheckouts()
+    {
+        var plan = await db.TopUpProducts.SingleAsync(p => p.Slug == "l_premium");
+        var buyer = await users.GetOrCreate("buyer");
+        for (var i = 0; i < MaxOpened; i++)
+            db.PaymentRequests.Add(new PaymentRequest
+            {
+                User = buyer, ProductId = plan, Provider = "paypal", SessionId = $"I-EXT{i}", Amount = 11.53m, Country = "DE",
+                State = PaymentRequest.Status.CREATED, CreatedAt = DateTime.UtcNow, ExtendsSubscriptionId = "I-OLD",
+                CreateOnIp = System.Net.IPAddress.Parse("203.0.113.7")
+            });
+        await db.SaveChangesAsync();
+
+        var response = await Controller("DE").PayPalSubscribe("buyer", "l_premium", Options("DE"));
+
+        Assert.That((response.Id, response.DirectLink), Is.EqualTo(("I-SUB", "https://www.paypal.com/approve")));
+        paypal.Verify(p => p.Get(It.IsAny<string>()), Times.Never, "no extension is reused as the checkout");
+        Assert.That(await db.PaymentRequests.CountAsync(r => r.ExtendsSubscriptionId == null && r.SessionId == "I-SUB"), Is.EqualTo(1));
+    }
+
     private async Task SeedAttempts(int count, TimeSpan age, string sessionId, string ip = "203.0.113.7")
     {
         var plan = await db.TopUpProducts.SingleAsync(p => p.Slug == "l_premium");

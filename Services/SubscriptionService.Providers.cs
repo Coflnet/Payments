@@ -30,6 +30,8 @@ public partial class SubscriptionService
     {
         var subscription = await OwnedSubscription(userId, subscriptionId)
             ?? throw new ApiException("Subscription not found");
+        // The extension first: a failure leaves the subscription itself uncancelled, so the buyer can simply retry
+        await CancelBookedExtension(subscription);
         await ProviderFor(subscription).CancelAtPeriodEnd(subscription);
         await context.SaveChangesAsync();
         return true;

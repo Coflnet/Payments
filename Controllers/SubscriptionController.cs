@@ -37,6 +37,17 @@ public class SubscriptionController : ControllerBase
     public Task<List<SubscriptionPlan>> GetPlans(string userId, string subscriptionId) =>
         subscriptionService.GetAvailablePlans(userId, subscriptionId);
 
+    /// <summary>
+    /// Opt in to one more term of the same length (52 → another 52 weeks, 13 → another 13) before the current 13 or 52 week
+    /// term ends, instead of continuing every 4 weeks. Stripe books it at once; PayPal returns the link the payer approves it at.
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID</param>
+    /// <param name="request">The early performance declaration of the extension term and the PayPal return/cancel urls</param>
+    [HttpPost("u/{userId}/{subscriptionId}/extend")]
+    public Task<SubscriptionExtensionResult> ExtendLongTerm(string userId, string subscriptionId, [FromBody] SubscriptionExtensionRequest request) =>
+        subscriptionService.ExtendLongTerm(userId, subscriptionId, request);
+
     [HttpPut("{subscriptionId}/switch")]
     public Task<SubscriptionChangeResult> ChangePlan(string userId, string subscriptionId, string targetProductSlug) =>
         subscriptionService.ChangePlan(userId, subscriptionId, targetProductSlug);

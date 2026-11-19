@@ -105,8 +105,18 @@ public record StripePriceChangeRequest(long UnitAmount, string Currency, int Int
 /// <param name="PlanName">Product name shown to the buyer</param>
 /// <param name="TermEnd">End of the paid first term (the subscription's current period end), where the renewal phase starts</param>
 /// <param name="TaxRateId">Direct sales with VAT: the inclusive VAT rate shown on the receipts, as on the checkout</param>
+/// <param name="Extension">The term of the same length the buyer opted in to before the 4-week renewal, null without one</param>
 public record StripeRenewalRequest(long UnitAmount, string Currency, string TaxBehavior, string PlanSlug, string PlanName,
-    DateTime TermEnd, string TaxRateId = null);
+    DateTime TermEnd, string TaxRateId = null, StripeExtensionTerm Extension = null);
+
+/// <summary>
+/// One more term of the long plan, billed from <see cref="StripeRenewalRequest.TermEnd"/> before the 4-week renewal
+/// </summary>
+/// <param name="UnitAmount">Cents of the term: gross incl. VAT for direct subscriptions, net for Managed Payments</param>
+/// <param name="PlanSlug">The 13 or 52 week plan; its Stripe product identifies it once billed</param>
+/// <param name="PlanName">Product name shown to the buyer</param>
+/// <param name="Weeks">Length of the term (13 or 52)</param>
+public record StripeExtensionTerm(long UnitAmount, string PlanSlug, string PlanName, int Weeks);
 
 /// <summary>
 /// Which plan a Stripe subscription bills. Plan switches move the item to a Stripe product with a deterministic id

@@ -350,6 +350,8 @@ namespace Payments.Controllers
             var existingRequests = await db.PaymentRequests
                 .Where(r => (r.User.Id == user.Id || r.CreateOnIp == userIp) && r.CreatedAt > minTime)
                 .Where(r => r.State >= PaymentRequest.Status.CREATED && r.State < PaymentRequest.Status.PAID)
+                // a PayPal extension of an existing subscription is no checkout: never reused for one, not counted
+                .Where(r => r.ExtendsSubscriptionId == null)
                 // only opened checkouts count: a request whose provider session was never created (the provider failed) is no attempt to pay
                 .Where(r => r.SessionId != null)
                 .Include(r => r.User).Include(r => r.ProductId)

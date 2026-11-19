@@ -87,6 +87,67 @@ public class UserSubscription
     [MaxLength(64)]
     public string RenewalScheduleId { get; set; }
     /// <summary>
+    /// The term end (<see cref="RenewsAt"/>) the renewal reminder was published for; one reminder per term end
+    /// </summary>
+    public DateTime? RenewalReminderSentFor { get; set; }
+    /// <summary>
+    /// The term end at which the buyer's opt-in to one more term of the same length (instead of continuing every 4 weeks) starts.
+    /// Booked for the current term while it equals <see cref="RenewsAt"/>; after that term was paid it is history.
+    /// </summary>
+    public DateTime? ExtensionStartsAt { get; set; }
+    /// <summary>
+    /// What the booked extension term charges, like <see cref="PriceCents"/> (direct: gross with the VAT of the checkout country,
+    /// Managed Payments: net). Creator code and "forever" discount code applied, "once" codes not.
+    /// </summary>
+    public long? ExtensionPriceCents { get; set; }
+    /// <summary>
+    /// PayPal: the new PayPal subscription that continues this one for another term (pending the buyer's approval until it is
+    /// linked, see <see cref="PreviousSubscriptionId"/>)
+    /// </summary>
+    [MaxLength(64)]
+    public string ExtensionSubscriptionId { get; set; }
+    /// <summary>
+    /// PayPal: the subscription this one continues for another term (set once it was approved and the previous one cancelled)
+    /// </summary>
+    [MaxLength(64)]
+    public string PreviousSubscriptionId { get; set; }
+    /// <summary>
+    /// PayPal: when this subscription, approved as the extension of another one, was refused (the other one was cancelled, ended
+    /// or converted before the approval). Its payments are never granted; they are marked for a manual refund.
+    /// </summary>
+    public DateTime? ContinuationRefusedAt { get; set; }
+    /// <summary>
+    /// End of the current paid term (response only)
+    /// </summary>
+    [NotMapped]
+    public DateTime CurrentTermEndsAt { get; set; }
+    /// <summary>
+    /// Whether the buyer can opt in to one more term of the same length before this 13 or 52 week term ends (response only)
+    /// </summary>
+    [NotMapped]
+    public bool CanExtendLongTerm { get; set; }
+    /// <summary>
+    /// What one more term of the same length costs in <see cref="Currency"/> (the booked price once booked; 0 when it can not
+    /// be extended), with <see cref="ExtensionTaxTreatment"/> (response only)
+    /// </summary>
+    [NotMapped]
+    public decimal ExtensionPrice { get; set; }
+    /// <summary>
+    /// How tax relates to <see cref="ExtensionPrice"/> and <see cref="RenewalPrice"/>: "included", "net" or "none" (response only)
+    /// </summary>
+    [NotMapped]
+    public string ExtensionTaxTreatment { get; set; }
+    /// <summary>
+    /// What each 4-week cycle charges after the current term in <see cref="Currency"/> (response only)
+    /// </summary>
+    [NotMapped]
+    public decimal RenewalPrice { get; set; }
+    /// <summary>
+    /// The end of the booked extension term, null when none is booked (response only)
+    /// </summary>
+    [NotMapped]
+    public DateTime? ExtendedUntil { get; set; }
+    /// <summary>
     /// Whether a cancelled subscription can be resumed with its provider (response only)
     /// </summary>
     [NotMapped]

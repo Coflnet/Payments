@@ -287,6 +287,50 @@ public class SubscriptionRenewalTests
         Assert.That(body, Does.Not.Contain("[coupon]").And.Not.Contain("[promotion_code]"));
     }
 
+    /// <summary>
+    /// Owner decision: one more year the buyer opted in to is a phase of the year's plan product at the extension price for one
+    /// term, between the paid year and the 4-week phase; the codes are in its price, so no coupon is sent
+    /// </summary>
+    [Test]
+    public async Task ExtensionPhaseBillsOneMoreYearBeforeTheFourWeekPhase()
+    {
+        var request = Request() with { Extension = new StripeExtensionTerm(5338, "l_premium-year", "52 weeks premium", 52) };
+        var body = await SentToStripe(StripeRenewalSchedule.Update(CurrentPhase(), request, "coflnet_plan_l_premium", "coflnet_plan_l_premium-year"));
+
+        Assert.That(body, Does.Contain($"phases[0][end_date]={new DateTimeOffset(TermEnd).ToUnixTimeSeconds()}"));
+        Assert.That(body, Does.Contain("phases[1][items][0][price_data][product]=coflnet_plan_l_premium-year"));
+        Assert.That(body, Does.Contain("phases[1][items][0][price_data][unit_amount]=5338"));
+        Assert.That(body, Does.Contain("phases[1][items][0][price_data][recurring][interval_count]=52"));
+        Assert.That(body, Does.Contain("phases[1][items][0][tax_rates][0]=txr_de"));
+        Assert.That(body, Does.Contain($"phases[1][end_date]={new DateTimeOffset(TermEnd.AddDays(364)).ToUnixTimeSeconds()}"),
+            "an explicit end: the term end plus 52 weeks, as the subscription stores it");
+        Assert.That(body, Does.Not.Contain("phases[1][duration]"));
+        Assert.That(body, Does.Contain("phases[1][billing_cycle_anchor]=phase_start"));
+        Assert.That(body, Does.Contain("phases[1][proration_behavior]=none"));
+        Assert.That(body, Does.Contain("phases[1][metadata][priceCents]=5338"));
+        Assert.That(body, Does.Contain("phases[2][items][0][price_data][product]=coflnet_plan_l_premium"));
+        Assert.That(body, Does.Contain("phases[2][items][0][price_data][unit_amount]=865"));
+        Assert.That(body, Does.Contain("phases[2][items][0][price_data][recurring][interval_count]=4"));
+        Assert.That(body, Does.Contain("phases[2][duration][interval_count]=4"));
+        Assert.That(body, Does.Contain("metadata[coflnet_renewal]=l_premium:865+l_premium-year:5338"));
+        Assert.That(body, Does.Not.Contain("phases[3]"));
+        Assert.That(body, Does.Not.Contain("discounts").And.Not.Contain("coupon"));
+    }
+
+    [Test]
+    public async Task ExtensionUpdatesTheRenewalScheduleAlreadyAttached()
+    {
+        var schedule = FreshSchedule();
+        schedule.Metadata[StripeRenewalSchedule.MarkerKey] = "l_premium:865";
+        schedule.Phases.Add(new Stripe.SubscriptionSchedulePhase { StartDate = TermEnd, EndDate = TermEnd.AddDays(28) });
+        var stripe = new FakeScheduleCalls(schedule);
+        var request = Request() with { Extension = new StripeExtensionTerm(11863, "l_premium-year", "52 weeks premium", 52) };
+
+        Assert.That(StripeRenewalSchedule.IsDoneFor(schedule, request), Is.False, "the renewal alone is not the extension");
+        Assert.That(await StripeRenewalSchedule.Schedule(Subscription("sub_sched_1"), request, stripe, TermStart.AddDays(1)), Is.EqualTo("sub_sched_1"));
+        Assert.That((stripe.Created, stripe.Updates, stripe.Products), Is.EqualTo((0, 1, new[] { "l_premium", "l_premium-year" })));
+    }
+
     private static Stripe.SubscriptionSchedule FreshSchedule() => new()
         { Id = "sub_sched_1", Status = "active", Metadata = new(), Phases = [CurrentPhase()] };
 
@@ -353,8 +397,13 @@ public class SubscriptionRenewalTests
             return Task.CompletedTask;
         }
 
-        public Task<string> EnsurePlanProduct(string planSlug, string planName) =>
-            ProductFails ? throw new Stripe.StripeException("product failed") : Task.FromResult("coflnet_plan_" + planSlug);
+        public List<string> Products { get; } = [];
+
+        public Task<string> EnsurePlanProduct(string planSlug, string planName)
+        {
+            Products.Add(planSlug);
+            return ProductFails ? throw new Stripe.StripeException("product failed") : Task.FromResult("coflnet_plan_" + planSlug);
+        }
     }
 
     [Test]

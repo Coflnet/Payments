@@ -55,6 +55,29 @@ public class PaymentEvent
     public decimal? TaxAmount { get; set; }
     /// <summary>How tax relates to <see cref="SubscriptionRenewalAmount"/>, one of <see cref="PaymentTaxTreatment"/>; null without that amount</summary>
     public string RenewalTaxTreatment { get; set; }
+    /// <summary>
+    /// Renewal reminders (<see cref="PaymentConfirmationTypes.SubscriptionRenewalReminder"/>): the end of the current 13 or 52 week
+    /// term (UTC), after which the subscription continues every <see cref="SubscriptionRenewalWeeks"/> weeks
+    /// </summary>
+    public DateTime? SubscriptionTermEndsAt { get; set; }
+    /// <summary>
+    /// Renewal reminders: what one more term of the same length costs in <see cref="Currency"/> if the buyer opts in, with the tax
+    /// treatment of <see cref="RenewalTaxTreatment"/>; null when the subscription can not be extended
+    /// </summary>
+    public decimal? SubscriptionExtensionAmount { get; set; }
+    /// <summary>Direct subscription events: the provider's subscription id (the website links to the subscription with it)</summary>
+    public string SubscriptionExternalId { get; set; }
+    /// <summary>Subscription payments: true on the first payment of a term the buyer opted in to extend; null otherwise</summary>
+    public bool? SubscriptionIsExtension { get; set; }
+}
+
+/// <summary>Values of <see cref="PaymentEvent.ConfirmationType"/> this service sets for subscriptions</summary>
+public static class PaymentConfirmationTypes
+{
+    /// <summary>
+    /// Not a payment: a 13 or 52 week term ends within 35 days and then continues every 4 weeks (<see cref="PaymentEvent.PayedAmount"/> 0)
+    /// </summary>
+    public const string SubscriptionRenewalReminder = "subscription_renewal_reminder";
 }
 
 /// <summary>How tax relates to an amount of a <see cref="PaymentEvent"/> (purchase confirmations state it next to the amount)</summary>

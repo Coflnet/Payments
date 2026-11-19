@@ -9,7 +9,8 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// <summary>
 /// The subscription schedule that moves a 13 or 52 week Stripe subscription to its 4-week renewal price at the end of
 /// the paid term. Two phases: the current one, kept as Stripe derived it from the subscription but ending with the term,
-/// and the renewal phase (4-week price, new billing cycle from its start, no prorations). The schedule then releases the
+/// and the renewal phase (4-week price, new billing cycle from its start, no prorations). When the buyer opted in to one more
+/// term of the same length, an extension phase (the long plan at the extension price, one term) comes between them. The schedule then releases the
 /// subscription (end_behavior release), which keeps billing the 4-week price until cancelled.
 /// Managed Payments subscriptions support schedules since February 2026 (Managed Payments changelog).
 /// </summary>
@@ -46,7 +47,9 @@ public static class StripeRenewalSchedule
         var phase = CurrentPhase(schedule, now)
             ?? throw new ApiException($"Stripe schedule {schedule.Id} of {current.Id} has no current phase");
         var product = await stripe.EnsurePlanProduct(request.PlanSlug, request.PlanName);
-        return (await stripe.Update(schedule.Id, Update(phase, request, product))).Id;
+        var extensionProduct = request.Extension == null ? null
+            : await stripe.EnsurePlanProduct(request.Extension.PlanSlug, request.Extension.PlanName);
+        return (await stripe.Update(schedule.Id, Update(phase, request, product, extensionProduct))).Id;
     }
 
     /// <summary>A failed release leaves the one phase schedule; cancelling releases it (<c>ReleaseStripeRenewal</c>)</summary>
@@ -64,7 +67,9 @@ public static class StripeRenewalSchedule
     /// <summary>Schedule metadata naming the renewal (plan and cents) a schedule was made for</summary>
     public const string MarkerKey = "coflnet_renewal";
 
-    public static string Marker(StripeRenewalRequest request) => $"{request.PlanSlug}:{request.UnitAmount}";
+    public static string Marker(StripeRenewalRequest request) => request.Extension == null
+        ? $"{request.PlanSlug}:{request.UnitAmount}"
+        : $"{request.PlanSlug}:{request.UnitAmount}+{request.Extension.PlanSlug}:{request.Extension.UnitAmount}";
 
     /// <summary>True when the schedule already moves the subscription to exactly this renewal</summary>
     public static bool IsDoneFor(SubscriptionSchedule schedule, StripeRenewalRequest request) =>
@@ -84,10 +89,16 @@ public static class StripeRenewalSchedule
     public static SubscriptionSchedulePhase CurrentPhase(SubscriptionSchedule schedule, DateTime now) =>
         schedule.Phases?.Where(p => p.StartDate <= now).OrderBy(p => p.StartDate).LastOrDefault();
 
-    /// <summary>The update that replaces the schedule's phases with the current one and the renewal phase</summary>
-    public static SubscriptionScheduleUpdateOptions Update(SubscriptionSchedulePhase current, StripeRenewalRequest request, string productId) => new()
+    /// <summary>
+    /// The update that replaces the schedule's phases with the current one, the extension term the buyer opted in to (if any)
+    /// and the renewal phase. <paramref name="extensionProductId"/> is the plan product of the extension (required with one).
+    /// </summary>
+    public static SubscriptionScheduleUpdateOptions Update(SubscriptionSchedulePhase current, StripeRenewalRequest request, string productId,
+        string extensionProductId = null) => new()
     {
-        Phases = [KeepCurrent(current, request.TermEnd), Renewal(request, productId)],
+        Phases = request.Extension == null
+            ? [KeepCurrent(current, request.TermEnd), Renewal(request, productId)]
+            : [KeepCurrent(current, request.TermEnd), Extension(request, extensionProductId), Renewal(request, productId)],
         EndBehavior = "release",
         ProrationBehavior = "none",
         Metadata = new Dictionary<string, string> { [MarkerKey] = Marker(request) }
@@ -127,7 +138,7 @@ public static class StripeRenewalSchedule
         return new() { Coupon = discount.CouponId };
     }
 
-    private static SubscriptionSchedulePhaseItemOptions RenewalItem(StripeRenewalRequest request, string productId)
+    private static SubscriptionSchedulePhaseItemOptions PhaseItem(StripeRenewalRequest request, string productId, long unitAmount, int weeks)
     {
         var item = new SubscriptionSchedulePhaseItemOptions
         {
@@ -136,10 +147,9 @@ public static class StripeRenewalSchedule
             {
                 Product = productId,
                 Currency = request.Currency,
-                UnitAmount = request.UnitAmount,
+                UnitAmount = unitAmount,
                 TaxBehavior = request.TaxBehavior,
-                Recurring = new SubscriptionSchedulePhaseItemPriceDataRecurringOptions
-                    { Interval = "week", IntervalCount = SubscriptionRenewal.RenewalWeeks }
+                Recurring = new SubscriptionSchedulePhaseItemPriceDataRecurringOptions { Interval = "week", IntervalCount = weeks }
             }
         };
         if (request.TaxRateId != null)
@@ -147,17 +157,39 @@ public static class StripeRenewalSchedule
         return item;
     }
 
-    private static SubscriptionSchedulePhaseOptions Renewal(StripeRenewalRequest request, string productId) => new()
+    private static SubscriptionSchedulePhaseOptions Renewal(StripeRenewalRequest request, string productId)
     {
-        Items = [RenewalItem(request, productId)],
-        // The 4-week cycle starts when the paid term ends; nothing is prorated or charged before
+        var phase = BilledPhase(PhaseItem(request, productId, request.UnitAmount, SubscriptionRenewal.RenewalWeeks), request.UnitAmount);
+        phase.Duration = new SubscriptionSchedulePhaseDurationOptions { Interval = "week", IntervalCount = SubscriptionRenewal.RenewalWeeks };
+        return phase;
+    }
+
+    /// <summary>
+    /// One term of the plan's own length at the extension price, ending at an explicit date (the term end plus the plan's weeks,
+    /// what the subscription stores). Creator and "forever" discount codes are part of the unit amount (as at checkout), so no
+    /// coupon applies; a "once" code never does.
+    /// </summary>
+    private static SubscriptionSchedulePhaseOptions Extension(StripeRenewalRequest request, string productId)
+    {
+        var extension = request.Extension;
+        var phase = BilledPhase(PhaseItem(request, productId, extension.UnitAmount, extension.Weeks), extension.UnitAmount);
+        phase.EndDate = ExtensionEnd(request);
+        return phase;
+    }
+
+    /// <summary>Where the extension phase ends and the 4-week phase starts</summary>
+    public static DateTime ExtensionEnd(StripeRenewalRequest request) => request.TermEnd.AddDays(7 * request.Extension.Weeks);
+
+    private static SubscriptionSchedulePhaseOptions BilledPhase(SubscriptionSchedulePhaseItemOptions item, long unitAmount) => new()
+    {
+        Items = [item],
+        // The cycle starts when the previous term ends; nothing is prorated or charged before
         BillingCycleAnchor = "phase_start",
         ProrationBehavior = "none",
-        Duration = new SubscriptionSchedulePhaseDurationOptions { Interval = "week", IntervalCount = SubscriptionRenewal.RenewalWeeks },
         // The subscription metadata then names the price every later invoice must charge
         Metadata = new Dictionary<string, string>
         {
-            [SubscriptionService.StripeMetadata.PriceCents] = request.UnitAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            [SubscriptionService.StripeMetadata.PriceCents] = unitAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)
         }
     };
 }

@@ -130,6 +130,7 @@ namespace Coflnet.Payments
             services.AddHostedService<CoinGateReconciliationService>();
             services.AddHostedService<PaymentConfirmationOutboxPublisher>();
             services.AddHostedService<SubscriptionRenewalConversionService>();
+            services.AddHostedService<SubscriptionRenewalReminderService>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))
             {

@@ -89,12 +89,16 @@ public abstract class DirectSubscriptionTestBase
         OwnershipSeconds = FourWeeks, Type = Product.ProductType.SERVICE
     };
 
+    /// <summary>"Renew for another term" is on in tests unless a test passes its own <c>config</c></summary>
+    protected static readonly IConfiguration ExtensionsOn = new ConfigurationBuilder()
+        .AddInMemoryCollection(new Dictionary<string, string> { ["SUBSCRIPTIONS:EXTENSIONS_ENABLED"] = "true" }).Build();
+
     protected SubscriptionService Service(IStripeSubscriptionGateway stripe = null, IPayPalSubscriptionApi paypal = null, PayPalPlanCatalog paypalPlans = null,
-        Microsoft.Extensions.Logging.ILogger<SubscriptionService> logger = null) =>
+        Microsoft.Extensions.Logging.ILogger<SubscriptionService> logger = null, IConfiguration config = null) =>
         new(logger ?? NullLogger<SubscriptionService>.Instance, transactions, users, products, db,
             new LemonSqueezyService(new ConfigurationBuilder().Build(), NullLogger<LemonSqueezyService>.Instance, db,
                 new VariantCacheService(NullLogger<VariantCacheService>.Instance)),
-            stripe, paypal, paypalPlans, Tax());
+            stripe, paypal, paypalPlans, Tax(), config: config ?? ExtensionsOn);
 
     protected CallbackController Callback(SubscriptionService service, IDictionary<string, string> settings = null,
         PayPalHttpClient paypalClient = null)

@@ -24,8 +24,9 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// <param name="RecurringPrice">Price of every following cycle (the REGULAR cycle; for 13 and 52 week plans the 4-week renewal
 /// price); equals <paramref name="Price"/> unless a "first payment only" code applies or the plan continues every 4 weeks.
 /// Null means the same as <paramref name="Price"/>.</param>
+/// <param name="StartTime">When the first cycle starts and is charged (an extension starts when the current term ends); null: now</param>
 public record PayPalSubscriptionRequest(string PlanId, string CustomId, decimal Price, string Currency,
-    string ReturnUrl, string CancelUrl, string Email, decimal? RecurringPrice = null);
+    string ReturnUrl, string CancelUrl, string Email, decimal? RecurringPrice = null, DateTime? StartTime = null);
 
 /// <summary>
 /// A billing plan to create: a one cycle TRIAL of <paramref name="Weeks"/> weeks at the list price, then an infinite REGULAR
@@ -169,6 +170,8 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
         };
         if (!string.IsNullOrWhiteSpace(request.Email))
             body["subscriber"] = new JObject { ["email_address"] = request.Email };
+        if (request.StartTime is DateTime start)
+            body["start_time"] = start.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
         return body;
     }
 

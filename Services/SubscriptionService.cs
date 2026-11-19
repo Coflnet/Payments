@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -23,6 +24,8 @@ public partial class SubscriptionService
     private readonly IPayPalSubscriptionApi paypal;
     private readonly PayPalPlanCatalog paypalPlans;
     private readonly SubscriptionRenewalPlans renewalPlans;
+    private readonly TimeSpan extensionBookingWindow;
+    private readonly bool extensionsEnabled;
 
     /// <summary>
     /// Represents a service for managing subscriptions.
@@ -38,6 +41,8 @@ public partial class SubscriptionService
     /// <param name="paypalPlans">PayPal plans created per product; defaults to one without a config override</param>
     /// <param name="tax">VAT rates for direct sales; without it direct subscriptions can not be priced (plan switches fail)</param>
     /// <param name="renewalPlans">The 4-week plans 13 and 52 week subscriptions continue as; defaults to one without a config override</param>
+    /// <param name="config">SUBSCRIPTIONS:EXTENSIONS_ENABLED: whether one more 13/52 week term can be booked (default false);
+    /// SUBSCRIPTIONS:EXTENSION_BOOKING_WINDOW_DAYS: how long before the term ends it can be booked (default 60)</param>
     public SubscriptionService(
         ILogger<SubscriptionService> logger,
         TransactionService transactionService,
@@ -49,8 +54,12 @@ public partial class SubscriptionService
         IPayPalSubscriptionApi paypal = null,
         PayPalPlanCatalog paypalPlans = null,
         SubscriptionTax tax = null,
-        SubscriptionRenewalPlans renewalPlans = null)
+        SubscriptionRenewalPlans renewalPlans = null,
+        Microsoft.Extensions.Configuration.IConfiguration config = null)
     {
+        extensionsEnabled = string.Equals(config?["SUBSCRIPTIONS:EXTENSIONS_ENABLED"], "true", StringComparison.OrdinalIgnoreCase);
+        extensionBookingWindow = TimeSpan.FromDays(int.TryParse(config?["SUBSCRIPTIONS:EXTENSION_BOOKING_WINDOW_DAYS"], out var days) && days > 0
+            ? days : DefaultExtensionBookingWindowDays);
         this.tax = tax;
         this.renewalPlans = renewalPlans ?? new SubscriptionRenewalPlans(context);
         this.paypalPlans = paypalPlans ?? (paypal == null ? null : new PayPalPlanCatalog(context, paypal, null));
@@ -81,7 +90,10 @@ public partial class SubscriptionService
             await context.SaveChangesAsync();
         }
         foreach (var subscription in all)
+        {
             DescribeCapabilities(subscription);
+            await DescribeTerms(subscription);
+        }
         return all.OrderByDescending(s => s.UpdatedAt);
     }
 
@@ -527,31 +539,56 @@ public partial class SubscriptionService
             context.RefundedSubscriptionInvoices.Add(new RefundedSubscriptionInvoice
                 { InvoiceId = invoiceId, SubscriptionId = subscription.ExternalId, BillingReason = reason });
             if (reason == "updated")
-            {
-                var change = await context.SubscriptionPlanChanges.Include(c => c.PreviousProduct).Include(c => c.Product)
-                    .SingleOrDefaultAsync(c => c.InvoiceId == invoiceId && c.SubscriptionId == subscription.ExternalId);
-                if (change != null)
-                {
-                    change.Refunded = true;
-                    var changes = await context.SubscriptionPlanChanges.Include(c => c.PreviousProduct).Include(c => c.Product)
-                        .Where(c => c.SubscriptionId == subscription.ExternalId && c.PeriodEnd == change.PeriodEnd)
-                        .OrderBy(c => c.ChangedAt).ThenBy(c => c.Id).ToListAsync();
-                    var expiry = await AccessExpiry(subscription);
-                    // A refund for an earlier period must not undo a later paid renewal.
-                    if (expiry <= change.PeriodEnd.AddSeconds(5))
-                        await SetAccessProduct(subscription, changes.LastOrDefault(c => !c.Refunded)?.Product ?? changes[0].PreviousProduct);
-                }
-            }
+                await RevertUpdatedInvoice(subscription, invoiceId);
             else
-            {
-                var reference = SubscriptionProviders.GrantReference(subscription.ProviderSlug, invoiceId);
-                if (!await context.FiniteTransactions.AnyAsync(t => t.User.Id == subscription.User.Id && t.Reference == reference))
-                    reference = subscription.ExternalId + createdAt.Date.ToString("yyyy-MM-dd");
-                await RevertPurchase(subscription.User.ExternalId, reference);
-                await RevertPurchase(subscription.User.ExternalId, reference + "-topup", adjustTime: false);
-            }
+                await RevertPaidPeriod(subscription, invoiceId, createdAt);
             await context.SaveChangesAsync();
         });
+    }
+
+    /// <summary>
+    /// An "updated" invoice is a proration (its plan change is undone) or, without one, a period it paid for (the first 4-week
+    /// invoice after the renewal schedule, the first invoice of an extension term), whose grant is reverted
+    /// </summary>
+    private async Task RevertUpdatedInvoice(UserSubscription subscription, string invoiceId)
+    {
+        if (await RevertPlanChange(subscription, invoiceId))
+            return;
+        var reference = SubscriptionProviders.GrantReference(subscription.ProviderSlug, invoiceId);
+        if (!await IsPeriodGrant(subscription, reference))
+            return;
+        await RevertPurchase(subscription.User.ExternalId, reference);
+        await RevertPurchase(subscription.User.ExternalId, reference + "-topup", adjustTime: false);
+    }
+
+    private Task<bool> IsPeriodGrant(UserSubscription subscription, string reference) => context.FiniteTransactions.AnyAsync(t =>
+        t.User.Id == subscription.User.Id && t.Reference == reference && t.SubscriptionId == subscription.ExternalId && t.Amount < 0);
+
+    /// <summary>Restores the tier before the upgrade the refunded proration paid for; false when the invoice paid no plan change</summary>
+    private async Task<bool> RevertPlanChange(UserSubscription subscription, string invoiceId)
+    {
+        var change = await context.SubscriptionPlanChanges.Include(c => c.PreviousProduct).Include(c => c.Product)
+            .SingleOrDefaultAsync(c => c.InvoiceId == invoiceId && c.SubscriptionId == subscription.ExternalId);
+        if (change == null)
+            return false;
+        change.Refunded = true;
+        var changes = await context.SubscriptionPlanChanges.Include(c => c.PreviousProduct).Include(c => c.Product)
+            .Where(c => c.SubscriptionId == subscription.ExternalId && c.PeriodEnd == change.PeriodEnd)
+            .OrderBy(c => c.ChangedAt).ThenBy(c => c.Id).ToListAsync();
+        var expiry = await AccessExpiry(subscription);
+        // A refund for an earlier period must not undo a later paid renewal.
+        if (expiry <= change.PeriodEnd.AddSeconds(5))
+            await SetAccessProduct(subscription, changes.LastOrDefault(c => !c.Refunded)?.Product ?? changes[0].PreviousProduct);
+        return true;
+    }
+
+    private async Task RevertPaidPeriod(UserSubscription subscription, string invoiceId, DateTime createdAt)
+    {
+        var reference = SubscriptionProviders.GrantReference(subscription.ProviderSlug, invoiceId);
+        if (!await context.FiniteTransactions.AnyAsync(t => t.User.Id == subscription.User.Id && t.Reference == reference))
+            reference = subscription.ExternalId + createdAt.Date.ToString("yyyy-MM-dd");
+        await RevertPurchase(subscription.User.ExternalId, reference);
+        await RevertPurchase(subscription.User.ExternalId, reference + "-topup", adjustTime: false);
     }
 
     private async Task RevertPurchase(string userId, string reference, bool adjustTime = true)

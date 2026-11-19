@@ -661,6 +661,10 @@ namespace Payments.Migrations
                     b.Property<DateTime?>("ExpiresAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("ExtendsSubscriptionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("Locale")
                         .HasMaxLength(5)
                         .HasColumnType("character varying(5)");
@@ -1171,6 +1175,9 @@ namespace Payments.Migrations
                         .HasMaxLength(3)
                         .HasColumnType("character varying(3)");
 
+                    b.Property<DateTime?>("ContinuationRefusedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1189,6 +1196,16 @@ namespace Payments.Migrations
                     b.Property<DateTime?>("EndsAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long?>("ExtensionPriceCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("ExtensionStartsAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExtensionSubscriptionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("ExternalCustomerId")
                         .HasColumnType("text");
 
@@ -1200,6 +1217,10 @@ namespace Payments.Migrations
 
                     b.Property<string>("PaymentAmount")
                         .HasColumnType("text");
+
+                    b.Property<string>("PreviousSubscriptionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<long?>("PriceCents")
                         .HasColumnType("bigint");
@@ -1222,6 +1243,9 @@ namespace Payments.Migrations
 
                     b.Property<int?>("RenewalProductId")
                         .HasColumnType("integer");
+
+                    b.Property<DateTime?>("RenewalReminderSentFor")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("RenewalScheduleId")
                         .HasMaxLength(64)
@@ -1246,6 +1270,9 @@ namespace Payments.Migrations
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ExtensionSubscriptionId")
+                        .IsUnique();
 
                     b.HasIndex("ExternalId");
 

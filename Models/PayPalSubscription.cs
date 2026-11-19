@@ -14,6 +14,8 @@ public class PayPalSubscription
     [DataMember(Name = "plan_id")] public string PlanId { get; set; }
     [DataMember(Name = "custom_id")] public string CustomId { get; set; }
     [DataMember(Name = "create_time")] public string CreateTime { get; set; }
+    /// <summary>When the first billing cycle starts (an extension starts when the term it extends ends)</summary>
+    [DataMember(Name = "start_time")] public string StartTime { get; set; }
     [DataMember(Name = "billing_info")] public PayPalBillingInfo BillingInfo { get; set; }
     [DataMember(Name = "subscriber")] public PayPalSubscriber Subscriber { get; set; }
     [DataMember(Name = "links")] public List<PayPalLink> Links { get; set; }
