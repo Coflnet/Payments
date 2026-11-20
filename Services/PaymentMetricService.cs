@@ -16,6 +16,12 @@ public static class PaymentMetrics
     public static readonly Counter StripeCredentialErrors = Metrics.CreateCounter(
         "payments_stripe_credential_errors_total",
         "Stripe API requests rejected because the API credentials are invalid or lack permission");
+
+    /// <summary>Handled payment disputes (chargebacks) by provider and outcome: opened, won, lost</summary>
+    public static readonly Counter Disputes = Metrics.CreateCounter(
+        "payments_disputes_total",
+        "Payment disputes (chargebacks) handled, by provider and outcome",
+        new CounterConfiguration { LabelNames = new[] { "provider", "outcome" } });
 }
 
 public class PaymentMetricService : BackgroundService

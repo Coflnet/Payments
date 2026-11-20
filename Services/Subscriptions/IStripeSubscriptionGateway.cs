@@ -16,6 +16,8 @@ public interface IStripeSubscriptionGateway
     Task<Session> CreateCheckoutSession(SessionCreateOptions options);
     /// <summary>Loads an existing checkout session (to reuse its URL)</summary>
     Task<Session> GetCheckoutSession(string sessionId);
+    /// <summary>The current status of a dispute (won, lost, needs_response, ...)</summary>
+    Task<string> GetDisputeStatus(string disputeId);
     /// <summary>Loads the current subscription state</summary>
     Task<StripeSubscriptionSnapshot> GetSubscription(string subscriptionId);
     /// <summary>Sets or clears cancel_at_period_end</summary>

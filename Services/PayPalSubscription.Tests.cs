@@ -340,6 +340,310 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
         Assert.That((await db.PaymentRecords.SingleAsync()).Status, Is.EqualTo(PaymentRecordStatus.Refunded));
     }
 
+    private void SetDispute(string stage = "CHARGEBACK", string channel = "INTERNAL", string status = "OPEN", string outcome = null,
+        string transaction = "SALE-1")
+    {
+        var outcomeJson = outcome == null ? "" : $$""","dispute_outcome":{"outcome_code":"{{outcome}}"}""";
+        var transactions = transaction == null ? "" : $$""","disputed_transactions":[{"seller_transaction_id":"{{transaction}}"}]""";
+        paypal.Replies["/v1/customer/disputes/PP-D-1"] = JObject.Parse($$"""
+            {"dispute_id":"PP-D-1","status":"{{status}}","dispute_life_cycle_stage":"{{stage}}","dispute_channel":"{{channel}}",
+             "dispute_amount":{"currency_code":"EUR","value":"9.69"}{{outcomeJson}}{{transactions}}}
+            """);
+    }
+
+    private Task<IActionResult> PostDispute(string type) =>
+        Post("{\"id\":\"WH-D\",\"event_type\":\"" + type + "\",\"resource\":{\"dispute_id\":\"PP-D-1\"}}");
+
+    private const string SaleReversed = """
+        {"id":"WH-REV","event_type":"PAYMENT.SALE.REVERSED","resource":{"id":"REV-1","sale_id":"SALE-1","state":"completed",
+         "amount":{"total":"9.69","currency":"EUR"}}}
+        """;
+
+    private async Task PaidSale()
+    {
+        await SeedCheckout("paypal", "I-SUB", premium, 9.69m);
+        SetSubscription();
+        await Post(SaleCompleted());
+        SetSale();
+        paypal.Replies["/v1/billing/subscriptions/I-SUB/cancel"] = new JObject();
+    }
+
+    private async Task<bool> AccessRevoked() => (await Access("I-SUB")).Expires < DateTime.UtcNow.AddMinutes(1);
+
+    private async Task<PaymentRecordStatus> RecordStatus() => (await db.PaymentRecords.AsNoTracking().SingleAsync()).Status;
+
+    /// <summary>
+    /// A PayPal chargeback reverts the sale like a refund and cancels the subscription at PayPal; deciding it for the seller
+    /// restores the period once, for the buyer it stays reverted.
+    /// </summary>
+    [Test]
+    public async Task DisputeRevertsTheSaleCancelsTheSubscriptionAndSellerWinRestoresOnce()
+    {
+        await PaidSale();
+        SetDispute();
+
+        Assert.That(await PostDispute("CUSTOMER.DISPUTE.CREATED"), Is.TypeOf<OkResult>());
+        Assert.That(await PostDispute("CUSTOMER.DISPUTE.CREATED"), Is.TypeOf<OkResult>());
+
+        Assert.That(await db.RefundedSubscriptionInvoices.CountAsync(i => i.InvoiceId == "SALE-1"), Is.EqualTo(1));
+        Assert.That(await AccessRevoked(), Is.True);
+        Assert.That(paypal.Bodies["/v1/billing/subscriptions/I-SUB/cancel"]["reason"]?.ToString(), Is.Not.Empty);
+        Assert.That((await Subscription("I-SUB")).Status, Is.EqualTo("expired"));
+        Assert.That(await RecordStatus(), Is.EqualTo(PaymentRecordStatus.Disputed));
+
+        SetDispute(status: "RESOLVED", outcome: "RESOLVED_BUYER_FAVOUR");
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        Assert.That(await AccessRevoked(), Is.True, "buyer favour stays reverted");
+
+        SetDispute(status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR");
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        Assert.That((await Access("I-SUB")).Expires, Is.GreaterThan(DateTime.UtcNow.AddDays(20)));
+        Assert.That(await Grants("paypal-sale-SALE-1-disputewon"), Is.EqualTo(1));
+        Assert.That(await RecordStatus(), Is.EqualTo(PaymentRecordStatus.Confirmed));
+    }
+
+    [Test]
+    public async Task InquiryAndAlertOnlyLogUntilTheDisputeBecomesAChargeback()
+    {
+        await PaidSale();
+
+        SetDispute(stage: "INQUIRY");
+        Assert.That(await PostDispute("CUSTOMER.DISPUTE.CREATED"), Is.TypeOf<OkResult>());
+        SetDispute(stage: "CHARGEBACK", channel: "ALERT");
+        Assert.That(await PostDispute("CUSTOMER.DISPUTE.CREATED"), Is.TypeOf<OkResult>());
+        Assert.That(await AccessRevoked(), Is.False);
+        Assert.That(paypal.Bodies.ContainsKey("/v1/billing/subscriptions/I-SUB/cancel"), Is.False);
+
+        SetDispute(stage: "CHARGEBACK");
+        await PostDispute("CUSTOMER.DISPUTE.UPDATED");
+        Assert.That(await AccessRevoked(), Is.True, "the escalation reverts and cancels");
+        Assert.That((await Subscription("I-SUB")).Status, Is.EqualTo("expired"));
+    }
+
+    [Test]
+    public async Task ExternalChannelIsAChargebackEvenAtTheInquiryStage()
+    {
+        await PaidSale();
+        SetDispute(stage: "INQUIRY", channel: "EXTERNAL");
+
+        await PostDispute("CUSTOMER.DISPUTE.CREATED");
+
+        Assert.That(await AccessRevoked(), Is.True);
+    }
+
+    [Test]
+    public async Task LateOpeningEventOfADisputeAlreadyDecidedForTheSellerIsIgnored()
+    {
+        await PaidSale();
+        SetDispute(status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR");
+
+        await PostDispute("CUSTOMER.DISPUTE.CREATED");
+
+        Assert.That(await AccessRevoked(), Is.False);
+    }
+
+    /// <summary>
+    /// Regression: PAYMENT.SALE.REVERSED was booked as a refund, so it never cancelled and a won dispute could not restore.
+    /// </summary>
+    [Test]
+    public async Task SaleReversedAloneRevertsCancelsAndMarksTheRecordDisputed()
+    {
+        await PaidSale();
+
+        Assert.That(await Post(SaleReversed), Is.TypeOf<OkResult>());
+
+        Assert.That(await AccessRevoked(), Is.True);
+        Assert.That((await Subscription("I-SUB")).Status, Is.EqualTo("expired"));
+        Assert.That(await RecordStatus(), Is.EqualTo(PaymentRecordStatus.Disputed));
+    }
+
+    [TestCase(true, Description = "the dispute event first")]
+    [TestCase(false, Description = "the reversal first")]
+    public async Task SaleReversedAndDisputeInEitherOrderCancelOnceAndASellerWinRestores(bool disputeFirst)
+    {
+        await PaidSale();
+        SetDispute();
+
+        if (disputeFirst)
+            await PostDispute("CUSTOMER.DISPUTE.CREATED");
+        await Post(SaleReversed);
+        if (!disputeFirst)
+            await PostDispute("CUSTOMER.DISPUTE.CREATED");
+
+        Assert.That(await AccessRevoked(), Is.True);
+        Assert.That(await db.RefundedSubscriptionInvoices.CountAsync(), Is.EqualTo(1));
+        Assert.That(await RecordStatus(), Is.EqualTo(PaymentRecordStatus.Disputed));
+        SetDispute(status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR");
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        Assert.That((await Access("I-SUB")).Expires, Is.GreaterThan(DateTime.UtcNow.AddDays(20)));
+    }
+
+    [Test]
+    public async Task SaleStillReportedAsReversedOnARefundEventIsTreatedAsAChargeback()
+    {
+        await PaidSale();
+        SetSale(state: "reversed");
+
+        await Post("""
+            {"id":"WH-REF","event_type":"PAYMENT.SALE.REFUNDED","resource":{"id":"REFUND-1","state":"completed",
+             "sale_id":"SALE-1","amount":{"total":"9.69","currency":"EUR"}}}
+            """);
+
+        Assert.That(await AccessRevoked(), Is.True);
+        Assert.That(await RecordStatus(), Is.EqualTo(PaymentRecordStatus.Disputed));
+    }
+
+    [Test]
+    public async Task DisputesOfUnknownPaymentsOrWithoutTransactionsAreAnsweredWithOk()
+    {
+        await PaidSale();
+        paypal.NotFound.Add("/v1/payments/sale/SALE-UNKNOWN");
+        SetDispute(transaction: "SALE-UNKNOWN");
+        Assert.That(await PostDispute("CUSTOMER.DISPUTE.CREATED"), Is.TypeOf<OkResult>());
+
+        SetDispute(transaction: null);
+        Assert.That(await PostDispute("CUSTOMER.DISPUTE.CREATED"), Is.TypeOf<OkResult>());
+
+        paypal.NotFound.Add("/v1/customer/disputes/PP-D-1");
+        Assert.That(await PostDispute("CUSTOMER.DISPUTE.CREATED"), Is.TypeOf<OkResult>());
+        Assert.That(await AccessRevoked(), Is.False);
+    }
+
+    [TestCase("DENIED", "completed", true)]
+    [TestCase("RESOLVED_SELLER_FAVOUR", "completed", true)]
+    [TestCase("CANCELED_BY_BUYER", "completed", true)]
+    [TestCase("RESOLVED_WITH_PAYOUT", "completed", true, Description = "the money stayed with us")]
+    [TestCase("RESOLVED_WITH_PAYOUT", "reversed", false, Description = "PayPal took the money back")]
+    [TestCase("RESOLVED_BUYER_FAVOUR", "completed", false)]
+    [TestCase("NONE", "completed", false, Description = "no decision")]
+    public async Task ResolvedOutcomesRestoreOnlyWhenTheSellerKeepsTheMoney(string outcome, string saleState, bool restored)
+    {
+        await PaidSale();
+        SetDispute();
+        await PostDispute("CUSTOMER.DISPUTE.CREATED");
+        SetSale(state: saleState);
+        SetDispute(status: "RESOLVED", outcome: outcome);
+
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+
+        Assert.That(await AccessRevoked(), Is.Not.EqualTo(restored));
+        Assert.That(await RecordStatus(), Is.EqualTo(restored ? PaymentRecordStatus.Confirmed : PaymentRecordStatus.Disputed));
+    }
+
+    private async Task SeedPayPalTopUp(string reversalAmount = "9.69", string reversalStatus = "COMPLETED")
+    {
+        var topUp = new TopUpProduct { Slug = "paypal-topup", Title = "Top up", Cost = 1800, ProviderSlug = "paypal", Type = Product.ProductType.TOP_UP };
+        db.TopUpProducts.Add(topUp);
+        await db.SaveChangesAsync();
+        await users.GetOrCreate("buyer");
+        await transactions.AddTopUp(topUp.Id, "buyer", "CAP-1");
+        paypal.Replies["/v2/payments/refunds/REV-9"] = JObject.Parse("""
+            {"id":"REV-9","status":"REVERSAL_STATUS","amount":{"currency_code":"EUR","value":"REVERSAL_AMOUNT"},"links":[{"href":"https://api.paypal.com/v2/payments/captures/CAP-1","rel":"up","method":"GET"}]}
+            """.Replace("REVERSAL_STATUS", reversalStatus).Replace("REVERSAL_AMOUNT", reversalAmount));
+        paypal.Replies["/v2/payments/captures/CAP-1"] = JObject.Parse("""
+            {"id":"CAP-1","status":"COMPLETED","amount":{"currency_code":"EUR","value":"9.69"}}
+            """);
+    }
+
+    [Test]
+    public async Task CaptureReversedTakesTheTopUpCoinsBackUsingTheCaptureOfTheReversal()
+    {
+        await SeedPayPalTopUp();
+
+        Assert.That(await Post("""{"id":"WH-C","event_type":"PAYMENT.CAPTURE.REVERSED","resource":{"id":"REV-9"}}"""), Is.TypeOf<OkResult>());
+        Assert.That(await Post("""{"id":"WH-C","event_type":"PAYMENT.CAPTURE.REVERSED","resource":{"id":"REV-9"}}"""), Is.TypeOf<OkResult>());
+
+        Assert.That((await Buyer()).Balance, Is.Zero);
+    }
+
+    private const string CaptureReversed = """{"id":"WH-C","event_type":"PAYMENT.CAPTURE.REVERSED","resource":{"id":"REV-9"}}""";
+
+    /// <summary>Regression: a partial reversal took all the coins of the top-up</summary>
+    [Test]
+    public async Task PartialCaptureReversalTakesOnlyItsShareOfTheCoins()
+    {
+        await SeedPayPalTopUp(reversalAmount: "4.845");
+
+        Assert.That(await Post(CaptureReversed), Is.TypeOf<OkResult>());
+        Assert.That(await Post(CaptureReversed), Is.TypeOf<OkResult>());
+
+        Assert.That((await Buyer()).Balance, Is.EqualTo(900));
+    }
+
+    [Test]
+    public async Task ReversalThatIsNotCompletedYetIsRetried()
+    {
+        await SeedPayPalTopUp(reversalStatus: "PENDING");
+
+        Assert.That(await Post(CaptureReversed), Is.TypeOf<BadRequestResult>());
+
+        Assert.That((await Buyer()).Balance, Is.EqualTo(1800));
+    }
+
+    [Test]
+    public async Task ResolutionAnnouncedBeforePayPalShowsItIsRetried()
+    {
+        await PaidSale();
+        SetDispute();
+        await PostDispute("CUSTOMER.DISPUTE.CREATED");
+        SetDispute(status: "UNDER_REVIEW", outcome: "RESOLVED_SELLER_FAVOUR");
+
+        Assert.That(await PostDispute("CUSTOMER.DISPUTE.RESOLVED"), Is.TypeOf<BadRequestResult>());
+        Assert.That(await AccessRevoked(), Is.True);
+    }
+
+    [Test]
+    public async Task LostIsCountedOnlyWhenADisputeReversedSomething()
+    {
+        await PaidSale();
+        var lost = PaymentMetrics.Disputes.WithLabels("paypal", "lost");
+        var before = lost.Value;
+        SetDispute(stage: "INQUIRY", status: "RESOLVED", outcome: "RESOLVED_BUYER_FAVOUR");
+
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        Assert.That(lost.Value, Is.EqualTo(before), "an inquiry never reverted anything");
+
+        SetDispute();
+        await PostDispute("CUSTOMER.DISPUTE.CREATED");
+        SetDispute(status: "RESOLVED", outcome: "RESOLVED_BUYER_FAVOUR");
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        Assert.That(lost.Value, Is.EqualTo(before + 1));
+    }
+
+    [Test]
+    public async Task TopUpDisputeTakesCoinsBackAndASellerWinGivesThemBackOnce()
+    {
+        await SeedPayPalTopUp();
+        SetDispute(transaction: "CAP-1");
+
+        await PostDispute("CUSTOMER.DISPUTE.CREATED");
+        Assert.That((await Buyer()).Balance, Is.Zero);
+
+        SetDispute(status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR", transaction: "CAP-1");
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        Assert.That((await Buyer()).Balance, Is.EqualTo(1800));
+    }
+
+    [Test]
+    public async Task RefundAfterAWonPayPalDisputeRevertsTheRegrantedPeriod()
+    {
+        await PaidSale();
+        SetDispute();
+        await PostDispute("CUSTOMER.DISPUTE.CREATED");
+        SetDispute(status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR");
+        await PostDispute("CUSTOMER.DISPUTE.RESOLVED");
+        SetSale(state: "refunded");
+
+        await Post("""
+            {"id":"WH-REF","event_type":"PAYMENT.SALE.REFUNDED","resource":{"id":"REFUND-1","state":"completed",
+             "sale_id":"SALE-1","amount":{"total":"9.69","currency":"EUR"}}}
+            """);
+
+        Assert.That(await AccessRevoked(), Is.True);
+    }
+
     private async Task ReverseScenario(string refundState, string refundAmount)
     {
         db.CreatorCodes.Add(new CreatorCode { Code = "CREATOR", CreatorUserId = "creator", DiscountPercent = 0,
@@ -749,6 +1053,8 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
     {
         public Dictionary<string, JObject> Replies { get; } = new();
         public Dictionary<string, JObject> Bodies { get; } = new();
+        /// <summary>Paths PayPal answers with 404</summary>
+        public HashSet<string> NotFound { get; } = new();
         public FakePayPal() : base(new SandboxEnvironment("test", "test")) { }
 
         public override async Task<PayPalHttp.HttpResponse> Execute<T>(T request)
@@ -756,6 +1062,8 @@ public class PayPalSubscriptionTests : DirectSubscriptionTestBase
             var path = request.Path.Split('?')[0];
             if (request.Content != null)
                 Bodies[path] = JObject.Parse(await request.Content.ReadAsStringAsync());
+            if (NotFound.Contains(path))
+                throw new PayPalHttp.HttpException(HttpStatusCode.NotFound, new HttpResponseMessage().Headers, "{}");
             if (!Replies.TryGetValue(path, out var reply))
                 throw new HttpRequestException("Simulated PayPal API failure: " + request.Path);
             using var content = new StringContent(reply.ToString(), Encoding.UTF8, "application/json");

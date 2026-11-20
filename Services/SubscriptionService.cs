@@ -529,15 +529,26 @@ public partial class SubscriptionService
         return true;
     });
 
-    private async Task ApplyInvoiceRefund(UserSubscription subscription, string invoiceId, string reason, DateTime createdAt, bool fullRefund)
+    /// <param name="byDispute">A chargeback is the cause: the revert is noted in the ledger (<see cref="DisputeOpenedReference"/>,
+    /// in the same transaction), so a later win knows that it, not a refund, reverted the invoice</param>
+    private async Task ApplyInvoiceRefund(UserSubscription subscription, string invoiceId, string reason, DateTime createdAt, bool fullRefund,
+        bool byDispute = false)
     {
         // Partial refunds are price adjustments; they do not revoke the paid service.
-        if (!fullRefund || await context.RefundedSubscriptionInvoices.AnyAsync(i => i.InvoiceId == invoiceId))
+        if (!fullRefund)
             return;
+        if (await context.RefundedSubscriptionInvoices.AnyAsync(i => i.InvoiceId == invoiceId))
+        {
+            if (!byDispute)
+                await NoteRefundAfterDispute(subscription, invoiceId);
+            return;
+        }
         await transactionService.WithTransactionAsync(async (_, _) =>
         {
             context.RefundedSubscriptionInvoices.Add(new RefundedSubscriptionInvoice
                 { InvoiceId = invoiceId, SubscriptionId = subscription.ExternalId, BillingReason = reason });
+            if (byDispute)
+                await transactionService.AddLedgerMarker(subscription.User, DisputeOpenedReference(invoiceId));
             if (reason == "updated")
                 await RevertUpdatedInvoice(subscription, invoiceId);
             else
@@ -559,6 +570,7 @@ public partial class SubscriptionService
             return;
         await RevertPurchase(subscription.User.ExternalId, reference);
         await RevertPurchase(subscription.User.ExternalId, reference + "-topup", adjustTime: false);
+        await RevertDisputeRegrant(subscription, invoiceId);
     }
 
     private Task<bool> IsPeriodGrant(UserSubscription subscription, string reference) => context.FiniteTransactions.AnyAsync(t =>
@@ -589,6 +601,7 @@ public partial class SubscriptionService
             reference = subscription.ExternalId + createdAt.Date.ToString("yyyy-MM-dd");
         await RevertPurchase(subscription.User.ExternalId, reference);
         await RevertPurchase(subscription.User.ExternalId, reference + "-topup", adjustTime: false);
+        await RevertDisputeRegrant(subscription, invoiceId);
     }
 
     private async Task RevertPurchase(string userId, string reference, bool adjustTime = true)

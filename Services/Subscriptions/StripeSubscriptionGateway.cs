@@ -31,6 +31,9 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
     public Task<Session> GetCheckoutSession(string sessionId) =>
         new SessionService().GetAsync(sessionId);
 
+    public async Task<string> GetDisputeStatus(string disputeId) =>
+        (await new DisputeService().GetAsync(disputeId)).Status;
+
     public async Task<StripeSubscriptionSnapshot> GetSubscription(string subscriptionId) =>
         Snapshot(await new Stripe.SubscriptionService().GetAsync(subscriptionId,
             new SubscriptionGetOptions { Expand = ExpandPrice }));

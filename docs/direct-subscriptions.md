@@ -180,7 +180,45 @@ Activate Managed Payments (needed for every country outside the direct list): ht
 
 Webhook endpoint `/callback/stripe` (secret `STRIPE:SIGNING_SECRET`), events: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.created`,
-`customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded` (plus the existing one-time events).
+`customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`, and for chargebacks `charge.dispute.created`,
+`charge.dispute.funds_withdrawn`, `charge.dispute.closed` (plus the existing one-time events).
+
+### Chargebacks (disputes)
+
+No migration: `PaymentRecordStatus.Disputed` already existed, and what a dispute did is noted in the ledger as zero amount "revert"
+rows (`dispute-opened <id>`, `dispute-won <id>`, `dispute-refunded <id>`; top-ups use their dispute/restore rows), not in the
+best-effort `PaymentRecord`. Stripe and PayPal disputes behave the same:
+
+- Opening (Stripe `charge.dispute.created`, `charge.dispute.funds_withdrawn`, handled identically; PayPal `CUSTOMER.DISPUTE.CREATED`,
+  `CUSTOMER.DISPUTE.UPDATED`, `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.SALE.REVERSED`). The dispute is read live from the provider (the
+  webhook body is only a pointer); an opening event for a dispute already won or closed as a warning is ignored.
+  - Stripe: a `warning_*` status (an inquiry, no funds withdrawn) only logs; it becomes a chargeback with `funds_withdrawn`.
+  - PayPal: only a chargeback acts: `dispute_channel` EXTERNAL, or `dispute_life_cycle_stage` CHARGEBACK, PRE_ARBITRATION or
+    ARBITRATION. INQUIRY and channel ALERT only log; `CUSTOMER.DISPUTE.UPDATED` catches the escalation. A reversed sale
+    (`PAYMENT.SALE.REVERSED`, or a sale PayPal reports as `reversed`) is a chargeback too and never booked as a refund; a
+    `PAYMENT.CAPTURE.REVERSED` names the capture through its reversal resource, fetched from the API.
+  - Subscription invoice/sale: reverted exactly like a full refund (`ApplyInvoiceRefund`, same `RefundedSubscriptionInvoices`
+    idempotency; the ledger note is written in the same transaction, so it tells whether a dispute or a refund reverted it: a refund that
+    reverted it first makes the dispute a no-op), the creator share is reversed fully (key `dispute`), and the subscription is cancelled
+    immediately at the provider (Stripe: renewal schedule released, then cancelled; PayPal: cancelled, a booked continuation too) and set to
+    `expired`, so nothing is charged again. The retry of a failed webhook repeats the cancellation.
+  - One-time top-up: the coins are deducted completely (`TransactionService.ApplyTopUpDispute`, shares the refund idempotency, so refund
+    plus dispute deduct once).
+  - Unknown disputes, payments and charges are logged and answered with 200 (no retry loop).
+  - The `PaymentRecord` becomes `Disputed` (a refunded one stays `Refunded`). The metric `opened` counts only when something was reverted.
+- Deciding (Stripe `charge.dispute.closed`; PayPal `CUSTOMER.DISPUTE.RESOLVED`):
+  - won (Stripe `won`; PayPal `RESOLVED_SELLER_FAVOUR`, `CANCELED_BY_BUYER`, `DENIED`, and `RESOLVED_WITH_PAYOUT` when the sale/capture is
+    still completed, i.e. the money stayed with us): the period is granted again once under `<original grant>-disputewon` (a plan change is
+    re-applied, top-up coins are credited again), the invoice's refund marker is removed and the record goes back to `Confirmed`. Only when a
+    dispute reverted it and no refund came after (otherwise it stays reverted). The subscription is not resumed, the buyer starts a new
+    one. The creator share is not given back. A refund after a won dispute also reverts the re-granted period.
+  - lost / anything else (Stripe `warning_closed`, `prevented`, ...; PayPal `RESOLVED_BUYER_FAVOUR`, a payout that took the money back):
+    logged, stays reverted. PayPal outcome `NONE` is no decision and does nothing.
+- The live PayPal REST app needs the disputes read permission (`GET /v1/customer/disputes/{id}`, "Disputes" in the app's features):
+  without it every dispute webhook fails (the dispute can not be read, so PayPal keeps retrying it). A `CUSTOMER.DISPUTE.RESOLVED` whose
+  dispute does not read as `RESOLVED` yet is answered with 400 so PayPal retries. A `PAYMENT.CAPTURE.REVERSED` takes back only the
+  reversed share of the top-up's coins and is retried while the reversal is not `COMPLETED`.
+- Logs name ids and amounts only; the Prometheus counter `payments_disputes_total{provider,outcome}` counts `opened`, `won`, `lost`.
 
 Pricing on the session: the inline `price_data` unit amount is always the recurring price (direct: gross incl. VAT, managed: net).
 Discount codes that apply to every renewal lower that amount. A "first payment only" code keeps the full recurring price and adds a
@@ -393,7 +431,8 @@ PayPal), every country and slot bundles alike.
 ## PayPal
 
 Webhook endpoint `/callback/paypal` (id in `PAYPAL:WEBHOOK_ID`), events `BILLING.SUBSCRIPTION.*`, `PAYMENT.SALE.COMPLETED`,
-`PAYMENT.SALE.REFUNDED`, `PAYMENT.SALE.REVERSED`. The REST app needs the Subscriptions feature enabled.
+`PAYMENT.SALE.REFUNDED`, `PAYMENT.SALE.REVERSED`, and for chargebacks `CUSTOMER.DISPUTE.CREATED`, `CUSTOMER.DISPUTE.UPDATED`, `CUSTOMER.DISPUTE.RESOLVED`,
+`PAYMENT.CAPTURE.REVERSED` (behaviour: see "Chargebacks" above; the disputed payment is the dispute's `seller_transaction_id`). The REST app needs the Subscriptions feature enabled.
 
 PayPal plans are created automatically on the first checkout of a (product slug, billing weeks, currency): a catalog product
 (`SERVICE`, `SOFTWARE`) and a billing plan (`WEEK` interval) are created and the plan id is stored in the `PayPalPlans`

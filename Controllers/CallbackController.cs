@@ -144,7 +144,7 @@ namespace Payments.Controllers
                 );
                 // The body carries the buyer's name, address and email: log identifiers only
                 _logger.LogInformation("Verified {StripeEvent}", WebhookLogSummary.OfStripe(stripeEvent));
-                if (await HandleStripeSubscriptionEvent(stripeEvent))
+                if (await HandleStripeSubscriptionEvent(stripeEvent) || await HandleStripeDisputeEvent(stripeEvent))
                     return Ok();
 
                 if (stripeEvent.Type == EventTypes.CheckoutSessionCompleted
@@ -889,6 +889,8 @@ namespace Payments.Controllers
                 var eventType = webhook.Value<string>("event_type");
                 if (IsPayPalSubscriptionEvent(eventType))
                     return await HandlePayPalSubscriptionEvent(eventType, webhook);
+                if (IsPayPalDisputeEvent(eventType))
+                    return await HandlePayPalDisputeEvent(eventType, webhook);
                 var webhookResult = webhook.ToObject<PayPalWebhookData>();
                 if (string.IsNullOrWhiteSpace(webhookResult.Id) || !ValidPayPalId(webhookResult.Resource?.Id))
                     return BadRequest();

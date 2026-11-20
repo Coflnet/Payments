@@ -96,7 +96,105 @@ namespace Coflnet.Payments.Services
         /// refund was already applied, or <c>null</c> when the original top-up
         /// could not be found.
         /// </returns>
-        public async Task<decimal?> ApplyTopUpRefund(string reference, decimal totalAmount, decimal refundedAmount, string provider)
+        public Task<decimal?> ApplyTopUpRefund(string reference, decimal totalAmount, decimal refundedAmount, string provider) =>
+            ReverseTopUp(reference, totalAmount, refundedAmount, provider, RefundKind);
+
+        private const string RefundKind = "refund";
+        private const string DisputeKind = "dispute";
+
+        /// <summary>
+        /// Takes the coins of a disputed (charged back) top-up back, completely or for the reversed share of the charge. Shares the idempotency of refunds: what a
+        /// refund already deducted is not deducted again and a refund after a dispute deducts nothing. Returns the deducted
+        /// amount, zero when nothing was left to deduct, null when the top-up is unknown.
+        /// </summary>
+        public Task<decimal?> ApplyTopUpDispute(string reference, string provider, decimal totalAmount = 1, decimal reversedAmount = 1) =>
+            ReverseTopUp(reference, totalAmount, reversedAmount, provider, DisputeKind);
+
+        /// <summary>Whether a dispute took coins of the top-up back (so a lost dispute is a real loss)</summary>
+        public async Task<bool> WasTopUpDisputed(string reference, string provider)
+        {
+            var original = await FindTopUp(reference, provider);
+            return original != null && await DeductedBy(original, DisputeKind) > 0;
+        }
+
+        /// <summary>
+        /// Gives back the coins <see cref="ApplyTopUpDispute"/> deducted once the dispute was won. Idempotent. Returns the
+        /// restored amount, zero when nothing was deducted or it was restored already, null when the top-up is unknown.
+        /// </summary>
+        public async Task<decimal?> RestoreDisputedTopUp(string reference, string provider)
+        {
+            decimal? restored = null;
+            await WithTransactionAsync(async (tx, owns) =>
+            {
+                var original = await FindTopUp(reference, provider);
+                if (original == null)
+                    return;
+                restored = 0;
+                var restoreReference = DisputeRestoreReference(original.Id);
+                if (await db.FiniteTransactions.AnyAsync(t => t.User.Id == original.User.Id && t.Reference == restoreReference))
+                    return;
+                if (await HasLedgerMarker(original.User, DisputeRefundedReference(original.Id)))
+                    return; // the buyer was refunded after the dispute began: the money went back once already
+                var deducted = await DeductedBy(original, DisputeKind);
+                if (deducted <= 0)
+                    return;
+                var restoreEvent = await CreateTransaction(await GetProduct("revert"), original.User, deducted, restoreReference);
+                await transactionEventProducer.ProduceEvent(restoreEvent);
+                restored = deducted;
+            });
+            return restored;
+        }
+
+        private Task<FiniteTransaction> FindTopUp(string reference, string provider) => db.FiniteTransactions
+            .Include(t => t.User)
+            .Include(t => t.Product)
+            .Where(t => t.Reference == reference
+                && t.Amount > 0
+                && t.Product.Type.HasFlag(Product.ProductType.TOP_UP)
+                && db.TopUpProducts.Any(p => p.Id == t.ProductId && p.ProviderSlug == provider))
+            .SingleOrDefaultAsync();
+
+        /// <summary>
+        /// Writes a zero amount "revert" row under <paramref name="reference"/>: a durable, idempotent note of what a dispute did
+        /// (no balance change, no event). False when the note exists already.
+        /// </summary>
+        public async Task<bool> AddLedgerMarker(User user, string reference)
+        {
+            if (await HasLedgerMarker(user, reference))
+                return false;
+            // Only the row: CreateTransaction would write the (possibly stale) balance of the user back
+            db.FiniteTransactions.Add(new FiniteTransaction
+                { User = user, Product = await GetProduct("revert"), Amount = 0, Reference = reference, Timestamp = DateTime.UtcNow });
+            await db.SaveChangesAsync();
+            return true;
+        }
+
+        public Task<bool> HasLedgerMarker(User user, string reference) =>
+            db.FiniteTransactions.AnyAsync(t => t.User.Id == user.Id && t.Reference == reference);
+
+        private static string DisputeRefundedReference(long transactionId) => $"{DisputeKind} refunded transaction {transactionId}";
+
+        private static string DisputeRestoreReference(long transactionId) => $"{DisputeKind} won transaction {transactionId}";
+
+        private static string ReversalPrefix(long transactionId, string kind) => $"{kind} transaction {transactionId} amount ";
+
+        /// <summary>A refund that finds the coins already taken by a dispute: winning that dispute must not give them back</summary>
+        private async Task NoteRefundAfterDispute(FiniteTransaction original, string kind)
+        {
+            if (kind == RefundKind && await DeductedBy(original, DisputeKind) > 0)
+                await AddLedgerMarker(original.User, DisputeRefundedReference(original.Id));
+        }
+
+        private async Task<decimal> DeductedBy(FiniteTransaction original, string kind)
+        {
+            var prefix = ReversalPrefix(original.Id, kind);
+            var deductions = await db.FiniteTransactions
+                .Where(t => t.User.Id == original.User.Id && t.Product.Slug == "revert" && t.Amount < 0 && t.Reference.StartsWith(prefix))
+                .ToListAsync();
+            return deductions.Sum(t => -t.Amount);
+        }
+
+        private async Task<decimal?> ReverseTopUp(string reference, decimal totalAmount, decimal refundedAmount, string provider, string kind)
         {
             if (string.IsNullOrWhiteSpace(provider))
                 throw new ArgumentException("A refund provider is required", nameof(provider));
@@ -110,19 +208,16 @@ namespace Coflnet.Payments.Services
             decimal? appliedAmount = null;
             await WithTransactionAsync(async (tx, owns) =>
             {
-                var original = await db.FiniteTransactions
-                    .Include(t => t.User)
-                    .Include(t => t.Product)
-                    .Where(t => t.Reference == reference
-                        && t.Amount > 0
-                        && t.Product.Type.HasFlag(Product.ProductType.TOP_UP)
-                        && db.TopUpProducts.Any(p => p.Id == t.ProductId && p.ProviderSlug == provider))
-                    .SingleOrDefaultAsync();
+                var original = await FindTopUp(reference, provider);
 
                 if (original == null)
                     return;
 
                 appliedAmount = 0;
+                // A dispute event that arrives after its own resolution must not take the coins back again
+                if (kind == DisputeKind && await db.FiniteTransactions.AnyAsync(t => t.User.Id == original.User.Id
+                        && t.Reference == DisputeRestoreReference(original.Id)))
+                    return;
                 var boundedRefundAmount = Math.Min(refundedAmount, totalAmount);
                 var targetRefund = boundedRefundAmount == totalAmount
                     ? original.Amount
@@ -132,21 +227,27 @@ namespace Coflnet.Payments.Services
                         MidpointRounding.AwayFromZero);
                 targetRefund = Math.Min(targetRefund, original.Amount);
 
-                var refundReferencePrefix = $"refund transaction {original.Id} amount ";
+                var refundReferencePrefix = ReversalPrefix(original.Id, kind);
+                var otherKindPrefix = ReversalPrefix(original.Id, kind == RefundKind ? DisputeKind : RefundKind);
                 var legacyFullRefundReference = $"revert transaction {original.Id}";
                 var previousRefunds = await db.FiniteTransactions
                     .Where(t => t.User.Id == original.User.Id
                         && t.Product.Slug == "revert"
                         && (t.Reference.StartsWith(refundReferencePrefix)
+                            || t.Reference.StartsWith(otherKindPrefix)
+                            || t.Reference == DisputeRestoreReference(original.Id)
                             || t.Reference == legacyFullRefundReference))
                     .ToListAsync();
                 var alreadyRefunded = Math.Min(
                     original.Amount,
-                    previousRefunds.Where(t => t.Amount < 0).Sum(t => -t.Amount));
+                    Math.Max(0, previousRefunds.Sum(t => -t.Amount))); // a won dispute's restore is positive
                 var refundDelta = targetRefund - alreadyRefunded;
 
                 if (refundDelta <= 0)
+                {
+                    await NoteRefundAfterDispute(original, kind);
                     return;
+                }
 
                 var refundProduct = await GetProduct("revert");
                 var refundEvent = await CreateTransaction(

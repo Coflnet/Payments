@@ -107,11 +107,7 @@ public partial class CallbackController
                 var saleId = sale.SaleId ?? sale.Id;
                 if (!ValidPayPalId(saleId))
                     return BadRequest();
-                var refunded = await subscriptionService.PayPalSaleRefunded(saleId);
-                if (refunded == null)
-                    return Ok();
-                await ReversePayPalCreatorRevenue(refunded, sale);
-                await MarkPaymentRefunded(saleId, "paypal", null, refunded.State is "refunded" or "reversed");
+                await PayPalSaleTakenBack(eventType, saleId, sale);
                 return Ok();
             case not null when eventType.StartsWith("BILLING.SUBSCRIPTION.", StringComparison.Ordinal):
                 foreach (var outcome in await subscriptionService.PayPalSubscriptionChanged(sale.Id))
@@ -120,6 +116,30 @@ public partial class CallbackController
             default:
                 return Ok();
         }
+    }
+
+    /// <summary>
+    /// A refund takes the payment back for good; a reversal (or a sale PayPal reports as reversed) is a chargeback: it cancels
+    /// the subscription and a dispute decided for the seller restores it, so it is never booked as a refund.
+    /// </summary>
+    private async Task PayPalSaleTakenBack(string eventType, string saleId, PayPalSale resource)
+    {
+        if (eventType == "PAYMENT.SALE.REVERSED")
+        {
+            if (await subscriptionService.PayPalSaleDisputed(saleId))
+                await ReverseCreatorRevenue(saleId, "dispute", 1);
+            return;
+        }
+        var refunded = await subscriptionService.PayPalSaleRefunded(saleId);
+        if (refunded == null)
+            return;
+        if (refunded.State == "reversed")
+        {
+            await ReverseCreatorRevenue(saleId, "dispute", 1);
+            return;
+        }
+        await ReversePayPalCreatorRevenue(refunded, resource);
+        await MarkPaymentRefunded(saleId, "paypal", null, refunded.State is "refunded");
     }
 
     /// <summary>

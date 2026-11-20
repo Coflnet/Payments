@@ -107,8 +107,12 @@ public partial class SubscriptionService
                 logger.LogWarning("Refund for PayPal sale {SaleId} of unknown subscription {SubscriptionId}", saleId, sale.BillingAgreementId);
                 return false;
             }
-            await ApplyInvoiceRefund(subscription, sale.Id, "payment", ParseTime(sale.CreateTime) ?? DateTime.UtcNow,
-                sale.State is "refunded" or "reversed");
+            var payment = new DisputedPayment(sale.Id, "payment", ParseTime(sale.CreateTime) ?? DateTime.UtcNow);
+            // A reversed sale is a chargeback, not a refund: it cancels and a won dispute can restore it
+            if (sale.State == "reversed")
+                await ApplyDispute(subscription, payment);
+            else
+                await ApplyInvoiceRefund(subscription, sale.Id, payment.BillingReason, payment.CreatedAt, sale.State == "refunded");
             return true;
         });
         return sale;

@@ -52,6 +52,8 @@ public interface IPayPalSubscriptionApi
     Task Cancel(string subscriptionId, string reason);
     Task<IReadOnlyList<PayPalTransaction>> Transactions(string subscriptionId, DateTime start, DateTime end);
     Task<PayPalSale> GetSale(string saleId);
+    /// <summary>The dispute with its current stage and outcome</summary>
+    Task<PayPalDispute> GetDispute(string disputeId);
     /// <summary>Refunds a sale, fully when <paramref name="amount"/> is null</summary>
     Task<PayPalSale> RefundSale(string saleId, decimal? amount, string currency);
 }
@@ -95,6 +97,9 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
 
     public Task<PayPalSale> GetSale(string saleId) =>
         Send<PayPalSale>("/v1/payments/sale/" + Escape(saleId), HttpMethod.Get);
+
+    public Task<PayPalDispute> GetDispute(string disputeId) =>
+        Send<PayPalDispute>("/v1/customer/disputes/" + Escape(disputeId), HttpMethod.Get);
 
     public Task<PayPalSale> RefundSale(string saleId, decimal? amount, string currency)
     {

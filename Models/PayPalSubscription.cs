@@ -136,3 +136,41 @@ public class PayPalSaleAmount
     [DataMember(Name = "total")] public string Total { get; set; }
     [DataMember(Name = "currency")] public string Currency { get; set; }
 }
+
+/// <summary>
+/// A PayPal dispute (GET /v1/customer/disputes/{id}): its state is read from the API, not trusted from the webhook body
+/// </summary>
+[DataContract]
+public class PayPalDispute
+{
+    [DataMember(Name = "dispute_id")] public string Id { get; set; }
+    /// <summary>OPEN, WAITING_FOR_BUYER_RESPONSE, UNDER_REVIEW, RESOLVED, ...</summary>
+    [DataMember(Name = "status")] public string Status { get; set; }
+    /// <summary>INQUIRY, CHARGEBACK, PRE_ARBITRATION, ARBITRATION</summary>
+    [DataMember(Name = "dispute_life_cycle_stage")] public string Stage { get; set; }
+    /// <summary>INTERNAL, EXTERNAL (a chargeback filed with the card issuer), ALERT</summary>
+    [DataMember(Name = "dispute_channel")] public string Channel { get; set; }
+    [DataMember(Name = "dispute_outcome")] public PayPalDisputeOutcome Outcome { get; set; }
+    [DataMember(Name = "disputed_transactions")] public List<PayPalDisputedTransaction> DisputedTransactions { get; set; }
+    [DataMember(Name = "dispute_amount")] public PayPalDisputeAmount Amount { get; set; }
+}
+
+[DataContract]
+public class PayPalDisputeOutcome
+{
+    [DataMember(Name = "outcome_code")] public string Code { get; set; }
+}
+
+[DataContract]
+public class PayPalDisputedTransaction
+{
+    /// <summary>The sale (subscription payment) or capture (one-time payment) id</summary>
+    [DataMember(Name = "seller_transaction_id")] public string SellerTransactionId { get; set; }
+}
+
+[DataContract]
+public class PayPalDisputeAmount
+{
+    [DataMember(Name = "currency_code")] public string CurrencyCode { get; set; }
+    [DataMember(Name = "value")] public string Value { get; set; }
+}
