@@ -21,6 +21,40 @@ public static class SubscriptionEventTerms
         ApplyTax(payment, outcome);
         ApplyDeclaration(payment, outcome);
         ApplyTermSwitch(payment, outcome.TermSwitch);
+        ApplyTrial(payment, outcome);
+    }
+
+    /// <summary>
+    /// A trial start is confirmed like the purchase: the trial ends on a date, then the first payment is charged; the declared service
+    /// runs from the trial start to the trial end (the first payment then extends it). The first payment after it is marked.
+    /// </summary>
+    private static void ApplyTrial(PaymentEvent payment, SubscriptionPaymentOutcome outcome)
+    {
+        if (outcome.FollowsTrial)
+        {
+            payment.SubscriptionFollowsTrial = true;
+            payment.SubscriptionTrialEndsAt = outcome.Subscription.TrialEndsAt;
+        }
+        if (outcome.Trial is not SubscriptionTrialInfo trial)
+            return;
+        payment.ConfirmationType = PaymentConfirmationTypes.SubscriptionTrialStarted;
+        payment.SubscriptionIsRenewal = false;
+        payment.SubscriptionTrialDays = trial.Days;
+        payment.SubscriptionTrialEndsAt = trial.EndsAt;
+        payment.SubscriptionNextBillingAt = trial.EndsAt;
+        payment.SubscriptionFirstChargeAmount = FirstChargeAmount(outcome, trial);
+        payment.RenewalTaxTreatment ??= RenewalTaxTreatment(outcome);
+        if (payment.ServiceStartsAtUtc != null)
+            payment.ServiceEndsAtUtc = trial.EndsAt;
+    }
+
+    private static decimal? FirstChargeAmount(SubscriptionPaymentOutcome outcome, SubscriptionTrialInfo trial)
+    {
+        var subscription = outcome.Subscription;
+        if (trial.FirstChargeCents is not long cents
+            || !string.Equals(outcome.Currency, subscription.Currency, StringComparison.OrdinalIgnoreCase))
+            return null;
+        return StripeAmounts.FromMinorUnits(cents, subscription.Currency);
     }
 
     /// <summary>

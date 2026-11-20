@@ -17,8 +17,8 @@ namespace Coflnet.Payments.Services;
 public partial class SubscriptionService
 {
     /// <summary>
-    /// Stripe: the subscription's first payment and the first payment of an extension term carry their declaration; every
-    /// payment the locale of the latest one
+    /// Stripe: the subscription's first payment (also the first one after a trial) and the first payment of an extension term carry
+    /// their declaration; every payment the locale of the latest one
     /// </summary>
     private async Task<SubscriptionPaymentOutcome> WithStripeDeclaration(SubscriptionPaymentOutcome outcome,
         StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice, bool periodPayment, bool extensionInvoice)
@@ -26,7 +26,7 @@ public partial class SubscriptionService
         var subscription = outcome.Subscription;
         var checkout = await DeclarationOfRequest(subscription, StripeCheckoutRequestId(snapshot));
         var extension = await ExtensionDeclaration(subscription);
-        if (periodPayment && invoice.NormalizedBillingReason == "initial")
+        if (periodPayment && (invoice.NormalizedBillingReason == "initial" || outcome.FollowsTrial))
             return WithDeclaration(outcome, checkout, checkout, true);
         if (periodPayment && extensionInvoice)
             return WithDeclaration(outcome with { IsExtension = true }, extension, checkout, true);

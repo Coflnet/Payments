@@ -27,7 +27,7 @@ public partial class CallbackController
         {
             case Stripe.Checkout.Session { Mode: "subscription" } session
                 when stripeEvent.Type is EventTypes.CheckoutSessionCompleted or EventTypes.CheckoutSessionAsyncPaymentSucceeded:
-                await subscriptionService.StripeCheckoutCompleted(session);
+                await RecordSubscriptionPayment(await subscriptionService.StripeCheckoutCompleted(session), "stripe");
                 return true;
             case Invoice invoice when stripeEvent.Type == EventTypes.InvoicePaid:
                 await RecordSubscriptionPayment(await subscriptionService.StripeInvoicePaid(StripeInvoiceInfo.From(invoice)), "stripe");
@@ -151,28 +151,18 @@ public partial class CallbackController
     /// </summary>
     private async Task RecordSubscriptionPayment(SubscriptionPaymentOutcome outcome, string provider)
     {
+        if (outcome?.Trial != null)
+        {
+            await PublishTrialConfirmation(outcome, provider);
+            return;
+        }
         if (outcome == null || await db.PaymentRecords.AnyAsync(r => r.Provider == provider
                 && r.ExternalOrderId == outcome.PaymentId && r.IsSubscriptionPayment))
             return;
         var subscription = outcome.Subscription;
         var user = subscription.User;
-        var method = outcome.TaxRemittedByProcessor ? "stripe_managed_payments" : provider;
-        var payment = new PaymentEvent
-        {
-            PayedAmount = (double)outcome.Amount,
-            ProductId = outcome.Product.Id.ToString(),
-            UserId = user.ExternalId,
-            Email = outcome.Email,
-            FullName = outcome.Name,
-            Address = new Coflnet.Payments.Models.Address { CountryCode = outcome.Country, PostalCode = outcome.PostalCode },
-            Currency = outcome.Currency,
-            PaymentMethod = method,
-            PaymentProvider = provider,
-            PaymentProviderTransactionId = outcome.PaymentId,
-            Timestamp = outcome.PaidAt
-        };
-        SubscriptionEventTerms.Apply(payment, outcome);
-        await paymentEventProducer.ProduceEvent(payment);
+        var method = PaymentMethodOf(outcome, provider);
+        await paymentEventProducer.ProduceEvent(SubscriptionPaymentEvent(outcome, provider));
         await RecordSubscriptionCreatorRevenue(outcome);
         await RecordPayment(new PaymentRecord
         {
@@ -207,6 +197,39 @@ public partial class CallbackController
             PaymentMethodCountry = outcome.Evidence?.PaymentMethodCountry,
             IsSubscriptionPayment = true
         });
+    }
+
+    /// <summary>
+    /// A trial start moved no money: its confirmation is published (at least once: it is marked published only afterwards, a failed
+    /// publish fails the webhook and the retry publishes it), but no payment record (the VAT export lists payments) and no creator share
+    /// </summary>
+    private async Task PublishTrialConfirmation(SubscriptionPaymentOutcome outcome, string provider)
+    {
+        await paymentEventProducer.ProduceEvent(SubscriptionPaymentEvent(outcome, provider));
+        await subscriptionService.MarkTrialConfirmed(outcome.Subscription);
+    }
+
+    private static string PaymentMethodOf(SubscriptionPaymentOutcome outcome, string provider) =>
+        outcome.TaxRemittedByProcessor ? "stripe_managed_payments" : provider;
+
+    private static PaymentEvent SubscriptionPaymentEvent(SubscriptionPaymentOutcome outcome, string provider)
+    {
+        var payment = new PaymentEvent
+        {
+            PayedAmount = (double)outcome.Amount,
+            ProductId = outcome.Product.Id.ToString(),
+            UserId = outcome.Subscription.User.ExternalId,
+            Email = outcome.Email,
+            FullName = outcome.Name,
+            Address = new Coflnet.Payments.Models.Address { CountryCode = outcome.Country, PostalCode = outcome.PostalCode },
+            Currency = outcome.Currency,
+            PaymentMethod = PaymentMethodOf(outcome, provider),
+            PaymentProvider = provider,
+            PaymentProviderTransactionId = outcome.PaymentId,
+            Timestamp = outcome.PaidAt
+        };
+        SubscriptionEventTerms.Apply(payment, outcome);
+        return payment;
     }
 
     private static string Truncate(string value, int length) => value is { } v && v.Length > length ? v[..length] : value;

@@ -45,29 +45,35 @@ public partial class SubscriptionService
 
     /// <summary>
     /// checkout.session.completed in subscription mode: records the subscription; the payment is granted by invoice.paid.
+    /// A trial checkout's trial is granted here (or by whichever event comes first); returns its confirmation while it was not published.
     /// </summary>
-    public async Task StripeCheckoutCompleted(Stripe.Checkout.Session session)
+    public async Task<SubscriptionPaymentOutcome> StripeCheckoutCompleted(Stripe.Checkout.Session session)
     {
         if (string.IsNullOrEmpty(session.SubscriptionId))
             throw new ApiException("Subscription checkout without subscription");
         var userId = session.Metadata?.GetValueOrDefault(StripeMetadata.UserId);
         if (userId == null || userId != session.ClientReferenceId)
             throw new ApiException("Subscription checkout owner does not match its metadata");
-        var recorded = await WithSubscriptionLock(session.SubscriptionId, async () =>
+        var (recorded, trial) = await WithSubscriptionLock(session.SubscriptionId, async () =>
         {
             var snapshot = await StripeApi.GetSubscription(session.SubscriptionId);
             var subscription = await EnsureStripeSubscription(snapshot);
             if (subscription == null)
-                return false;
+                return (false, (SubscriptionPaymentOutcome)null);
             await ApplyCheckedStripeState(subscription, snapshot);
             await context.SaveChangesAsync();
+            await GrantStripeTrial(subscription, snapshot);
             await TryScheduleStripeRenewal(subscription, snapshot);
-            return true;
+            return (true, await StripeTrialConfirmation(subscription, snapshot, CheckoutTrialStart(session)));
         });
-        // Delayed payment methods complete the checkout unpaid; invoice.paid grants once the money arrived.
-        if (recorded && session.PaymentStatus == "paid")
+        // Delayed payment methods complete the checkout unpaid; invoice.paid grants once the money arrived. A trial checkout pays nothing.
+        if (recorded && session.PaymentStatus is "paid" or "no_payment_required")
             await MarkCheckoutPaid(SubscriptionProviders.Stripe, session.Id);
+        return trial;
     }
+
+    private static TrialStart CheckoutTrialStart(Stripe.Checkout.Session session) => new(DateTime.UtcNow,
+        session.CustomerDetails?.Email ?? session.CustomerEmail, session.CustomerDetails?.Name, session.Currency);
 
     /// <summary>
     /// customer.subscription.updated/deleted and invoice.payment_failed: synchronizes status, EndsAt and RenewsAt.
@@ -82,6 +88,7 @@ public partial class SubscriptionService
         await ApplyCheckedStripeState(subscription, snapshot);
         await ExpireUnpaidStripeSwitch(subscription, snapshot);
         await context.SaveChangesAsync();
+        await GrantStripeTrial(subscription, snapshot);
         await TryScheduleStripeRenewal(subscription, snapshot);
         return true;
     });
@@ -108,6 +115,9 @@ public partial class SubscriptionService
             return await RejectStripeInvoice(null, invoice, "the subscription was not sold by this service");
         await ApplyCheckedStripeState(subscription, snapshot);
         await context.SaveChangesAsync();
+        await GrantStripeTrial(subscription, snapshot);
+        if (IsTrialStartInvoice(invoice))
+            return await StripeTrialInvoice(subscription, snapshot, invoice);
         // The invoice of a switch to a longer term pays that term ("updated", but neither a proration nor a renewal)
         if (await StripeTermSwitchOf(subscription, snapshot, invoice) is SubscriptionTermSwitch termSwitch)
             return await GrantStripeTermSwitch(subscription, snapshot, invoice, termSwitch);
@@ -141,26 +151,38 @@ public partial class SubscriptionService
         var rejection = StripeAmountRejection(subscription, snapshot, invoice, extension);
         if (rejection != null)
             return await RejectStripeInvoice(subscription, invoice, rejection);
-        var evidence = await StripeEvidence(subscription, snapshot, invoice, invoice.NormalizedBillingReason == "initial");
-        if (invoice.NormalizedBillingReason == "initial" && !await AcceptsDirectBuyer(subscription, invoice, evidence))
+        // The first payment after a trial (billing reason "renewal") is the subscription's first payment: checked and confirmed like one
+        var followsTrial = await FollowsTrial(subscription, reference);
+        var first = invoice.NormalizedBillingReason == "initial" || followsTrial;
+        var evidence = await StripeEvidence(subscription, snapshot, invoice, first);
+        if (first && !await AcceptsDirectBuyer(subscription, invoice, evidence))
             return null;
-        WarnOnLongRenewal(subscription, invoice, extension);
+        if (!followsTrial)
+            WarnOnLongRenewal(subscription, invoice, extension);
         await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
         subscription.PaymentAmount = StripeAmounts.FromMinorUnits(invoice.AmountPaid, invoice.Currency).ToString("0.00", CultureInfo.InvariantCulture) + " " + invoice.Currency?.ToUpperInvariant();
         await context.SaveChangesAsync();
         await TryScheduleStripeRenewal(subscription, snapshot);
-        // A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")
-        return await WithStripeDeclaration(StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice, extension))
-            with { Evidence = evidence, IsProration = false }, snapshot, invoice, true, extension);
+        return await PeriodOutcome(subscription, snapshot, invoice, evidence, extension, followsTrial);
     }
 
     private async Task<SubscriptionPaymentOutcome> GrantedStripeOutcome(UserSubscription subscription,
         StripeSubscriptionSnapshot snapshot, StripeInvoiceInfo invoice, bool cardCountryRequired, bool extension)
     {
         var evidence = await StripeEvidence(subscription, snapshot, invoice, cardCountryRequired);
-        // A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")
-        return await WithStripeDeclaration(StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice, extension))
-            with { Evidence = evidence, IsProration = false }, snapshot, invoice, true, extension);
+        var followsTrial = await FollowsTrial(subscription, SubscriptionProviders.GrantReference(SubscriptionProviders.Stripe, invoice.Id));
+        return await PeriodOutcome(subscription, snapshot, invoice, evidence, extension, followsTrial);
+    }
+
+    /// <summary>A granted invoice pays a period, also the first 4-week one after the renewal schedule (billing reason "updated")</summary>
+    private async Task<SubscriptionPaymentOutcome> PeriodOutcome(UserSubscription subscription, StripeSubscriptionSnapshot snapshot,
+        StripeInvoiceInfo invoice, PaymentEvidence evidence, bool extension, bool followsTrial)
+    {
+        var outcome = StripeOutcome(subscription, snapshot, invoice, AgreedAmount(subscription, snapshot, invoice, extension))
+            with { Evidence = evidence, IsProration = false };
+        if (followsTrial)
+            outcome = outcome with { IsRenewal = false, FollowsTrial = true };
+        return await WithStripeDeclaration(outcome, snapshot, invoice, true, extension);
     }
 
     /// <summary>
@@ -551,7 +573,7 @@ public partial class SubscriptionService
         {
             var resumed = await service.StripeApi.SetCancelAtPeriodEnd(subscription.ExternalId, false);
             await service.ApplyCheckedStripeState(subscription, resumed);
-            if (subscription.Status != "active")
+            if (subscription.Status is not ("active" or "on_trial"))
                 throw new ApiException("Stripe did not confirm reactivation.");
             await service.ScheduleResumedStripeRenewal(subscription, resumed);
         }

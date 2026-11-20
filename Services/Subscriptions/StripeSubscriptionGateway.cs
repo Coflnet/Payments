@@ -304,6 +304,6 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
             item?.Id, item?.Price?.Id, item?.Price?.ProductId, item?.Price?.UnitAmount, item?.Price?.Currency,
             item?.Price?.TaxBehavior is "inclusive" or "exclusive" ? item.Price.TaxBehavior : null,
             subscription.ManagedPayments?.Enabled == true, subscription.Created, subscription.PendingUpdate != null,
-            subscription.ScheduleId, item?.Price?.Recurring?.Interval, item?.Price?.Recurring?.IntervalCount);
+            subscription.ScheduleId, item?.Price?.Recurring?.Interval, item?.Price?.Recurring?.IntervalCount, subscription.TrialEnd);
     }
 }

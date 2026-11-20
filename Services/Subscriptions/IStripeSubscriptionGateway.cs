@@ -90,7 +90,8 @@ public record StripeSubscriptionSnapshot(
     bool HasPendingUpdate = false,
     string ScheduleId = null,
     string Interval = null,
-    long? IntervalCount = null)
+    long? IntervalCount = null,
+    DateTime? TrialEnd = null)
 {
     /// <summary>The billed price's period in weeks (week intervals only), null for other intervals or when unknown</summary>
     public int? IntervalWeeks => Interval == "week" && IntervalCount is long count ? (int)count : null;

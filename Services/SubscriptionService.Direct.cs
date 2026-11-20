@@ -46,16 +46,26 @@ public record PaymentEvidence(string IpAddress, string CheckoutCountry, string B
 /// <param name="LegalLocale">Locale of the buyer's latest declaration for the subscription, null when unknown</param>
 /// <param name="IsExtension">The first payment of a term the buyer opted in to extend</param>
 /// <param name="TermSwitch">The payment of a switch to a longer term (<see cref="SubscriptionService.SwitchTerm"/>), null otherwise</param>
+/// <param name="Trial">Not a payment: the start of a free trial (<see cref="PaymentConfirmationTypes.SubscriptionTrialStarted"/>), null otherwise</param>
+/// <param name="FollowsTrial">The first payment after a free trial</param>
 public record SubscriptionPaymentOutcome(UserSubscription Subscription, TopUpProduct Product, string PaymentId,
     decimal Amount, string Currency, string Country, string PostalCode, string Email, string Name, DateTime PaidAt,
     decimal? EurAmount = null, bool IsProration = false, decimal TaxAmount = 0, double TaxRate = 0,
     PaymentEvidence Evidence = null, bool IsRenewal = false, string PriceTaxBehavior = null,
     ServicePerformanceDeclaration Declaration = null, string LegalLocale = null, bool IsExtension = false,
-    SubscriptionTermSwitchInfo TermSwitch = null)
+    SubscriptionTermSwitchInfo TermSwitch = null, SubscriptionTrialInfo Trial = null, bool FollowsTrial = false)
 {
     /// <summary>Merchant of record (Stripe Managed Payments) remits the tax</summary>
     public bool TaxRemittedByProcessor => Subscription.ManagedPayments;
 }
+
+/// <summary>
+/// A free trial that started (the confirmation of a trial checkout)
+/// </summary>
+/// <param name="Days">Length of the trial</param>
+/// <param name="EndsAt">When the trial ends and the first payment is charged</param>
+/// <param name="FirstChargeCents">What the first payment charges (minor units of the subscription's currency)</param>
+public record SubscriptionTrialInfo(int Days, DateTime EndsAt, long? FirstChargeCents);
 
 public partial class SubscriptionService
 {

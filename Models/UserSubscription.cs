@@ -20,11 +20,13 @@ public class UserSubscription
     public string PaymentAmount { get; set; }
     public string Status { get; set; }
     /// <summary>
-    /// When the trial ends if subscription is in trial period (on_trial status)
+    /// When the trial ends if subscription is in trial period (on_trial status). Direct providers: the end of the free trial this
+    /// service granted (set once when the provider confirmed the trial; stays as history after it)
     /// </summary>
     public DateTime? TrialEndsAt { get; set; }
     /// <summary>
-    /// When the user started their trial for this product (used to prevent multiple trials)
+    /// Lemon Squeezy: when the user started their trial for this product. Direct providers: when the trial's confirmation was
+    /// published (null until then, so a failed publish is retried)
     /// </summary>
     public DateTime? TrialUsedAt { get; set; }
     /// <summary>

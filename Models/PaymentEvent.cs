@@ -82,6 +82,23 @@ public class PaymentEvent
     public DateTime? SubscriptionNextBillingAt { get; set; }
     /// <summary>Term switches: the automatic promotion that lowered this payment, null without one</summary>
     public string SubscriptionPromotionCode { get; set; }
+    /// <summary>
+    /// Trial starts (<see cref="PaymentConfirmationTypes.SubscriptionTrialStarted"/>): the length of the free trial in days; null otherwise
+    /// </summary>
+    public int? SubscriptionTrialDays { get; set; }
+    /// <summary>
+    /// Trial starts: when the trial ends (UTC) and <see cref="SubscriptionFirstChargeAmount"/> is charged, unless the buyer cancels before
+    /// (then the access just ends, nothing is charged). Also on the first payment after a trial. Null otherwise
+    /// </summary>
+    public DateTime? SubscriptionTrialEndsAt { get; set; }
+    /// <summary>
+    /// Trial starts: what is charged when the trial ends, in <see cref="Currency"/>, for a term of <see cref="SubscriptionBillingWeeks"/> weeks
+    /// (tax treatment as <see cref="RenewalTaxTreatment"/>); after that every <see cref="SubscriptionRenewalWeeks"/> weeks
+    /// <see cref="SubscriptionRenewalAmount"/>. Null otherwise (and for a Managed Payments trial in another currency)
+    /// </summary>
+    public decimal? SubscriptionFirstChargeAmount { get; set; }
+    /// <summary>Subscription payments: true on the first payment after a free trial (its confirmation was the trial start); null otherwise</summary>
+    public bool? SubscriptionFollowsTrial { get; set; }
 }
 
 /// <summary>Values of <see cref="PaymentEvent.ConfirmationType"/> this service sets for subscriptions</summary>
@@ -91,6 +108,13 @@ public static class PaymentConfirmationTypes
     /// Not a payment: a 13 or 52 week term ends within 35 days and then continues every 4 weeks (<see cref="PaymentEvent.PayedAmount"/> 0)
     /// </summary>
     public const string SubscriptionRenewalReminder = "subscription_renewal_reminder";
+    /// <summary>
+    /// Not a payment: a direct subscription started with a free trial (<see cref="PaymentEvent.PayedAmount"/> 0). The confirmation of the
+    /// purchase: the trial ends on <see cref="PaymentEvent.SubscriptionTrialEndsAt"/>, then <see cref="PaymentEvent.SubscriptionFirstChargeAmount"/>
+    /// is charged and the subscription continues every <see cref="PaymentEvent.SubscriptionRenewalWeeks"/> weeks at
+    /// <see cref="PaymentEvent.SubscriptionRenewalAmount"/>. Carries the checkout's declaration; the service runs from the trial start.
+    /// </summary>
+    public const string SubscriptionTrialStarted = "subscription_trial_started";
 }
 
 /// <summary>How tax relates to an amount of a <see cref="PaymentEvent"/> (purchase confirmations state it next to the amount)</summary>
