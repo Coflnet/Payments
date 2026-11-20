@@ -16,6 +16,9 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// A plan id configured as PAYPAL:SUBSCRIPTION_PLANS:{slug} overrides this for 4-week plans (same TRIAL + REGULAR structure,
 /// see <see cref="PayPalSubscriptionApi"/>). It is ignored for 13 and 52 week plans (warning logged once): nothing proves such
 /// a plan continues every 4 weeks, and one that repeats its period would renew unlawfully.
+/// Free trials (<see cref="SubscriptionTrials"/>) use separate plans that start with a free TRIAL cycle of the trial days. They are
+/// stored under the product slug plus <see cref="TrialSuffix"/> and the days (<c>l_bazaarpro+trial3d</c>), so no plan made before is
+/// changed or reused for them, no schema change is needed and a release without trials never picks one (it looks up the plain slug).
 /// </summary>
 public class PayPalPlanCatalog
 {
@@ -24,6 +27,8 @@ public class PayPalPlanCatalog
     private readonly IConfiguration config;
     private readonly ILogger<PayPalPlanCatalog> logger;
     private static readonly ConcurrentDictionary<string, bool> WarnedOverrides = new();
+    /// <summary>Marks the stored slug of a plan with a free trial: {slug}+trial{days}d</summary>
+    public const string TrialSuffix = "+trial";
 
     public PayPalPlanCatalog(PaymentContext db, IPayPalSubscriptionApi api, IConfiguration config, ILogger<PayPalPlanCatalog> logger = null)
     {
@@ -38,17 +43,33 @@ public class PayPalPlanCatalog
     /// 13 or 52 week plan continues as (required for those; its list price is the REGULAR cycle's default, subscriptions
     /// override it). Concurrent first checkouts may create an orphan plan at PayPal, but only one plan id is stored and used.
     /// </summary>
-    public async Task<string> GetOrCreate(TopUpProduct plan, TopUpProduct renewalPlan = null)
+    /// <param name="trialDays">The plan variant with a free trial of this many days (never the configured override); null: none</param>
+    public async Task<string> GetOrCreate(TopUpProduct plan, TopUpProduct renewalPlan = null, int? trialDays = null)
     {
-        if (ConfiguredPlanId(plan) is string configured)
+        if (trialDays is not > 0 && ConfiguredPlanId(plan) is string configured)
             return configured;
-        var key = Key(plan, renewalPlan);
+        var key = Key(plan, renewalPlan, trialDays);
         var existing = await Find(key);
         if (existing != null)
             return existing.PlanId;
-        var created = await CreateAtPayPal(plan, renewalPlan, key);
+        var created = await CreateAtPayPal(plan, renewalPlan, key, trialDays);
         return await Store(created, key);
     }
+
+    /// <summary>The free trial days <paramref name="planId"/> starts with, null for a plan without one (or no plan of the product)</summary>
+    public async Task<int?> TrialDays(string planId, TopUpProduct plan) => TrialDaysOf((await PlanOf(planId, plan))?.ProductSlug, plan.Slug);
+
+    /// <summary>The days of a stored trial variant slug ({slug}+trial{days}d), null for the plain slug</summary>
+    internal static int? TrialDaysOf(string storedSlug, string productSlug)
+    {
+        var prefix = productSlug + TrialSuffix;
+        if (storedSlug == null || !storedSlug.StartsWith(prefix, StringComparison.Ordinal) || !storedSlug.EndsWith('d'))
+            return null;
+        return int.TryParse(storedSlug[prefix.Length..^1], out var days) && days > 0 ? days : null;
+    }
+
+    private static string StoredSlug(string productSlug, int? trialDays) =>
+        trialDays > 0 ? $"{productSlug}{TrialSuffix}{trialDays}d" : productSlug;
 
     /// <summary>
     /// Whether <paramref name="planId"/> is a plan this service made (or is configured) for the product, including the plans
@@ -68,15 +89,24 @@ public class PayPalPlanCatalog
     public static bool IsSellable(TopUpProduct plan) =>
         plan != null && SubscriptionService.IntervalWeeks(plan.OwnershipSeconds) != null && !string.IsNullOrEmpty(plan.CurrencyCode);
 
+    /// <summary>
+    /// The stored plan (or the configured override) <paramref name="planId"/> of the product; its trial variants count as well. With an
+    /// override, only it and the trial variants (never made from it) are the product's plans.
+    /// </summary>
     private async Task<PayPalPlan> PlanOf(string planId, TopUpProduct plan)
     {
         if (string.IsNullOrEmpty(planId))
             return null;
-        if (ConfiguredPlanId(plan) is string configured)
-            return configured == planId ? new PayPalPlan { PlanId = planId, RenewalWeeks = SubscriptionRenewal.RenewalWeeks } : null;
+        var configured = ConfiguredPlanId(plan);
+        if (configured == planId)
+            return new PayPalPlan { PlanId = planId, ProductSlug = plan.Slug, RenewalWeeks = SubscriptionRenewal.RenewalWeeks };
         var (slug, weeks, currency) = ProductKey(plan);
-        return await db.PayPalPlans.AsNoTracking().FirstOrDefaultAsync(p => p.PlanId == planId
-            && p.ProductSlug == slug && p.BillingWeeks == weeks && p.Currency == currency);
+        var trialPrefix = slug + TrialSuffix;
+        var stored = await db.PayPalPlans.AsNoTracking().FirstOrDefaultAsync(p => p.PlanId == planId
+            && (p.ProductSlug == slug || p.ProductSlug.StartsWith(trialPrefix)) && p.BillingWeeks == weeks && p.Currency == currency);
+        if (configured != null && TrialDaysOf(stored?.ProductSlug, slug) == null)
+            return null;
+        return stored;
     }
 
     private string ConfiguredPlanId(TopUpProduct plan)
@@ -99,13 +129,13 @@ public class PayPalPlanCatalog
         return (plan.Slug, weeks, plan.CurrencyCode.ToUpperInvariant());
     }
 
-    /// <summary>Every plan made now renews every 4 weeks (4-week plans with their own period)</summary>
-    private static (string slug, int weeks, int renewalWeeks, string currency) Key(TopUpProduct plan, TopUpProduct renewalPlan)
+    /// <summary>Every plan made now renews every 4 weeks (4-week plans with their own period); the slug is the stored one</summary>
+    private static (string slug, int weeks, int renewalWeeks, string currency) Key(TopUpProduct plan, TopUpProduct renewalPlan, int? trialDays)
     {
         var (slug, weeks, currency) = ProductKey(plan);
         if (SubscriptionRenewal.ContinuesAsFourWeeks(plan) && renewalPlan == null)
             throw new ApiException($"The plan {plan.Slug} has no 4-week plan to continue as.");
-        return (slug, weeks, SubscriptionRenewal.RenewalWeeks, currency);
+        return (StoredSlug(slug, trialDays), weeks, SubscriptionRenewal.RenewalWeeks, currency);
     }
 
     private Task<PayPalPlan> Find((string slug, int weeks, int renewalWeeks, string currency) key) => db.PayPalPlans.AsNoTracking()
@@ -113,13 +143,14 @@ public class PayPalPlanCatalog
             && p.Currency == key.currency);
 
     private async Task<PayPalPlan> CreateAtPayPal(TopUpProduct plan, TopUpProduct renewalPlan,
-        (string slug, int weeks, int renewalWeeks, string currency) key)
+        (string slug, int weeks, int renewalWeeks, string currency) key, int? trialDays)
     {
-        var sibling = await db.PayPalPlans.AsNoTracking().FirstOrDefaultAsync(p => p.ProductSlug == key.slug);
+        var sibling = await db.PayPalPlans.AsNoTracking().FirstOrDefaultAsync(p => p.ProductSlug == plan.Slug)
+            ?? await db.PayPalPlans.AsNoTracking().FirstOrDefaultAsync(p => p.ProductSlug == key.slug);
         var catalogProductId = sibling?.PayPalProductId ?? await api.CreateCatalogProduct(plan.Title ?? plan.Slug, plan.Description ?? plan.Title ?? plan.Slug);
         var planId = await api.CreatePlan(new PayPalPlanRequest(catalogProductId, plan.Title ?? plan.Slug,
             plan.Description ?? plan.Title ?? plan.Slug, key.weeks, plan.Price, key.currency,
-            key.renewalWeeks, (renewalPlan ?? plan).Price));
+            key.renewalWeeks, (renewalPlan ?? plan).Price, trialDays > 0 ? trialDays : null));
         return new PayPalPlan
         {
             ProductSlug = key.slug, BillingWeeks = key.weeks, RenewalWeeks = key.renewalWeeks, Currency = key.currency,

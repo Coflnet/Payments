@@ -25,17 +25,20 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// price); equals <paramref name="Price"/> unless a "first payment only" code applies or the plan continues every 4 weeks.
 /// Null means the same as <paramref name="Price"/>.</param>
 /// <param name="StartTime">When the first cycle starts and is charged (an extension starts when the current term ends); null: now</param>
+/// <param name="TrialDays">The plan starts with a free trial of this many days (<see cref="PayPalPlanRequest.TrialDays"/>), so the priced
+/// cycles are sequence 2 and 3; null: no trial</param>
 public record PayPalSubscriptionRequest(string PlanId, string CustomId, decimal Price, string Currency,
-    string ReturnUrl, string CancelUrl, string Email, decimal? RecurringPrice = null, DateTime? StartTime = null);
+    string ReturnUrl, string CancelUrl, string Email, decimal? RecurringPrice = null, DateTime? StartTime = null, int? TrialDays = null);
 
 /// <summary>
 /// A billing plan to create: a one cycle TRIAL of <paramref name="Weeks"/> weeks at the list price, then an infinite REGULAR
 /// cycle of <paramref name="RenewalWeeks"/> weeks (default: <paramref name="Weeks"/>) at <paramref name="RenewalPrice"/>
 /// (default: <paramref name="Price"/>). The trial cycle exists so a subscription can price its first cycle differently, and
 /// so 13 and 52 week plans continue every 4 weeks (each PayPal billing cycle has its own frequency).
+/// With <paramref name="TrialDays"/> a free TRIAL cycle of that many days comes first (PayPal allows two trial cycles).
 /// </summary>
 public record PayPalPlanRequest(string CatalogProductId, string Name, string Description, int Weeks, decimal Price, string Currency,
-    int? RenewalWeeks = null, decimal? RenewalPrice = null);
+    int? RenewalWeeks = null, decimal? RenewalPrice = null, int? TrialDays = null);
 
 /// <summary>
 /// PayPal Subscriptions v1 (the checkout SDK has no subscriptions API)
@@ -119,7 +122,8 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
     };
 
     /// <summary>
-    /// Sequence 1 is a one cycle TRIAL of the plan's period, sequence 2 the infinite REGULAR cycle of the renewal period.
+    /// Sequence 1 is a one cycle TRIAL of the plan's period, sequence 2 the infinite REGULAR cycle of the renewal period. A free trial
+    /// comes before them as a one cycle TRIAL of its days at price 0 (the others move to sequence 2 and 3).
     /// </summary>
     internal static JObject PlanBody(PayPalPlanRequest request) => new()
     {
@@ -127,9 +131,7 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
         ["name"] = Truncate(request.Name, 127),
         ["description"] = Truncate(request.Description, 127),
         ["status"] = "ACTIVE",
-        ["billing_cycles"] = new JArray(
-            PlanCycle("TRIAL", 1, 1, request.Weeks, request.Price, request.Currency),
-            PlanCycle("REGULAR", 2, 0, request.RenewalWeeks ?? request.Weeks, request.RenewalPrice ?? request.Price, request.Currency)),
+        ["billing_cycles"] = PlanCycles(request),
         ["payment_preferences"] = new JObject
         {
             ["auto_bill_outstanding"] = true,
@@ -139,9 +141,24 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
         }
     };
 
-    private static JObject PlanCycle(string tenure, int sequence, int totalCycles, int weeks, decimal price, string currency) => new()
+    private static JArray PlanCycles(PayPalPlanRequest request)
     {
-        ["frequency"] = new JObject { ["interval_unit"] = "WEEK", ["interval_count"] = weeks },
+        var first = FirstPricedSequence(request.TrialDays);
+        var cycles = new JArray(
+            PlanCycle("TRIAL", first, 1, request.Weeks, request.Price, request.Currency),
+            PlanCycle("REGULAR", first + 1, 0, request.RenewalWeeks ?? request.Weeks, request.RenewalPrice ?? request.Price, request.Currency));
+        if (first > 1)
+            cycles.Insert(0, PlanCycle("TRIAL", 1, 1, request.TrialDays.Value, 0m, request.Currency, "DAY"));
+        return cycles;
+    }
+
+    /// <summary>The sequence of the first paid cycle: 2 after a free trial, else 1</summary>
+    internal static int FirstPricedSequence(int? trialDays) => trialDays > 0 ? 2 : 1;
+
+    private static JObject PlanCycle(string tenure, int sequence, int totalCycles, int count, decimal price, string currency,
+        string unit = "WEEK") => new()
+    {
+        ["frequency"] = new JObject { ["interval_unit"] = unit, ["interval_count"] = count },
         ["tenure_type"] = tenure,
         ["sequence"] = sequence,
         ["total_cycles"] = totalCycles,
@@ -156,8 +173,8 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
     private static string Truncate(string text, int max) => text == null || text.Length <= max ? text : text[..max];
 
     /// <summary>
-    /// The plan override prices the two cycles of the plan (sequence 1 TRIAL = first payment, sequence 2 REGULAR = renewals);
-    /// the cycle structure itself must match the plan.
+    /// The plan override prices the two cycles of the plan (sequence 1 TRIAL = first payment, sequence 2 REGULAR = renewals; after a free
+    /// trial, which stays at 0, sequence 2 and 3); the cycle structure itself must match the plan.
     /// </summary>
     internal static JObject CreateBody(PayPalSubscriptionRequest request)
     {
@@ -165,12 +182,7 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
         {
             ["plan_id"] = request.PlanId,
             ["custom_id"] = request.CustomId,
-            ["plan"] = new JObject
-            {
-                ["billing_cycles"] = new JArray(
-                    new JObject { ["sequence"] = 1, ["pricing_scheme"] = PricingScheme(request.Price, request.Currency) },
-                    new JObject { ["sequence"] = 2, ["pricing_scheme"] = PricingScheme(request.RecurringPrice ?? request.Price, request.Currency) })
-            },
+            ["plan"] = new JObject { ["billing_cycles"] = OverrideCycles(request) },
             ["application_context"] = ApplicationContext(request.ReturnUrl, request.CancelUrl)
         };
         if (!string.IsNullOrWhiteSpace(request.Email))
@@ -178,6 +190,17 @@ public class PayPalSubscriptionApi : IPayPalSubscriptionApi
         if (request.StartTime is DateTime start)
             body["start_time"] = start.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
         return body;
+    }
+
+    private static JArray OverrideCycles(PayPalSubscriptionRequest request)
+    {
+        var first = FirstPricedSequence(request.TrialDays);
+        var cycles = new JArray(
+            new JObject { ["sequence"] = first, ["pricing_scheme"] = PricingScheme(request.Price, request.Currency) },
+            new JObject { ["sequence"] = first + 1, ["pricing_scheme"] = PricingScheme(request.RecurringPrice ?? request.Price, request.Currency) });
+        if (first > 1)
+            cycles.Insert(0, new JObject { ["sequence"] = 1, ["pricing_scheme"] = PricingScheme(0m, request.Currency) });
+        return cycles;
     }
 
     /// <summary>

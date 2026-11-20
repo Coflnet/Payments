@@ -53,10 +53,31 @@ public partial class SubscriptionService
             await context.SaveChangesAsync();
             if (!await LinkPayPalContinuation(subscription, remote))
                 return [];
+            var trial = await StartPayPalTrial(subscription, remote);
+            List<SubscriptionPaymentOutcome> outcomes = trial == null ? [] : [trial];
             if (!IsPastApproval(remote.Status) || remote.BillingInfo?.LastPayment == null)
-                return [];
-            return await GrantListedPayPalSales(subscription, remote);
+                return outcomes;
+            outcomes.AddRange(await GrantListedPayPalSales(subscription, remote));
+            return outcomes;
         });
+
+    /// <summary>
+    /// A subscription on a trial plan variant (<see cref="PayPalPlanCatalog.TrialDays"/>) that PayPal activated before any sale started its
+    /// free trial: access until PayPal's first billing time. Returns the trial's confirmation while it was not published.
+    /// </summary>
+    private async Task<SubscriptionPaymentOutcome> StartPayPalTrial(UserSubscription subscription, PayPalSubscription remote)
+    {
+        if (await PayPalPlans.TrialDays(remote.PlanId, (TopUpProduct)subscription.Product) is not int days)
+            return null;
+        var start = ParseTime(remote.StartTime) ?? DateTime.UtcNow;
+        if (subscription.TrialEndsAt == null && remote.Status == "ACTIVE" && !await HasGrantedPeriod(subscription))
+        {
+            await GrantTrialAccess(subscription, ParseTime(remote.BillingInfo?.NextBillingTime) ?? start.AddDays(days), days, start);
+            await ApplyPayPalState(subscription, remote);
+            await context.SaveChangesAsync();
+        }
+        return await TrialConfirmation(subscription, days, await PayPalCheckoutRequestId(subscription), new TrialStart(start));
+    }
 
     /// <summary>
     /// PAYMENT.SALE.COMPLETED of a subscription (resource.billing_agreement_id): grants the paid period once.
@@ -224,18 +245,14 @@ public partial class SubscriptionService
             sale.Amount?.Currency?.ToUpperInvariant(), country, null, null, null,
             ParseTime(sale.CreateTime) ?? DateTime.UtcNow, net, false, vat, rate,
             await PayPalEvidence(subscription, country, payerCountry, sale.Id), !first,
-            TermSwitch: first ? await PayPalTermSwitchInfo(subscription, sale) : null);
+            TermSwitch: first ? await PayPalTermSwitchInfo(subscription, sale) : null,
+            FollowsTrial: first && subscription.TrialEndsAt != null);
         return await WithPayPalDeclaration(outcome, first);
     }
 
     /// <summary>Whether the sale's grant is the subscription's first one (also when it is delivered again later)</summary>
-    private async Task<bool> IsFirstPayPalSale(UserSubscription subscription, PayPalSale sale)
-    {
-        var first = await context.FiniteTransactions
-            .Where(t => t.SubscriptionId == subscription.ExternalId && t.User.Id == subscription.User.Id && t.Amount < 0)
-            .OrderBy(t => t.Id).Select(t => t.Reference).FirstOrDefaultAsync();
-        return first == null || first == SubscriptionProviders.GrantReference(SubscriptionProviders.PayPal, sale.Id);
-    }
+    private Task<bool> IsFirstPayPalSale(UserSubscription subscription, PayPalSale sale) =>
+        IsFirstGrantedPayment(subscription, SubscriptionProviders.GrantReference(SubscriptionProviders.PayPal, sale.Id));
 
     /// <summary>
     /// PayPal does not let us refuse a payer by country after the fact, so a payer country that differs from the
@@ -391,6 +408,8 @@ public partial class SubscriptionService
             "EXPIRED" => "expired",
             _ => "pending"
         };
+        if (subscription.Status == "active" && InTrial(subscription, DateTime.UtcNow) && !await HasGrantedPeriod(subscription))
+            subscription.Status = "on_trial";
         if (ParseTime(remote.BillingInfo?.NextBillingTime) is DateTime next)
             subscription.RenewsAt = next;
         subscription.EndsAt = subscription.Status switch

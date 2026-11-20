@@ -207,4 +207,32 @@ public partial class SubscriptionCheckoutControllerTests
         Assert.That(again.Id, Is.EqualTo("cs_1"));
         Assert.That(again.TrialDays, Is.EqualTo(3));
     }
+
+    /// <summary>PayPal: a plan variant with a free TRIAL cycle of the trial days before the paid cycles, priced like any checkout</summary>
+    [Test]
+    public async Task PayPalCheckoutUsesTheTrialPlanVariant()
+    {
+        await BazaarPro();
+
+        var response = await Controller("DE", TrialsOn).PayPalSubscribe("buyer", "l_bazaarpro", TrialOptions("DE"));
+
+        Assert.That(response.TrialDays, Is.EqualTo(3));
+        Assert.That(paypalPlans.Single().TrialDays, Is.EqualTo(3));
+        Assert.That((await db.PayPalPlans.SingleAsync()).ProductSlug, Is.EqualTo("l_bazaarpro+trial3d"));
+        Assert.That((paypalRequest.TrialDays, paypalRequest.Price, paypalRequest.RecurringPrice), Is.EqualTo(((int?)3, 15.46m, (decimal?)15.46m)));
+        Assert.That((await db.PaymentRequests.SingleAsync()).Amount, Is.EqualTo(15.46m), "the first sale after the trial must charge it");
+    }
+
+    [Test]
+    public async Task PayPalCheckoutWithoutATrialUsesThePlainPlan()
+    {
+        await BazaarPro();
+
+        var response = await Controller("DE").PayPalSubscribe("buyer", "l_bazaarpro", TrialOptions("DE"));
+
+        Assert.That(response.TrialDays, Is.Null);
+        Assert.That(paypalPlans.Single().TrialDays, Is.Null);
+        Assert.That((await db.PayPalPlans.SingleAsync()).ProductSlug, Is.EqualTo("l_bazaarpro"));
+        Assert.That(paypalRequest.TrialDays, Is.Null);
+    }
 }

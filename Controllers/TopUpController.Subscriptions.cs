@@ -111,10 +111,12 @@ public partial class TopUpController
         var request = await AttemptBlockFraud(options, user, plan, priced.First, SubscriptionProviders.PayPal,
             RecurringIfDifferent(priced.First, priced.Following), country, region: region);
         if (request.SessionId != null)
-            return await ExistingPayPalApproval(paypal, request.SessionId);
+            return await ExistingPayPalApproval(paypal, request.SessionId, plan);
         await RememberCountry(user, country, options);
         await declarations.Record(options, user, plan, request);
-        var created = await FailRequestOnError(request, () => CreateApprovablePayPalSubscription(paypal, plan, priced, user, options), priced.Discount);
+        var trialDays = await trials.DaysFor(options, plan, user, priced.Discount);
+        var created = await FailRequestOnError(request,
+            () => CreateApprovablePayPalSubscription(paypal, plan, priced, user, options, trialDays), priced.Discount);
         var approve = ApproveLink(created);
         // The webhook only activates subscriptions recorded here, for exactly this price, and not long after the code expired.
         request.SessionId = created.Id;
@@ -123,18 +125,19 @@ public partial class TopUpController
         request.CreatorCode = options?.CreatorCode;
         request.DiscountCode = priced.Discount?.Code;
         await db.SaveChangesAsync();
-        return new TopUpIdResponse { Id = created.Id, DirectLink = approve };
+        return new TopUpIdResponse { Id = created.Id, DirectLink = approve, TrialDays = trialDays };
     }
 
+    /// <param name="trialDays">A free trial first: the plan variant with a free TRIAL cycle of these days, the paid cycles follow</param>
     private async Task<Coflnet.Payments.Models.PayPal.PayPalSubscription> CreatePayPalSubscription(IPayPalSubscriptionApi paypal, TopUpProduct plan,
-        SubscriptionCheckoutPrice priced, User user, TopUpOptions options)
+        SubscriptionCheckoutPrice priced, User user, TopUpOptions options, int? trialDays)
     {
-        var planId = await PayPalPlans.GetOrCreate(plan, priced.RenewalPlan);
+        var planId = await PayPalPlans.GetOrCreate(plan, priced.RenewalPlan, trialDays);
         // The REGULAR cycles: the 4-week renewal price of 13 and 52 week plans, the plan's recurring price otherwise
         return await paypal.Create(new PayPalSubscriptionRequest(planId,
             SubscriptionService.PayPalCustomId(plan.Id, user.ExternalId), priced.First, plan.CurrencyCode.ToUpperInvariant(),
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
-            options?.UserEmail, priced.Following));
+            options?.UserEmail, priced.Following, TrialDays: trialDays));
     }
 
     private SubscriptionTrials trials => subscriptionTrials ??= new SubscriptionTrials(db, config);
@@ -275,9 +278,9 @@ public partial class TopUpController
     }
 
     private async Task<Coflnet.Payments.Models.PayPal.PayPalSubscription> CreateApprovablePayPalSubscription(IPayPalSubscriptionApi paypal, TopUpProduct plan,
-        SubscriptionCheckoutPrice priced, User user, TopUpOptions options)
+        SubscriptionCheckoutPrice priced, User user, TopUpOptions options, int? trialDays)
     {
-        var created = await CreatePayPalSubscription(paypal, plan, priced, user, options);
+        var created = await CreatePayPalSubscription(paypal, plan, priced, user, options, trialDays);
         if (ApproveLink(created) == null)
             throw new ApiException("PayPal did not return an approval link.");
         return created;
@@ -332,13 +335,13 @@ public partial class TopUpController
     private static int? SessionTrialDays(Session session) =>
         int.TryParse(session.Metadata?.GetValueOrDefault(SubscriptionTrials.MetadataKey), out var days) && days > 0 ? days : null;
 
-    private static async Task<TopUpIdResponse> ExistingPayPalApproval(IPayPalSubscriptionApi paypal, string subscriptionId)
+    private async Task<TopUpIdResponse> ExistingPayPalApproval(IPayPalSubscriptionApi paypal, string subscriptionId, TopUpProduct plan)
     {
         var existing = await paypal.Get(subscriptionId);
         var approve = existing?.Status == "APPROVAL_PENDING" ? ApproveLink(existing) : null;
         if (approve == null)
             throw new ApiException("A PayPal subscription checkout is already in progress. Please try again later.");
-        return new TopUpIdResponse { Id = existing.Id, DirectLink = approve };
+        return new TopUpIdResponse { Id = existing.Id, DirectLink = approve, TrialDays = await PayPalPlans.TrialDays(existing.PlanId, plan) };
     }
 
     private static string ApproveLink(Coflnet.Payments.Models.PayPal.PayPalSubscription subscription) =>
