@@ -215,4 +215,19 @@ public class PayPalTrialTests : DirectSubscriptionTestBase
         Assert.That(((JArray)plan["billing_cycles"]).Select(c => (int)c["sequence"]), Is.EqualTo(new[] { 1, 2 }));
         Assert.That(((JArray)subscription["plan"]["billing_cycles"]).Select(c => (int)c["sequence"]), Is.EqualTo(new[] { 1, 2 }));
     }
+
+    [Test]
+    public async Task TermSwitchesAreRefusedDuringThePayPalTrial()
+    {
+        var service = PayPalService();
+        await service.PayPalSubscriptionChanged("I-SUB");
+        var request = new SubscriptionTermSwitchRequest
+        {
+            Weeks = 52, Declaration = StripeExtensionTests.Declaration("Switch now"), ExpectedChargedNow = 100m
+        };
+
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => service.SwitchTerm("buyer", "I-SUB", request)).Message,
+            Is.EqualTo(SubscriptionService.TrialActive));
+        paypal.Verify(p => p.Create(It.IsAny<PayPalSubscriptionRequest>()), Times.Never);
+    }
 }

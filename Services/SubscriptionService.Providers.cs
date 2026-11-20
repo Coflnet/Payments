@@ -23,7 +23,8 @@ public partial class SubscriptionService
             return;
         subscription.ProviderSlug = provider.Slug;
         subscription.CanResume = provider.CanResume(subscription);
-        subscription.CanChangePlan = provider.CanChangePlan(subscription);
+        // A trial changes nothing but its cancellation (term switches, extensions and plan switches answer trial_active)
+        subscription.CanChangePlan = provider.CanChangePlan(subscription) && !InTrial(subscription, DateTime.UtcNow);
     }
 
     public Task CancelSubscription(string userId, string subscriptionId) => WithSubscriptionLock(subscriptionId, async () =>

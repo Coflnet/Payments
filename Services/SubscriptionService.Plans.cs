@@ -83,6 +83,8 @@ public partial class SubscriptionService
     {
         var subscription = await OwnedSubscription(userId, externalId)
             ?? throw new ApiException("Subscription not found");
+        if (InTrial(subscription, DateTime.UtcNow))
+            throw new ApiException(TrialActive);
         if (subscription.Status != "active" || subscription.EndsAt != null)
             throw new ApiException("Only an active, uncancelled subscription can change plans.");
         if (ExtensionBlocksPlanChange(subscription, DateTime.UtcNow))

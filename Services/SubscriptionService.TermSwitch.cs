@@ -120,6 +120,8 @@ public partial class SubscriptionService
     {
         if (!termSwitchEnabled || !IsDirectSubscription(subscription) || (IsPayPal(subscription) ? paypal == null : stripe == null))
             return TermSwitchUnavailable;
+        if (InTrial(subscription, now))
+            return TrialActive;
         if (subscription.Status != "active" || subscription.EndsAt != null)
             return "subscription_not_active";
         if (ExtensionBlocksPlanChange(subscription, now) || await HasLivePayPalExtension(subscription, now))

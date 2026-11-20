@@ -49,6 +49,8 @@ public partial class SubscriptionService
         SubscriptionDeclarationService.ValidateExtension(request?.Declaration);
         var subscription = await OwnedSubscription(userId, subscriptionId)
             ?? throw new ApiException("Subscription not found");
+        if (InTrial(subscription, DateTime.UtcNow))
+            throw new ApiException(TrialActive);
         if (await LoadPendingTermSwitch(subscription) != null)
             throw new ApiException(TermSwitchPending);
         if (!await CanExtendLongTerm(subscription))

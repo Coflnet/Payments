@@ -247,4 +247,40 @@ public class StripeTrialTests : DirectSubscriptionTestBase
         Assert.That(await Access("sub_1"), Is.Null);
         Assert.That(await RefundMark("stripe", "in_0"), Is.Null);
     }
+
+    /// <summary>Term switches, extensions and plan switches are refused while the trial runs (the simplest correct behaviour)</summary>
+    [Test]
+    public async Task SwitchesAndExtensionsAreRefusedDuringTheTrial()
+    {
+        var service = Service(stripe.Object, config: ExtensionsOn);
+        await service.StripeCheckoutCompleted(Session());
+
+        var termSwitch = new SubscriptionTermSwitchRequest
+        {
+            Weeks = 52, Declaration = StripeExtensionTests.Declaration("Switch now"), ExpectedChargedNow = 100m
+        };
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => service.SwitchTerm("buyer", "sub_1", termSwitch)).Message,
+            Is.EqualTo(SubscriptionService.TrialActive));
+        Assert.That((await service.GetTermOptions("buyer", "sub_1")).UnavailableReason, Is.EqualTo(SubscriptionService.TrialActive));
+        var extension = new SubscriptionExtensionRequest { Declaration = StripeExtensionTests.Declaration("Extend") };
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => service.ExtendLongTerm("buyer", "sub_1", extension)).Message,
+            Is.EqualTo(SubscriptionService.TrialActive));
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => service.ChangePlan("buyer", "sub_1", "l_premium")).Message,
+            Is.EqualTo(SubscriptionService.TrialActive));
+        Assert.That((await service.GetUserSubscriptions("buyer")).Single().CanChangePlan, Is.False);
+        stripe.Verify(s => s.ChangePrice(It.IsAny<StripeSubscriptionSnapshot>(), It.IsAny<StripePriceChangeRequest>()), Times.Never);
+    }
+
+    [Test]
+    public async Task AfterTheTrialTheSubscriptionCanChangeAgain()
+    {
+        var service = Service(stripe.Object);
+        await service.StripeCheckoutCompleted(Session());
+        var subscription = await Subscription("sub_1");
+        subscription.TrialEndsAt = DateTime.UtcNow.AddMinutes(-1);
+        await db.SaveChangesAsync();
+
+        Assert.That((await service.GetUserSubscriptions("buyer")).Single().CanChangePlan, Is.True);
+        Assert.That((await service.GetTermOptions("buyer", "sub_1")).UnavailableReason, Is.Not.EqualTo(SubscriptionService.TrialActive));
+    }
 }
