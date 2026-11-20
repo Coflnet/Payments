@@ -21,6 +21,77 @@ executed, also ones a provider reports), term switches and the 4-week renewal pl
 never offered BazaarPro (which a Stripe `l_premium` subscription was, as a "downgrade" to the tierless `l_bazaarpro`), a BazaarPro
 subscriber never Premium+ or the starter plan, `l_bazaarpro-year` renews as `l_bazaarpro`. Ship this before the catalog change.
 
+## Trials
+
+Owner decision: BazaarPro keeps the free trial it had on Lemon Squeezy (BazaarPro-API sends `enableTrial=true`, `trialLengthDays=3`) on
+direct Stripe, Stripe Managed Payments and PayPal. SkyCofl Premium has none. `SubscriptionTrials` decides it at checkout:
+
+- Off by default: `SUBSCRIPTIONS:DIRECT_TRIAL_ENABLED` (false), `SUBSCRIPTIONS:TRIAL_LINES` (a list or one comma separated value, default
+  `l_bazaarpro`; the product lines of "Product lines", `default` is SkyCofl's), `SUBSCRIPTIONS:TRIAL_MAX_DAYS` (default 7; longer trials
+  need a reminder before they end under the card network rules, docs.stripe.com/billing/subscriptions/trials/manage-trial-compliance).
+  The length is the requested `trialLengthDays` capped at the maximum (below 1: none). Slot bundles get none.
+- A request that does not qualify is **ignored**, the checkout proceeds without a trial: trials off, a plan of another line, the buyer used
+  the line before, a "first payment only" code (below). Refusing would break the checkout of every returning BazaarPro buyer, since
+  BazaarPro-API always asks for one. The checkout response's `trialDays` (`TopUpIdResponse.TrialDays`, client 0.35.0) names the trial
+  actually given (null: none), also for a reused open checkout (Stripe: session metadata `trialDays`, PayPal: the plan variant), and the
+  provider's page shows it before the buyer pays. An open checkout of the same prices (10 minutes) is reused with or without a trial.
+- One trial per buyer and line (Lemon Squeezy kept one per user and product in `TrialUsages`; that table is reused): none for a Payments
+  user who ever had a trial (`TrialUsages`, Lemon Squeezy's included), a subscription (any provider or status) or an ownership (also
+  expired, also bought with coins) of any plan of the line. Premium subscribers can try BazaarPro. Abuse limit: the check is per
+  Payments user, so a new account (new email) gets another trial. Both providers collect a payment method first (Stripe Checkout
+  always, PayPal an approved billing agreement), which is the barrier; card fingerprints or PayPal payer ids are not compared.
+- **First payment only codes replace the trial.** A `once` code is a `duration=once` coupon on the Stripe session. Stripe: "Duration
+  defaults to `once`, which applies only to the first invoice" and "the coupon is considered used after the invoice finalizes"
+  (docs.stripe.com/billing/subscriptions/coupons, "Coupon duration"); a trial starts with a finalized zero invoice, so the coupon would be
+  spent on the trial and the first paid invoice would charge the full price, unlike what the buyer was shown. So a checkout with a `once`
+  code (e.g. the automatic `GTA6` sale) gets the discount and no trial, on both providers (PayPal could price both, but one rule keeps the
+  website's display simple). Codes on every payment (`forever`, creator codes) are in the price and keep the trial. Applying the coupon to
+  the subscription after the trial invoice would keep both; not done (a lost webhook would charge the full price).
+- Stripe (direct and Managed Payments): `subscription_data.trial_period_days`, metadata `trialDays`; Checkout keeps collecting the payment
+  method (`payment_method_collection` stays unset = `always`, it is on Managed Payments' disallowed list anyway). Managed Payments supports
+  trials: `trial_period_days` is not among its disallowed parameters (docs.stripe.com/payments/managed-payments/update-checkout), Stripe
+  sends "a trial start email that confirms the subscription" there (docs.stripe.com/payments/managed-payments/how-it-works) and its
+  changelog lists trial confirmation emails (2026-04-22) and trials without a payment method (2026-02-09). Try a live Managed Payments
+  trial checkout before the first sale. The text next to the button starts with "Free for 3 days until 23 November 2026; cancel before
+  then and nothing is charged. The first payment of 15.46 EUR is charged on 23 November 2026." (`StripeSubscriptionDisclosure.TrialTemplate`,
+  then the renewal terms). The date is computed when the session is created; a buyer who completes it later (sessions stay open up to 24
+  hours) gets the full trial from then, so the first charge is never earlier than stated.
+- PayPal: a plan variant per (plan, period, renewal, currency, trial days) that starts with a free TRIAL cycle (sequence 1, `DAY` ×
+  days, price 0, one cycle), then the priced TRIAL cycle of the plan's period and the REGULAR 4-week cycle (PayPal allows two trial
+  cycles, developer.paypal.com/docs/subscriptions/customize/trial-period). It is stored in `PayPalPlans` under the slug plus
+  `+trial{days}d` (`l_bazaarpro+trial3d`): plans made before are never changed or reused, no schema change, and a release without
+  trials (it looks up the plain slug) never picks one. The subscription overrides the prices of sequence 2 and 3 (and 1 with 0). A
+  configured `PAYPAL:SUBSCRIPTION_PLANS:{slug}` has no trial cycle and is not used for trial checkouts.
+- Access: once the provider confirms the trial (Stripe: the subscription is `trialing` and its metadata names `trialDays`, from
+  `checkout.session.completed`, `customer.subscription.*` or the zero `invoice.paid`, whichever comes first; PayPal: a trial variant's
+  subscription is activated before any sale) the subscription's own ownership runs until the trial end (Stripe `trial_end`, PayPal
+  `next_billing_time`, capped at the checkout's days plus one), the trial is written to `TrialUsages` (buyer, plan, subscription id) and
+  `Subscriptions.TrialEndsAt` is set. No coins and no period are granted (the trial is no paid term: 13/52 week renewal schedules and
+  conversions wait for the first payment). The status is `on_trial` (PayPal too, until its first sale).
+- The zero trial invoice (Stripe `subscription_create`, total 0) is never granted, recorded or marked for a refund. A zero first invoice of a
+  subscription without our trial (one added in the dashboard) is logged and ignored, and its trial grants nothing.
+- The first payment after the trial (Stripe billing reason `subscription_cycle`, PayPal the first sale) is the subscription's first
+  payment: it must charge the agreed price (direct Stripe: `priceCents`; PayPal: the checkout's first price), gets the first payment's
+  country check (direct Stripe: billing address and card in another country than the VAT country reject it) and card lookup, carries the
+  checkout's declaration, and extends the access from the trial end. A trial cancelled before it ends just expires: Stripe ends it at the
+  trial end (cancel at period end), PayPal cancels at once, the access runs out with the trial, nothing is charged or refunded. A cancelled
+  Stripe trial can be resumed.
+- Term switches, extensions and plan switches answer `trial_active` during the trial (the term options name it as `unavailableReason`, the
+  subscription list has `canChangePlan` false).
+- Confirmation: the trial start is published once to `sky-payments` as `ConfirmationType` `subscription_trial_started`,
+  `PaymentProviderTransactionId` `trial-{subscription id}`, `PayedAmount` 0, `SubscriptionIsRenewal` false, `SubscriptionTrialDays`,
+  `SubscriptionTrialEndsAt` and `SubscriptionNextBillingAt` (the trial end = the first charge), `SubscriptionFirstChargeAmount` (what is
+  charged then, for `SubscriptionBillingWeeks`, tax treatment `RenewalTaxTreatment`), then every `SubscriptionRenewalWeeks` weeks
+  `SubscriptionRenewalAmount`, and the checkout's declaration with `ServiceStartsAtUtc` = trial start, `ServiceEndsAtUtc` = trial end.
+  `Subscriptions.TrialUsedAt` marks it published (set after the publish, so a failed publish fails the webhook and its retry publishes it;
+  two Stripe events handled at the same moment can both publish it, the broker dedupes by the transaction id).
+  It writes no `PaymentRecord` (no money moved, nothing for the VAT export) and no creator share. The first payment after the trial is a
+  normal first payment event plus `SubscriptionFollowsTrial` true and `SubscriptionTrialEndsAt`. SkyEventBroker does not read the new
+  fields yet: its confirmation should say "free trial until {trial end}; then {first charge} is charged, after that every {renewal weeks}
+  weeks {renewal amount} until cancelled; cancel before {trial end} and nothing is charged".
+- Rollout: switch trials on only after every pod runs this release (an older pod would not grant a Stripe trial's access, and would refuse
+  the zero invoice as a wrong amount).
+
 ## US direct cap (per state)
 
 US buyers get direct Stripe/PayPal (no tax charged) only while fewer than `SUBSCRIPTIONS:US_DIRECT_LIMIT` (default 10) direct subscriptions
@@ -134,8 +205,8 @@ Plan prices (e.g. `l_premium` 9.69 EUR per 4 weeks) are NET, as they were with L
 | Route | Purpose |
 | --- | --- |
 | `GET /TopUp/subscribe/providers?country=DE&productSlug=l_premium&region=CA` | Providers a buyer can choose (`region`: US state, see the cap) |
-| `POST /TopUp/stripe/subscribe?userId=&productId=` | Stripe checkout (direct or Managed Payments by country) |
-| `POST /TopUp/paypal/subscribe?userId=&productId=` | PayPal subscription, redirect to the returned `directLink` |
+| `POST /TopUp/stripe/subscribe?userId=&productId=` | Stripe checkout (direct or Managed Payments by country); `enableTrial`/`trialLengthDays` see "Trials", the response's `trialDays` names the trial given |
+| `POST /TopUp/paypal/subscribe?userId=&productId=` | PayPal subscription, redirect to the returned `directLink` (trials like Stripe's) |
 | `GET /TopUp/discount/validate?code=&isSubscription=true&provider=stripe` | Validates a code; returns `amount` and `periodAmounts` |
 | `GET /TopUp/discount/auto?country=DE&region=CA` | The promotion to offer (see below), 204 when none |
 | `GET/POST /api/DiscountCode` | List / create-or-replace codes (internal) |
