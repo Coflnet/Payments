@@ -7,6 +7,7 @@ using Coflnet.Payments.Models.LemonSqueezy;
 using Coflnet.Payments.Services;
 using Coflnet.Payments.Services.Subscriptions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Stripe.Checkout;
 
@@ -71,7 +72,8 @@ public partial class TopUpController
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
             options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(priced.First),
             Region: region, RenewalPlan: priced.RenewalPlan,
-            RenewalUnitAmountCents: priced.Renewal is decimal renewal ? SubscriptionPricing.ToCents(renewal) : null);
+            RenewalUnitAmountCents: priced.Renewal is decimal renewal ? SubscriptionPricing.ToCents(renewal) : null,
+            AccountUrl: await StripeAccountUrl(plan));
         var session = await FailRequestOnError(request, () => CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints), priced.Discount);
         request.SessionId = session.Id;
         request.CoinAmount = plan.Cost;
@@ -148,6 +150,13 @@ public partial class TopUpController
         throw new ApiException(subscriptionRouting.LemonSqueezyCheckoutEnabled
             ? "Please subscribe with one of the payment methods offered for your country."
             : "New Lemon Squeezy subscriptions are no longer available.");
+    }
+
+    /// <summary>Where the disclosure tells the buyer to cancel, by the plan's product line (needs its groups, the plan is loaded without)</summary>
+    private async Task<string> StripeAccountUrl(TopUpProduct plan)
+    {
+        var withGroups = await db.TopUpProducts.Include(p => p.Groups).AsNoTracking().FirstOrDefaultAsync(p => p.Id == plan.Id);
+        return StripeSubscriptionDisclosure.AccountUrlFor(withGroups ?? plan, config);
     }
 
     private async Task<TopUpProduct> GetSubscriptionPlan(string productSlug)

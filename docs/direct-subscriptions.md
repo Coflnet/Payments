@@ -254,7 +254,9 @@ Text next to the button (`StripeSubscriptionDisclosure`, one place for the legal
 continues every 4 weeks at Y until cancelled. Cancel anytime ...", Y = the renewal price, well below `MaxLength` 1200) plus, direct with VAT (not the US) "The price includes VAT.", managed "... before
 taxes. Sold through Link (Stripe's reseller), which charges any applicable taxes." (Stripe's wording: Managed Payments receipts read "Sold through Link") No `submit_type` is sent:
 Stripe refuses `submit_type=pay` in subscription mode (seen live 2026-11-19), so the button keeps Stripe's "Subscribe" label. The request
-body Stripe.net sends is tested to contain no `submit_type`.
+body Stripe.net sends is tested to contain no `submit_type`. The account url follows the plan's product line (see "Product lines"):
+`SUBSCRIPTIONS:ACCOUNT_URL:{line}` (`default`, `l_bazaarpro`), otherwise `sky.coflnet.com/account`, for BazaarPro its billing
+settings `pro.skyblock.bz/dashboard/settings/billing`.
 
 ### Place of supply evidence
 
@@ -409,7 +411,11 @@ PayPal), every country and slot bundles alike.
   `PaymentRequestId`: Stripe names the checkout request in the subscription metadata (`paymentRequestId`), a PayPal checkout request has
   the PayPal subscription id as `SessionId`. The first payment of an extension term carries the extension's declaration. Renewals carry
   no declaration, every subscription event the `LegalLocale` of the latest one when known; a missing declaration is logged (warning)
-  and the event published anyway. Every direct subscription event also names `SubscriptionExternalId`.
+  and the event published anyway. Every direct subscription event also names `SubscriptionExternalId`. An event with a declaration also
+  names the agreement the buyer accepted with it (`AgreementId`, `AgreementHash`, as given at checkout, e.g. `bazaarPro` for
+  BazaarPro), like a prepaid purchase's confirmation; without (no declaration, or one without agreement) they stay empty and
+  SkyEventBroker attaches the SkyCofl terms. The broker validates a named agreement against the one it loaded and must load every
+  agreement id a checkout can send (`bazaarPro`) before BazaarPro checkouts send one.
 - `SubscriptionRenewalReminderService` (every `SUBSCRIPTIONS:RENEWAL_REMINDER_INTERVAL_MINUTES`, default 60, off with
   `SUBSCRIPTIONS:RENEWAL_REMINDERS_ENABLED=false`, each publish bounded by `SUBSCRIPTIONS:RENEWAL_REMINDER_PUBLISH_TIMEOUT_SECONDS`,
   default 30, at most `SUBSCRIPTIONS:RENEWAL_REMINDERS_PER_RUN`, default 50, per run) publishes one `subscription_renewal_reminder` event per term end for active, uncancelled Stripe/PayPal subscriptions in a

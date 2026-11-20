@@ -42,7 +42,8 @@ public static class SubscriptionEventTerms
 
     /// <summary>
     /// The confirmation of a purchase (first payment, first payment of an extension term) repeats the buyer's early performance
-    /// declaration and the term it covers: from the payment to the end of the paid term
+    /// declaration and the term it covers: from the payment to the end of the paid term. It also names the agreement the buyer accepted
+    /// (a BazaarPro checkout its own terms), like the confirmation of a prepaid purchase; without one the broker attaches SkyCofl's terms.
     /// </summary>
     private static void ApplyDeclaration(PaymentEvent payment, SubscriptionPaymentOutcome outcome)
     {
@@ -51,6 +52,8 @@ public static class SubscriptionEventTerms
             return;
         payment.DeclarationVersion = declaration.DeclarationVersion;
         payment.DeclarationText = declaration.DeclarationText;
+        payment.AgreementId = declaration.AgreementId;
+        payment.AgreementHash = declaration.AgreementHash;
         payment.LegalLocale = declaration.Locale;
         payment.ServiceStartsAtUtc = outcome.PaidAt;
         payment.ServiceEndsAtUtc = PaidTermEnd(outcome);

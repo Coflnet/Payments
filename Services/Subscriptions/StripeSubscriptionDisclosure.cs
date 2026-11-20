@@ -1,4 +1,6 @@
 using System.Globalization;
+using Coflnet.Payments.Models;
+using Microsoft.Extensions.Configuration;
 
 namespace Coflnet.Payments.Services.Subscriptions;
 
@@ -10,7 +12,12 @@ public static class StripeSubscriptionDisclosure
 {
     /// <summary>Stripe's limit for custom_text.submit.message</summary>
     public const int MaxLength = 1200;
+    /// <summary>Where buyers of the default product line (SkyCofl) cancel</summary>
     public const string AccountUrl = "sky.coflnet.com/account";
+    /// <summary>Where BazaarPro buyers cancel: its billing settings</summary>
+    public const string BazaarProAccountUrl = "pro.skyblock.bz/dashboard/settings/billing";
+    /// <summary>SUBSCRIPTIONS:ACCOUNT_URL:{product line} overrides the account url of a line (<see cref="PlanLines"/>)</summary>
+    public const string AccountUrlConfigPrefix = "SUBSCRIPTIONS:ACCOUNT_URL:";
     // No submit_type: Stripe refuses submit_type "pay" in subscription mode ("You can not pass `submit_type: 'pay'` in
     // `subscription` mode", live 2026-11-19), so the button keeps Stripe's subscription label.
 
@@ -38,13 +45,27 @@ public static class StripeSubscriptionDisclosure
     /// </summary>
     public static string SubmitMessage(StripeSubscriptionCheckout checkout) => Renewal(checkout) + Suffix(checkout);
 
+    /// <summary>
+    /// The account page where buyers of <paramref name="plan"/> cancel, by its product line: SUBSCRIPTIONS:ACCOUNT_URL:{line}, else
+    /// <see cref="BazaarProAccountUrl"/> for BazaarPro and <see cref="AccountUrl"/> for every other line
+    /// </summary>
+    public static string AccountUrlFor(Product plan, IConfiguration config)
+    {
+        var line = PlanLines.From(config).LineOf(plan);
+        var configured = config?[AccountUrlConfigPrefix + line];
+        return string.IsNullOrWhiteSpace(configured) ? DefaultAccountUrl(line) : configured.Trim();
+    }
+
+    private static string DefaultAccountUrl(string line) => line == PlanLines.BazaarProLine ? BazaarProAccountUrl : AccountUrl;
+
     private static string Renewal(StripeSubscriptionCheckout checkout)
     {
+        var accountUrl = checkout.AccountUrl ?? AccountUrl;
         if (checkout.RenewalUnitAmountCents is long renewal)
             return string.Format(CultureInfo.InvariantCulture, ContinuationTemplate, checkout.IntervalWeeks,
-                SubscriptionRenewal.RenewalWeeks, Price(renewal, checkout), AccountUrl);
+                SubscriptionRenewal.RenewalWeeks, Price(renewal, checkout), accountUrl);
         return string.Format(CultureInfo.InvariantCulture, RenewalTemplate, checkout.IntervalWeeks,
-            Price(checkout.UnitAmountCents, checkout), AccountUrl);
+            Price(checkout.UnitAmountCents, checkout), accountUrl);
     }
 
     /// <summary>The line item description of a 13 or 52 week plan; null for 4-week plans (they keep the plan's description)</summary>

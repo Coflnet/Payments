@@ -27,7 +27,8 @@ public record StripeSubscriptionCheckout(
     string TaxRateId = null, // direct sales: inclusive manual VAT rate shown on Stripe's receipts
     string Region = null, // the buyer's state at checkout (evidence, per-state US cap)
     TopUpProduct RenewalPlan = null, // 13/52 week plans: the 4-week plan the subscription continues as after its first term
-    long? RenewalUnitAmountCents = null); // 13/52 week plans: what every 4-week renewal charges (direct: gross, managed: net)
+    long? RenewalUnitAmountCents = null, // 13/52 week plans: what every 4-week renewal charges (direct: gross, managed: net)
+    string AccountUrl = null); // where the disclosure says to cancel (StripeSubscriptionDisclosure.AccountUrlFor), null: SkyCofl's
 
 /// <summary>
 /// Managed Payments settings (STRIPE:MANAGED_TAX_CODE, STRIPE:MANAGED_TAX_BEHAVIOR)

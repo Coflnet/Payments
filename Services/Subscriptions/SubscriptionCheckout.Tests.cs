@@ -312,6 +312,26 @@ public class SubscriptionCheckoutTests
         Assert.That(direct.CustomText.Submit.Message.Length, Is.LessThan(StripeSubscriptionDisclosure.MaxLength));
     }
 
+    /// <summary>The account url of each product line: BazaarPro's billing settings, SkyCofl's account, or SUBSCRIPTIONS:ACCOUNT_URL:{line}</summary>
+    [Test]
+    public void AccountUrlFollowsTheProductLine()
+    {
+        var bazaarPro = new TopUpProduct { Slug = "l_bazaarpro-year", Groups = [new Group { Slug = "premium" }] };
+        var premium = new TopUpProduct { Slug = "l_premium", Groups = [new Group { Slug = "premium" }] };
+        var overridden = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            [StripeSubscriptionDisclosure.AccountUrlConfigPrefix + "default"] = "coflnet.example/account"
+        }).Build();
+
+        Assert.That(StripeSubscriptionDisclosure.AccountUrlFor(bazaarPro, null), Is.EqualTo("pro.skyblock.bz/dashboard/settings/billing"));
+        Assert.That(StripeSubscriptionDisclosure.AccountUrlFor(premium, null), Is.EqualTo("sky.coflnet.com/account"));
+        Assert.That(StripeSubscriptionDisclosure.AccountUrlFor(premium, overridden), Is.EqualTo("coflnet.example/account"));
+        Assert.That(StripeSubscriptionDisclosure.AccountUrlFor(bazaarPro, overridden), Is.EqualTo("pro.skyblock.bz/dashboard/settings/billing"));
+        var message = Build(Checkout(StripeCheckoutMode.Direct, 969) with { AccountUrl = "pro.skyblock.bz/dashboard/settings/billing" })
+            .CustomText.Submit.Message;
+        Assert.That(message, Does.EndWith("Cancel anytime in your account at pro.skyblock.bz/dashboard/settings/billing."));
+    }
+
     /// <summary>
     /// Regression: a direct US sale (VAT rate 0, no VAT charged) was told "The price includes VAT."
     /// </summary>

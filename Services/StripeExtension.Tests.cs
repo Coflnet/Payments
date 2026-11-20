@@ -364,6 +364,31 @@ public class StripeExtensionTests : DirectSubscriptionTestBase
 
         var payment = publishedPayments.Single();
         Assert.That((payment.DeclarationText, payment.ServiceStartsAtUtc, payment.LegalLocale), Is.EqualTo(((string)null, (DateTime?)null, (string)null)));
+        Assert.That((payment.AgreementId, payment.AgreementHash), Is.EqualTo(((string)null, (string)null)), "the broker's default terms");
+    }
+
+    /// <summary>
+    /// Regression: subscription confirmations named no agreement, so the broker attached SkyCofl's terms also to a BazaarPro purchase.
+    /// The first payment names the agreement of the checkout's declaration; renewals none
+    /// </summary>
+    [Test]
+    public async Task FirstPaymentEventNamesTheAgreementOfTheCheckoutDeclaration()
+    {
+        var request = await SeedCheckout("stripe", "cs_1", premiumYear, 118.63m);
+        var evidence = Evidence(request.Id, "Start my year now", "en");
+        (evidence.AgreementId, evidence.AgreementHash) = ("bazaarPro", Sha("bazaarPro agreement root"));
+        db.ServicePerformanceDeclarations.Add(evidence);
+        await db.SaveChangesAsync();
+        checkoutMetadata[Keys.PaymentRequestId] = request.Id.ToString();
+        remote = Snapshot();
+        var service = Service(stripe.Object);
+
+        await Record(service, await service.StripeInvoicePaid(Invoice()));
+        remote = Snapshot(plan: "l_premium", priceCents: 1153, scheduleId: "sub_sched_1", currentPeriodEnd: periodEnd.AddDays(28));
+        await Record(service, await service.StripeInvoicePaid(Invoice("in_2", "subscription_update", 1153, periodEnd)));
+
+        Assert.That(publishedPayments.Select(p => (p.AgreementId, p.AgreementHash)),
+            Is.EqualTo(new[] { ("bazaarPro", Sha("bazaarPro agreement root")), (null, null) }));
     }
 
     private async Task<TopUpProduct> PremiumPlusYear()

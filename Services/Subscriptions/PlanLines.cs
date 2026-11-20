@@ -18,9 +18,11 @@ public sealed class PlanLines
     /// <summary>The separate lines: their group slugs / slug prefixes, a list or one comma separated value</summary>
     public const string ConfigKey = "SUBSCRIPTIONS:SEPARATE_PLAN_GROUPS";
     /// <summary>The line of every product in none of the separate groups</summary>
-    public const string DefaultLine = "";
+    public const string DefaultLine = "default";
+    /// <summary>BazaarPro's plans (l_bazaarpro, l_bazaarpro-quarter, l_bazaarpro-year)</summary>
+    public const string BazaarProLine = "l_bazaarpro";
     /// <summary>The lines without configuration: BazaarPro and the default line</summary>
-    public static readonly PlanLines Default = new(["l_bazaarpro"]);
+    public static readonly PlanLines Default = new([BazaarProLine]);
 
     private readonly IReadOnlyList<string> separate;
 

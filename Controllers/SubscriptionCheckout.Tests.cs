@@ -112,6 +112,33 @@ public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
     }
 
     /// <summary>
+    /// BazaarPro buyers cancel in BazaarPro's billing settings, not in the SkyCofl account; the plan's line also counts by its group
+    /// (the controller loads the plan without groups) and SUBSCRIPTIONS:ACCOUNT_URL:{line} overrides it
+    /// </summary>
+    [TestCase("l_bazaarpro", null, "pro.skyblock.bz/dashboard/settings/billing")]
+    [TestCase("bp_custom", null, "pro.skyblock.bz/dashboard/settings/billing")]
+    [TestCase("l_bazaarpro", "pro.example.test/billing", "pro.example.test/billing")]
+    [TestCase("l_premium", null, "sky.coflnet.com/account")]
+    public async Task StripeDisclosureNamesTheAccountPageOfTheProductLine(string slug, string configured, string accountUrl)
+    {
+        foreach (var bazaarPro in new[] { "l_bazaarpro", "bp_custom" })
+        {
+            var plan = new TopUpProduct { Slug = bazaarPro, Title = "Bazaar Pro", Price = 12.99m, Cost = 2100, CurrencyCode = "eur",
+                ProviderSlug = "lemonsqueezy", OwnershipSeconds = FourWeeks, Type = Product.ProductType.SERVICE };
+            db.TopUpProducts.Add(plan);
+            await db.SaveChangesAsync();
+            await groups.AddProductToGroup(plan, "premium");
+            await groups.AddProductToGroup(plan, "l_bazaarpro");
+        }
+        db.ChangeTracker.Clear();
+        var settings = configured == null ? null : new Dictionary<string, string> { ["SUBSCRIPTIONS:ACCOUNT_URL:l_bazaarpro"] = configured };
+
+        await Controller("DE", settings).StripeSubscribe("buyer", slug, Options("DE"));
+
+        Assert.That(created.CustomText.Submit.Message, Does.EndWith($"Cancel anytime in your account at {accountUrl}. The price includes VAT."));
+    }
+
+    /// <summary>
     /// Owner decision: from the 10th active direct US subscription on, US buyers get Stripe Managed Payments (Stripe collects
     /// the sales tax) and no direct Stripe or PayPal checkout; providers, discount/auto and the checkouts all agree.
     /// </summary>
