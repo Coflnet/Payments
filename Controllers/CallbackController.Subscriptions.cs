@@ -37,8 +37,10 @@ public partial class CallbackController
                 if (failed.SubscriptionId != null)
                     await subscriptionService.StripeSubscriptionChanged(failed.SubscriptionId);
                 return true;
+            // A pending update (term switch, upgrade) that expired unpaid gives a 13 week term its renewal schedule back
             case Subscription subscription when stripeEvent.Type is EventTypes.CustomerSubscriptionUpdated
-                or EventTypes.CustomerSubscriptionDeleted or EventTypes.CustomerSubscriptionCreated:
+                or EventTypes.CustomerSubscriptionDeleted or EventTypes.CustomerSubscriptionCreated
+                or EventTypes.CustomerSubscriptionPendingUpdateExpired or EventTypes.CustomerSubscriptionPendingUpdateApplied:
                 await subscriptionService.StripeSubscriptionChanged(subscription.Id);
                 return true;
             case Charge charge when stripeEvent.Type == EventTypes.ChargeRefunded:

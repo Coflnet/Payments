@@ -59,7 +59,7 @@ public partial class SubscriptionService
             var subscription = await EnsureStripeSubscription(snapshot);
             if (subscription == null)
                 return false;
-            ApplyStripeState(subscription, snapshot);
+            await ApplyCheckedStripeState(subscription, snapshot);
             await context.SaveChangesAsync();
             await TryScheduleStripeRenewal(subscription, snapshot);
             return true;
@@ -79,7 +79,8 @@ public partial class SubscriptionService
         var subscription = await EnsureStripeSubscription(snapshot);
         if (subscription == null)
             return false;
-        ApplyStripeState(subscription, snapshot);
+        await ApplyCheckedStripeState(subscription, snapshot);
+        await ExpireUnpaidStripeSwitch(subscription, snapshot);
         await context.SaveChangesAsync();
         await TryScheduleStripeRenewal(subscription, snapshot);
         return true;
@@ -105,8 +106,11 @@ public partial class SubscriptionService
         var subscription = await EnsureStripeSubscription(snapshot);
         if (subscription == null)
             return await RejectStripeInvoice(null, invoice, "the subscription was not sold by this service");
-        ApplyStripeState(subscription, snapshot);
+        await ApplyCheckedStripeState(subscription, snapshot);
         await context.SaveChangesAsync();
+        // The invoice of a switch to a longer term pays that term ("updated", but neither a proration nor a renewal)
+        if (await StripeTermSwitchOf(subscription, snapshot, invoice) is SubscriptionTermSwitch termSwitch)
+            return await GrantStripeTermSwitch(subscription, snapshot, invoice, termSwitch);
         // A redelivery of a granted invoice is the same period payment again, whatever the plan is now (the first 4-week
         // invoice, billing reason "updated", would otherwise look like a proration once the subscription is converted)
         var extension = await IsExtensionInvoice(subscription, snapshot, invoice);
@@ -538,7 +542,7 @@ public partial class SubscriptionService
         {
             if (MayHaveRenewalSchedule(subscription))
                 await service.ReleaseStripeRenewal(subscription, await service.StripeApi.GetSubscription(subscription.ExternalId));
-            ApplyStripeState(subscription, await service.StripeApi.SetCancelAtPeriodEnd(subscription.ExternalId, true));
+            await service.ApplyCheckedStripeState(subscription, await service.StripeApi.SetCancelAtPeriodEnd(subscription.ExternalId, true));
             if (subscription.Status != "cancelled" || subscription.EndsAt == null)
                 throw new ApiException("Stripe did not confirm the cancellation.");
         }
@@ -546,7 +550,7 @@ public partial class SubscriptionService
         public async Task Resume(UserSubscription subscription)
         {
             var resumed = await service.StripeApi.SetCancelAtPeriodEnd(subscription.ExternalId, false);
-            ApplyStripeState(subscription, resumed);
+            await service.ApplyCheckedStripeState(subscription, resumed);
             if (subscription.Status != "active")
                 throw new ApiException("Stripe did not confirm reactivation.");
             await service.ScheduleResumedStripeRenewal(subscription, resumed);

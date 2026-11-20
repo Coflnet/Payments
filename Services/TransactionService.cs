@@ -1213,6 +1213,21 @@ namespace Coflnet.Payments.Services
             return transactionEvent;
         }
 
+        /// <summary>
+        /// The access a subscription's payment extended: its own ownership, or, after a PayPal term switch moved it to the new
+        /// subscription (<see cref="UserSubscription.PreviousSubscriptionId"/>), that one's
+        /// </summary>
+        private async Task<OwnerShip> SubscriptionOwnership(User user, string subscriptionId)
+        {
+            var own = await db.OwnerShips.SingleOrDefaultAsync(o => o.UserId == user.Id && o.SubscriptionId == subscriptionId);
+            if (own != null)
+                return own;
+            var successor = await db.Subscriptions.Where(s => s.PreviousSubscriptionId == subscriptionId && s.User.Id == user.Id)
+                .Select(s => s.ExternalId).FirstOrDefaultAsync();
+            return successor == null ? null
+                : await db.OwnerShips.SingleOrDefaultAsync(o => o.UserId == user.Id && o.SubscriptionId == successor);
+        }
+
         private static async Task<List<Product>> GetProducts(string productSlug, IQueryable<Product> productA)
         {
             return await productA.Where(p => p.Slug == productSlug).SelectMany(p => p.Groups, (p, g) => g.Products.Where(p => p.Slug == g.Slug).First()).ToListAsync();
@@ -1268,7 +1283,7 @@ namespace Coflnet.Payments.Services
                 }
                 if (transaction.SubscriptionId != null)
                 {
-                    var ownership = await db.OwnerShips.SingleOrDefaultAsync(o => o.UserId == user.Id && o.SubscriptionId == transaction.SubscriptionId);
+                    var ownership = await SubscriptionOwnership(user, transaction.SubscriptionId);
                     if (ownership != null)
                         ownership.Expires = ownership.Expires.AddSeconds(-transaction.Product.OwnershipSeconds);
                     var refund = await CreateTransaction(dbProduct, user, -transaction.Amount, reference);

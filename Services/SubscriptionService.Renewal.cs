@@ -246,6 +246,8 @@ public partial class SubscriptionService
         }
         await WarnAboutLegacyPayPalRenewals(cancellation);
         await LinkApprovedPayPalExtensions(cancellation);
+        await LinkApprovedPayPalTermSwitches(cancellation);
+        await ExpireAbandonedTermSwitches(cancellation);
         return scheduled;
     }
 
@@ -275,7 +277,7 @@ public partial class SubscriptionService
         if (subscription == null)
             return false;
         var snapshot = await StripeApi.GetSubscription(subscriptionId);
-        ApplyStripeState(subscription, snapshot);
+        await ApplyCheckedStripeState(subscription, snapshot);
         await context.SaveChangesAsync();
         var before = subscription.RenewalScheduleId;
         await ScheduleStripeRenewal(subscription, snapshot);

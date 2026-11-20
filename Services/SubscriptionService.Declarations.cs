@@ -35,12 +35,13 @@ public partial class SubscriptionService
 
     /// <summary>
     /// PayPal: the first sale of a subscription carries the declaration of its checkout; that of a continuation
-    /// (<see cref="LinkPayPalContinuation"/>) is the first payment of an extension term, a renewal of the buyer's subscription
+    /// (<see cref="LinkPayPalContinuation"/>) is the first payment of an extension term, a renewal of the buyer's subscription; that of
+    /// a term switch's new subscription is the purchase of the new term
     /// </summary>
     private async Task<SubscriptionPaymentOutcome> WithPayPalDeclaration(SubscriptionPaymentOutcome outcome, bool firstSale)
     {
         var checkout = await DeclarationOfRequest(outcome.Subscription, await PayPalCheckoutRequestId(outcome.Subscription));
-        var isExtension = firstSale && outcome.Subscription.PreviousSubscriptionId != null;
+        var isExtension = firstSale && outcome.Subscription.PreviousSubscriptionId != null && outcome.TermSwitch == null;
         outcome = outcome with { IsExtension = isExtension, IsRenewal = !firstSale || isExtension };
         return WithDeclaration(outcome, firstSale ? checkout : null, checkout, firstSale);
     }

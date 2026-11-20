@@ -134,6 +134,8 @@ public partial class SubscriptionService
     {
         if (continuation.ContinuationRefusedAt != null)
             return false;
+        if (await LinkPayPalTermSwitch(continuation) is bool switched)
+            return switched;
         var previous = await PreviousSubscription(continuation);
         if (previous == null)
             return true;
@@ -257,11 +259,11 @@ public partial class SubscriptionService
     }
 
     /// <summary>The continued subscription stops billing; its paid term (and the access granted for it) runs out as it is</summary>
-    private async Task<bool> CancelContinuedPayPal(UserSubscription previous)
+    private async Task<bool> CancelContinuedPayPal(UserSubscription previous, string reason = ContinuedCancelReason)
     {
         var remote = await PayPalApi.Get(previous.ExternalId);
         if (remote?.Status is "ACTIVE" or "SUSPENDED")
-            await PayPalApi.Cancel(previous.ExternalId, ContinuedCancelReason);
+            await PayPalApi.Cancel(previous.ExternalId, reason);
         previous.Status = "cancelled";
         previous.EndsAt = await AccessExpiry(previous) ?? previous.RenewsAt;
         previous.UpdatedAt = DateTime.UtcNow;

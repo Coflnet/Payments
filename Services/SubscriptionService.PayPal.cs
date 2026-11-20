@@ -175,7 +175,8 @@ public partial class SubscriptionService
             return null;
         }
         await AdoptPreviousSlots(subscription);
-        await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
+        await AdoptSwitchedAccess(subscription);
+        await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, await AccessHolder(subscription), reference);
         subscription.PaymentAmount = sale.Amount.Total + " " + sale.Amount.Currency;
         await SwitchToRecurringPrice(subscription);
         await context.SaveChangesAsync();
@@ -222,7 +223,8 @@ public partial class SubscriptionService
         var outcome = new SubscriptionPaymentOutcome(subscription, (TopUpProduct)subscription.Product, sale.Id, paid,
             sale.Amount?.Currency?.ToUpperInvariant(), country, null, null, null,
             ParseTime(sale.CreateTime) ?? DateTime.UtcNow, net, false, vat, rate,
-            await PayPalEvidence(subscription, country, payerCountry, sale.Id), !first);
+            await PayPalEvidence(subscription, country, payerCountry, sale.Id), !first,
+            TermSwitch: first ? await PayPalTermSwitchInfo(subscription, sale) : null);
         return await WithPayPalDeclaration(outcome, first);
     }
 

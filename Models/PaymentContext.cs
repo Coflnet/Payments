@@ -68,6 +68,10 @@ namespace Coflnet.Payments.Models
         public DbSet<SubscriptionPlanChange> SubscriptionPlanChanges { get; set; }
         public DbSet<RefundedSubscriptionInvoice> RefundedSubscriptionInvoices { get; set; }
         /// <summary>
+        /// Switches of running subscriptions to a longer term (4 → 13/52 weeks, 13 → 52)
+        /// </summary>
+        public DbSet<SubscriptionTermSwitch> SubscriptionTermSwitches { get; set; }
+        /// <summary>
         /// Trial usage records to prevent multiple trials per user/product
         /// </summary>
         public DbSet<TrialUsage> TrialUsages { get; set; }
@@ -204,6 +208,13 @@ namespace Coflnet.Payments.Models
             {
                 entity.HasIndex(e => e.InvoiceId).IsUnique();
                 entity.HasIndex(e => new { e.SubscriptionId, e.ChangedAt });
+            });
+
+            modelBuilder.Entity<SubscriptionTermSwitch>(entity =>
+            {
+                entity.HasIndex(e => new { e.SubscriptionId, e.Status });
+                entity.HasIndex(e => e.InvoiceId).IsUnique();
+                entity.HasIndex(e => e.NewSubscriptionId).IsUnique();
             });
 
             modelBuilder.Entity<TrialUsage>(entity =>

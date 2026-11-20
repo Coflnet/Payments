@@ -223,7 +223,7 @@ public partial class SubscriptionService
             logger.LogWarning("Won dispute of payment {PaymentId}: its grant {Reference} was not found, nothing restored", payment.Id, reference);
             return;
         }
-        await GrantPaidPeriod(subscription.User.ExternalId, plan, subscription.ExternalId, DisputeWonReference(subscription, payment));
+        await GrantPaidPeriod(subscription.User.ExternalId, plan, await AccessHolder(subscription), DisputeWonReference(subscription, payment));
     }
 
     private async Task<bool> RestorePlanChange(UserSubscription subscription, string invoiceId)

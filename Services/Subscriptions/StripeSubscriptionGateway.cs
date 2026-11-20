@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
+using Microsoft.Extensions.Logging;
 using Stripe;
 using Stripe.Checkout;
 
@@ -48,34 +49,67 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
 
     public async Task<StripePriceChange> ChangePrice(StripeSubscriptionSnapshot current, StripePriceChangeRequest request)
     {
-        var options = new SubscriptionUpdateOptions
-        {
-            Items =
-            [
-                new SubscriptionItemOptions
-                {
-                    Id = current.ItemId,
-                    PriceData = new SubscriptionItemPriceDataOptions
-                    {
-                        Product = await EnsurePlanProduct(request.PlanSlug, request.PlanName),
-                        Currency = request.Currency,
-                        UnitAmount = request.UnitAmount,
-                        TaxBehavior = request.TaxBehavior,
-                        Recurring = new SubscriptionItemPriceDataRecurringOptions
-                            { Interval = "week", IntervalCount = request.IntervalWeeks }
-                    }
-                }
-            ],
-            ProrationBehavior = request.InvoiceNow ? "always_invoice" : "none",
-            // An upgrade only applies once its proration invoice is paid, also for delayed payment methods
-            // (error_if_incomplete would apply a still processing payment). Pending updates can not change metadata,
-            // which is why the plan is identified by the item's product.
-            PaymentBehavior = request.InvoiceNow ? "pending_if_incomplete" : "allow_incomplete",
-            Expand = ["latest_invoice", .. ExpandPrice]
-        };
-        var updated = await new Stripe.SubscriptionService().UpdateAsync(current.Id, options);
+        var spec = new StripePlanPriceSpec(request.PlanSlug, request.PlanName, request.UnitAmount, request.Currency,
+            request.IntervalWeeks, request.TaxBehavior);
+        var updated = await WithUsablePrice(spec, price => new Stripe.SubscriptionService().UpdateAsync(current.Id,
+            StripePlanPrices.PlanChangeOptions(current, price, request.InvoiceNow)));
         var invoice = request.InvoiceNow ? updated.LatestInvoice : null;
         return new StripePriceChange(Snapshot(updated), invoice?.Id, invoice?.Status);
+    }
+
+    public async Task<StripeTermSwitch> SwitchTerm(StripeSubscriptionSnapshot current, StripeTermSwitchRequest request)
+    {
+        var spec = new StripePlanPriceSpec(request.PlanSlug, request.PlanName, request.UnitAmount, request.Currency, request.Weeks,
+            request.TaxBehavior);
+        var updated = await WithUsablePrice(spec, price => new Stripe.SubscriptionService().UpdateAsync(current.Id,
+            StripePlanPrices.TermSwitchOptions(current, price)));
+        var invoice = updated.LatestInvoice;
+        return new StripeTermSwitch(Snapshot(updated), invoice == null ? null : StripeInvoiceInfo.From(invoice), invoice?.HostedInvoiceUrl);
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> PlanPrices = new();
+
+    /// <summary>A cached price someone archived meanwhile is evicted and looked up or created again (once)</summary>
+    private Task<T> WithUsablePrice<T>(StripePlanPriceSpec spec, Func<string, Task<T>> update) =>
+        StripePlanPrices.WithUsablePrice(() => EnsurePlanPrice(spec), () => PlanPrices.TryRemove(StripePlanPrices.LookupKey(spec), out _), update);
+
+    /// <summary>
+    /// The id of the plan's price with exactly these terms: found by its lookup key (cached), else created. A concurrent create
+    /// of the same key is tolerated by looking it up again; a key someone moved to another price gets a price without key.
+    /// </summary>
+    private async Task<string> EnsurePlanPrice(StripePlanPriceSpec spec)
+    {
+        var key = StripePlanPrices.LookupKey(spec);
+        if (PlanPrices.TryGetValue(key, out var cached))
+            return cached;
+        var product = await EnsurePlanProduct(spec.PlanSlug, spec.PlanName);
+        var id = await FindPlanPrice(key, product, spec) ?? await CreatePlanPrice(spec, product);
+        PlanPrices[key] = id;
+        return id;
+    }
+
+    private static async Task<string> FindPlanPrice(string key, string product, StripePlanPriceSpec spec)
+    {
+        var found = await new PriceService().ListAsync(new PriceListOptions { LookupKeys = [key], Limit = 1 });
+        return found.Data.FirstOrDefault(p => StripePlanPrices.Matches(p, product, spec))?.Id;
+    }
+
+    private async Task<string> CreatePlanPrice(StripePlanPriceSpec spec, string product)
+    {
+        var prices = new PriceService();
+        try
+        {
+            return (await prices.CreateAsync(StripePlanPrices.CreateOptions(spec, product))).Id;
+        }
+        catch (StripeException e) when (e.HttpStatusCode == System.Net.HttpStatusCode.BadRequest)
+        {
+            // the key exists already: a concurrent create, or a price that no longer matches (archived, changed): take the key over
+            var existing = await FindPlanPrice(StripePlanPrices.LookupKey(spec), product, spec);
+            if (existing != null)
+                return existing;
+            logger?.LogWarning(e, "Stripe price key {LookupKey} belongs to a price that no longer matches; moving it to a new price", StripePlanPrices.LookupKey(spec));
+            return (await prices.CreateAsync(StripePlanPrices.CreateOptions(spec, product, transferLookupKey: true))).Id;
+        }
     }
 
     public Task<string> ScheduleRenewal(StripeSubscriptionSnapshot current, StripeRenewalRequest request) =>
@@ -270,6 +304,6 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
             item?.Id, item?.Price?.Id, item?.Price?.ProductId, item?.Price?.UnitAmount, item?.Price?.Currency,
             item?.Price?.TaxBehavior is "inclusive" or "exclusive" ? item.Price.TaxBehavior : null,
             subscription.ManagedPayments?.Enabled == true, subscription.Created, subscription.PendingUpdate != null,
-            subscription.ScheduleId);
+            subscription.ScheduleId, item?.Price?.Recurring?.Interval, item?.Price?.Recurring?.IntervalCount);
     }
 }

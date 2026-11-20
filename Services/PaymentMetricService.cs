@@ -22,6 +22,15 @@ public static class PaymentMetrics
         "payments_disputes_total",
         "Payment disputes (chargebacks) handled, by provider and outcome",
         new CounterConfiguration { LabelNames = new[] { "provider", "outcome" } });
+
+    /// <summary>
+    /// Price changes of direct Stripe subscriptions this service did not make (e.g. in the dashboard), by kind: lower (accepted),
+    /// higher, interval, currency (the next renewal would be refused and marked for a manual refund)
+    /// </summary>
+    public static readonly Counter ForeignPriceChanges = Metrics.CreateCounter(
+        "payments_foreign_price_changes_total",
+        "Price changes of direct Stripe subscriptions not made by this service, by kind",
+        new CounterConfiguration { LabelNames = new[] { "kind" } });
 }
 
 public class PaymentMetricService : BackgroundService

@@ -45,11 +45,13 @@ public record PaymentEvidence(string IpAddress, string CheckoutCountry, string B
 /// or the first payment of an extension term); null for other payments</param>
 /// <param name="LegalLocale">Locale of the buyer's latest declaration for the subscription, null when unknown</param>
 /// <param name="IsExtension">The first payment of a term the buyer opted in to extend</param>
+/// <param name="TermSwitch">The payment of a switch to a longer term (<see cref="SubscriptionService.SwitchTerm"/>), null otherwise</param>
 public record SubscriptionPaymentOutcome(UserSubscription Subscription, TopUpProduct Product, string PaymentId,
     decimal Amount, string Currency, string Country, string PostalCode, string Email, string Name, DateTime PaidAt,
     decimal? EurAmount = null, bool IsProration = false, decimal TaxAmount = 0, double TaxRate = 0,
     PaymentEvidence Evidence = null, bool IsRenewal = false, string PriceTaxBehavior = null,
-    ServicePerformanceDeclaration Declaration = null, string LegalLocale = null, bool IsExtension = false)
+    ServicePerformanceDeclaration Declaration = null, string LegalLocale = null, bool IsExtension = false,
+    SubscriptionTermSwitchInfo TermSwitch = null)
 {
     /// <summary>Merchant of record (Stripe Managed Payments) remits the tax</summary>
     public bool TaxRemittedByProcessor => Subscription.ManagedPayments;

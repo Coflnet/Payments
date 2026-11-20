@@ -49,6 +49,8 @@ public partial class SubscriptionService
         SubscriptionDeclarationService.ValidateExtension(request?.Declaration);
         var subscription = await OwnedSubscription(userId, subscriptionId)
             ?? throw new ApiException("Subscription not found");
+        if (await LoadPendingTermSwitch(subscription) != null)
+            throw new ApiException(TermSwitchPending);
         if (!await CanExtendLongTerm(subscription))
             throw new ApiException("This subscription can not be extended for another term.");
         var cents = await ExtensionPriceCents(subscription)
@@ -143,7 +145,7 @@ public partial class SubscriptionService
     private async Task<SubscriptionExtensionResult> ExtendStripe(UserSubscription subscription, long cents, SubscriptionDeclaration declaration)
     {
         var snapshot = await StripeApi.GetSubscription(subscription.ExternalId);
-        ApplyStripeState(subscription, snapshot);
+        await ApplyCheckedStripeState(subscription, snapshot);
         if (!MayExtendLongTerm(subscription, DateTime.UtcNow, extensionBookingWindow) || snapshot.HasPendingUpdate
             || snapshot.CurrentPeriodEnd == null || StripePlans.SlugOf(snapshot) != subscription.Product.Slug)
             throw new ApiException("This subscription can not be extended for another term.");

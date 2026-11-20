@@ -48,6 +48,29 @@ public class SubscriptionController : ControllerBase
     public Task<SubscriptionExtensionResult> ExtendLongTerm(string userId, string subscriptionId, [FromBody] SubscriptionExtensionRequest request) =>
         subscriptionService.ExtendLongTerm(userId, subscriptionId, request);
 
+    /// <summary>
+    /// The longer terms (13 or 52 weeks of the same tier) a running Stripe or PayPal subscription can switch to now: what each is
+    /// charged now (promotion included), that the paid days left are kept (new access end = current access end + the term), and how it
+    /// continues every 4 weeks afterwards. Empty <c>terms</c> with <c>unavailableReason</c> when it can not switch.
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID</param>
+    [HttpGet("u/{userId}/{subscriptionId}/terms")]
+    public Task<SubscriptionTermOptions> GetTermOptions(string userId, string subscriptionId) =>
+        subscriptionService.GetTermOptions(userId, subscriptionId);
+
+    /// <summary>
+    /// Switch to a longer term now (charged at once, the paid days left are kept on top). Stripe: <c>completed</c>, or
+    /// <c>payment_required</c> with the page the buyer confirms the payment at; PayPal: <c>approval_required</c> with the approval link.
+    /// 400 <c>term_switch_unavailable</c> while SUBSCRIPTIONS:TERM_SWITCH_ENABLED is false.
+    /// </summary>
+    /// <param name="userId">The user ID</param>
+    /// <param name="subscriptionId">The external subscription ID</param>
+    /// <param name="request">The term, the early performance declaration of the new term and the PayPal return/cancel urls</param>
+    [HttpPost("u/{userId}/{subscriptionId}/term")]
+    public Task<SubscriptionTermSwitchResult> SwitchTerm(string userId, string subscriptionId, [FromBody] SubscriptionTermSwitchRequest request) =>
+        subscriptionService.SwitchTerm(userId, subscriptionId, request);
+
     [HttpPut("{subscriptionId}/switch")]
     public Task<SubscriptionChangeResult> ChangePlan(string userId, string subscriptionId, string targetProductSlug) =>
         subscriptionService.ChangePlan(userId, subscriptionId, targetProductSlug);

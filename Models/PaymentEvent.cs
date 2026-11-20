@@ -69,6 +69,19 @@ public class PaymentEvent
     public string SubscriptionExternalId { get; set; }
     /// <summary>Subscription payments: true on the first payment of a term the buyer opted in to extend; null otherwise</summary>
     public bool? SubscriptionIsExtension { get; set; }
+    /// <summary>
+    /// Subscription payments: true on the payment of a switch to a longer term (charged at once; the paid days left of the previous
+    /// term are kept on top of the new one, nothing is refunded); null otherwise. <see cref="ServiceEndsAtUtc"/> is then the new access end.
+    /// </summary>
+    public bool? SubscriptionIsTermSwitch { get; set; }
+    /// <summary>Term switches: the length of the previous term in weeks (4 or 13)</summary>
+    public int? SubscriptionPreviousBillingWeeks { get; set; }
+    /// <summary>Term switches: when the access paid before the switch ended; the new term is added from there</summary>
+    public DateTime? SubscriptionPreviousAccessEndsAt { get; set; }
+    /// <summary>Term switches: when the first <see cref="SubscriptionRenewalWeeks"/>-week cycle after the new term is charged</summary>
+    public DateTime? SubscriptionNextBillingAt { get; set; }
+    /// <summary>Term switches: the automatic promotion that lowered this payment, null without one</summary>
+    public string SubscriptionPromotionCode { get; set; }
 }
 
 /// <summary>Values of <see cref="PaymentEvent.ConfirmationType"/> this service sets for subscriptions</summary>

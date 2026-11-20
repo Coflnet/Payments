@@ -20,6 +20,24 @@ public static class SubscriptionEventTerms
         payment.LegalLocale = outcome.LegalLocale;
         ApplyTax(payment, outcome);
         ApplyDeclaration(payment, outcome);
+        ApplyTermSwitch(payment, outcome.TermSwitch);
+    }
+
+    /// <summary>
+    /// A switch to a longer term is confirmed like the purchase of that term, stating that the paid days left were kept: the service
+    /// then ends at the new access end (the previous access end plus the new term), not at the provider's next billing date
+    /// </summary>
+    private static void ApplyTermSwitch(PaymentEvent payment, SubscriptionTermSwitchInfo termSwitch)
+    {
+        if (termSwitch == null)
+            return;
+        payment.SubscriptionIsTermSwitch = true;
+        payment.SubscriptionPreviousBillingWeeks = termSwitch.PreviousWeeks;
+        payment.SubscriptionPreviousAccessEndsAt = termSwitch.PreviousAccessEndsAt;
+        payment.SubscriptionNextBillingAt = termSwitch.NextBillingAt;
+        payment.SubscriptionPromotionCode = termSwitch.PromotionCode;
+        if (payment.ServiceEndsAtUtc != null)
+            payment.ServiceEndsAtUtc = termSwitch.AccessEndsAt;
     }
 
     /// <summary>

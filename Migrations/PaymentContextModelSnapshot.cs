@@ -1019,6 +1019,105 @@ namespace Payments.Migrations
                     b.ToTable("SubscriptionPlanChanges");
                 });
 
+            modelBuilder.Entity("Coflnet.Payments.Models.SubscriptionTermSwitch", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("AccessEndsBefore")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ChargedCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("InvoiceId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("NewSubscriptionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int?>("PaymentRequestId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PaymentUrl")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<int?>("PreviousProductId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ProductId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PromotionCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Provider")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<long>("RegularCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RenewalCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("RenewalProductId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Status")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("SubscriptionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("UserId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("Weeks")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InvoiceId")
+                        .IsUnique();
+
+                    b.HasIndex("NewSubscriptionId")
+                        .IsUnique();
+
+                    b.HasIndex("PreviousProductId");
+
+                    b.HasIndex("ProductId");
+
+                    b.HasIndex("RenewalProductId");
+
+                    b.HasIndex("SubscriptionId", "Status");
+
+                    b.ToTable("SubscriptionTermSwitches");
+                });
+
             modelBuilder.Entity("Coflnet.Payments.Models.TierSlot", b =>
                 {
                     b.Property<long>("Id")
@@ -1473,6 +1572,27 @@ namespace Payments.Migrations
                     b.Navigation("PreviousProduct");
 
                     b.Navigation("Product");
+                });
+
+            modelBuilder.Entity("Coflnet.Payments.Models.SubscriptionTermSwitch", b =>
+                {
+                    b.HasOne("Coflnet.Payments.Models.Product", "PreviousProduct")
+                        .WithMany()
+                        .HasForeignKey("PreviousProductId");
+
+                    b.HasOne("Coflnet.Payments.Models.Product", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId");
+
+                    b.HasOne("Coflnet.Payments.Models.Product", "RenewalProduct")
+                        .WithMany()
+                        .HasForeignKey("RenewalProductId");
+
+                    b.Navigation("PreviousProduct");
+
+                    b.Navigation("Product");
+
+                    b.Navigation("RenewalProduct");
                 });
 
             modelBuilder.Entity("Coflnet.Payments.Models.TierSlot", b =>

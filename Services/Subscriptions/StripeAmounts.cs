@@ -24,6 +24,13 @@ public static class StripeAmounts
     /// <summary>A Stripe amount in major units of <paramref name="currency"/>, e.g. 1153 EUR = 11.53, 1500 JPY = 1500</summary>
     public static decimal FromMinorUnits(long amount, string currency) => amount / (decimal)MinorUnitsPerUnit(currency);
 
+    /// <summary>
+    /// Major units of <paramref name="currency"/> as Stripe's minor units, rounded half away from zero (11.53 EUR = 1153). Amounts that
+    /// went through a binary double on the way (11.530000000000001) give the intended cents.
+    /// </summary>
+    public static long ToMinorUnits(decimal amount, string currency) =>
+        (long)Math.Round(amount * MinorUnitsPerUnit(currency), MidpointRounding.AwayFromZero);
+
     private static int MinorUnitsPerUnit(string currency)
     {
         var code = currency?.Trim() ?? "";

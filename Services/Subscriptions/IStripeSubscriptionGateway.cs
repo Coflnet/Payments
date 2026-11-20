@@ -26,6 +26,13 @@ public interface IStripeSubscriptionGateway
     Task<StripeSubscriptionSnapshot> CancelNow(string subscriptionId);
     /// <summary>Swaps the price (and plan product) of the single subscription item</summary>
     Task<StripePriceChange> ChangePrice(StripeSubscriptionSnapshot current, StripePriceChangeRequest request);
+    /// <summary>
+    /// Moves the subscription to a longer term now: the item bills the new term's price, the billing cycle restarts now and the
+    /// term is invoiced at once without proration credit. The change only applies once that invoice is paid
+    /// (pending_if_incomplete), so a payment that needs the buyer's confirmation (SCA) leaves a pending update. The item names a
+    /// Price created for it (<see cref="StripePlanPrices"/>): pending updates do not accept price_data.
+    /// </summary>
+    Task<StripeTermSwitch> SwitchTerm(StripeSubscriptionSnapshot current, StripeTermSwitchRequest request);
     /// <summary>All invoices of a subscription, newest first</summary>
     Task<IReadOnlyList<SubscriptionInvoice>> ListInvoices(string subscriptionId);
     /// <summary>Refunds the payment of an invoice, fully when <paramref name="amountCents"/> is null</summary>
@@ -81,7 +88,13 @@ public record StripeSubscriptionSnapshot(
     bool ManagedPayments,
     DateTime Created,
     bool HasPendingUpdate = false,
-    string ScheduleId = null);
+    string ScheduleId = null,
+    string Interval = null,
+    long? IntervalCount = null)
+{
+    /// <summary>The billed price's period in weeks (week intervals only), null for other intervals or when unknown</summary>
+    public int? IntervalWeeks => Interval == "week" && IntervalCount is long count ? (int)count : null;
+}
 
 /// <summary>
 /// A price swap on the single subscription item
@@ -96,6 +109,24 @@ public record StripeSubscriptionSnapshot(
 /// <param name="PlanName">Product name shown to the buyer</param>
 public record StripePriceChangeRequest(long UnitAmount, string Currency, int IntervalWeeks, bool InvoiceNow,
     string TaxBehavior, string PlanSlug, string PlanName);
+
+/// <summary>
+/// A switch to a longer term, invoiced now
+/// </summary>
+/// <param name="UnitAmount">Cents of the new term as charged now (a promotion is part of it: the term's price is billed once, its
+/// renewal schedule then moves the subscription to the 4-week price); gross incl. VAT for direct subscriptions, net for Managed Payments</param>
+/// <param name="Currency">Lower case ISO currency</param>
+/// <param name="Weeks">The new term (13 or 52)</param>
+/// <param name="TaxBehavior">Kept from the current price ("exclusive" for Managed Payments, null for direct)</param>
+/// <param name="PlanSlug">The plan of the new term; its Stripe product identifies it</param>
+/// <param name="PlanName">Product name shown to the buyer</param>
+public record StripeTermSwitchRequest(long UnitAmount, string Currency, int Weeks, string TaxBehavior, string PlanSlug, string PlanName);
+
+/// <summary>
+/// Result of a term switch: the subscription after the update (a pending update until the invoice is paid), the invoice of the new
+/// term and its hosted page, where the buyer confirms a payment that needs it
+/// </summary>
+public record StripeTermSwitch(StripeSubscriptionSnapshot Subscription, StripeInvoiceInfo Invoice, string PaymentUrl);
 
 /// <summary>
 /// The 4-week price a 13 or 52 week subscription continues with after its current period

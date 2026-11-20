@@ -180,7 +180,8 @@ Activate Managed Payments (needed for every country outside the direct list): ht
 
 Webhook endpoint `/callback/stripe` (secret `STRIPE:SIGNING_SECRET`), events: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.created`,
-`customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`, and for chargebacks `charge.dispute.created`,
+`customer.subscription.updated`, `customer.subscription.deleted`, `customer.subscription.pending_update_expired`,
+`customer.subscription.pending_update_applied`, `charge.refunded`, and for chargebacks `charge.dispute.created`,
 `charge.dispute.funds_withdrawn`, `charge.dispute.closed` (plus the existing one-time events).
 
 ### Chargebacks (disputes)
@@ -282,6 +283,25 @@ same fields (`/transactions` has never filtered by status).
 - `SubscriptionMode`: `direct` (Stripe/PayPal subscription payments Coflnet remits VAT for), `managed` (Stripe Managed Payments), the provider for subscription
   payments of other merchants of record (`lemonsqueezy`, `googlepay`), empty for
   everything that is not a subscription payment. `PayerCountry` is PayPal only (see above); `BillingCountry` is Stripe's billing address only.
+
+### Price changes made outside this service
+
+Every direct renewal must charge exactly the agreed `PriceCents`; otherwise it is refused after the buyer paid (marked for a manual
+refund). So every place that takes Stripe's state (`customer.subscription.*`, `invoice.paid`, checkout completion, the hourly
+conversion, cancel/resume, extension and term switch requests) checks first whether the billed price changed without this
+service (direct subscription, price id differs from the recorded `ProviderPlanId`, same plan slug, no pending update, not in a
+13/52 week first term, no booked or just started extension, no pending term switch). The price's currency and recurring interval
+(`StripeSubscriptionSnapshot.Interval`/`IntervalCount`) are compared with the agreed ones:
+
+- same currency and interval, lower amount: accepted as the agreed price (`PriceCents` synced, warning logged), so the next renewal
+  is granted;
+- higher amount, another interval or currency: an error with the subscription, user, both price ids, amounts and the renewal date,
+  weeks before that renewal (which is still refused as before). Nothing is changed at Stripe; set the price back there.
+- same terms under another price id (e.g. recreated `price_data`): nothing.
+
+Each detection increments `payments_foreign_price_changes_total{kind="lower|higher|interval|currency"}`, once per change (the new
+price id is recorded with it). Plan switches, term switches and schedule phases made by this service record their price, so their
+updates are never reported.
 
 ### Refunds and creator shares
 
@@ -428,6 +448,103 @@ PayPal), every country and slot bundles alike.
 - The subscription list adds `currentTermEndsAt`, `canExtendLongTerm`, `extensionPrice`, `extensionTaxTreatment`, `renewalPrice` and
   `extendedUntil` (only while the booked extension stands: Stripe not cancelled, PayPal continuation active).
 
+## Switching a running subscription to a longer term
+
+Owner decision (live during the sale, `SUBSCRIPTIONS:TERM_SWITCH_ENABLED`, default true; false: the options list no terms with
+`unavailableReason` `term_switch_unavailable`, the switch endpoint answers 400 `term_switch_unavailable`): an active, paid, uncancelled
+direct Stripe (direct and Managed Payments) or PayPal subscription on a 4-week plan can switch to the 13 or 52 week term of the same
+tier, a 13 week first term to 52 weeks. Lemon Squeezy subscriptions are not offered any.
+
+- Terms offered: sellable 13/52 week plans longer than the current term whose renewal plan (`SubscriptionRenewalPlans.Find`) is the
+  subscription's 4-week plan (the plan itself, or for a 13 week first term its `RenewalProduct`): same tier, slot count and currency,
+  so slot bundles switch like single plans (their tier slots are extended; PayPal moves them to the new subscription). One plan per
+  length (the one whose slug starts with the 4-week slug, then the lowest id).
+- Price now: the plan's list price with the subscription's creator code and lasting ("forever") discount code, like an extension
+  (`RecurringPriceCents`, VAT of the checkout country; Managed Payments net). When the active automatic promotion
+  (`GET /TopUp/discount/auto`, e.g. `GTA6` 4:25 %, 13:40 %, 52:50 %) with the creator code is lower, that is charged (one redemption
+  is counted, given back when the switch fails); it applies to this first charge only, also when it is a `forever` code. The
+  subscription keeps its own codes for later prices.
+- The paid days left are NOT refunded: the new term is granted on top of the current access end (new access end = access end +
+  the plan's ownership time). Billing restarts now, so the first 4-week cycle after the new term is charged `weeks` after the
+  switch, while the access runs that many days longer (each later payment extends the access end, so the days are never lost).
+- After the new term it continues every 4 weeks at the 4-week renewal price of the tier (the "4-week renewal" above).
+- Refused (400 with a slug): `subscription_not_active` (cancelled, past_due, paused, ...), `extension_booked` (an extension booked or
+  started within 2 days, or a PayPal extension of the current term end that waits for approval or was approved; a cancelled, unknown
+  or stale one does not block, an unreadable one does), `renewal_due` (the term renews within 24 h:
+  releasing a 13 week schedule that close could let Stripe renew it for 13 weeks, § 309), `term_not_paid`, `no_longer_term`, `term_switch_not_offered`, `subscription_not_switchable` (Stripe: a pending
+  update such as an unpaid upgrade, a schedule someone else made, cancel at period end), `term_switch_pending` (another term is waiting
+  for its payment/approval; the same term returns the pending one), `term_switch_price_changed` (`expectedChargedNow` differs, or the
+  promotion was used up), `expected_charged_now_required`, `invalid_service_performance_declaration`. The subscription lock is held
+  throughout. "Renew for another term" is refused (`term_switch_pending`) while a switch is pending.
+- Each attempt is a `SubscriptionTermSwitches` row (status `pending`, `completed`, `failed`, `expired`; prices, promotion, access end before, the
+  paying invoice/sale, PayPal's new subscription), written before the provider is called but after the declaration was stored (under
+  `subscription-term-switch-{subscription}-{weeks}-{access end yyyyMMddHHmm}`; a retry of the same switch can reuse it, a refused
+  declaration changes nothing) and the promotion use counted. A pending row blocks other terms for 23 hours (Stripe drops unpaid
+  pending updates after 23 hours); the hourly run marks expired ones `expired` and gives their promotion use back (PayPal: unless the
+  payer approved meanwhile; an unapproved one is cancelled at PayPal, best effort). Status changes are conditional updates from the
+  expected status (the run also works per row under the subscription's lock, and a row it can not close does not stop it), so a
+  completed switch is never overwritten and a promotion use is given back once. An expired switch still completes when its Stripe
+  invoice is paid or its PayPal approval arrives late (a failed or replaced PayPal switch does not); it then counts its promotion
+  again (if it is used up meanwhile, the price paid stands and a warning is logged). The run cancels an expired PayPal switch only after reading the row
+  and PayPal's status again (one approved meanwhile is left to its activation). A PayPal switch marked completed whose link to the
+  old subscription was not saved is linked (and the old one cancelled) by the next webhook or hourly run, never refused.
+
+Endpoints:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/Subscription/u/{userId}/{subscriptionId}/terms` | `subscriptionId`, `currentWeeks`, `currentAccessEndsAt`, `unavailableReason`, `pending` (a switch result, see below) and `terms[]`: `weeks`, `productSlug`, `title`, `regularPrice`, `chargedNow`, `currency`, `taxTreatment` (`included`, `net` = Stripe adds the tax, `none`), `promotion` (`code`, `name`, `amountType`, `amount` for this length, `expiresAt`; null without), `currentAccessEndsAt`, `newAccessEndsAt`, `carriedOverDays`, `firstRenewalAt`, `renewsAsProductSlug`, `renewalPrice`, `renewalWeeks` |
+| `POST /api/Subscription/u/{userId}/{subscriptionId}/term` | Body `weeks`, `declaration` (required, like the extension's), `expectedChargedNow` (required: the price shown), `returnUrl`/`cancelUrl` (PayPal). Returns `switched`, `status` (`completed`, `payment_required`, `approval_required`, `processing`), `approvalUrl` (Stripe: hosted invoice page to confirm the payment; PayPal: approval link), `weeks`, `productSlug`, `chargedNow`, `currency`, `taxTreatment`, `promotionCode`, `accessUntil`, `firstRenewalAt`, `renewsAsProductSlug`, `renewalPrice`, `renewalWeeks` |
+
+Stripe: our renewal schedule is released (a 13 week first term; also the one still attached in the first 4-week period after a
+conversion), then the item gets a Price of `coflnet_plan_{long slug}` at the price charged now, `billing_cycle_anchor=now`,
+`proration_behavior=none`, `payment_behavior=pending_if_incomplete`. Pending updates accept only `price`, `quantity` and `discounts` on
+items, not `price_data` (docs.stripe.com/billing/subscriptions/pending-updates-reference), so the Price is created first
+(`StripePlanPrices`: per plan, amount, currency, weeks and tax behaviour, found again by the lookup key
+`coflnet_{slug}_{weeks}w_{cents}_{currency}_{tax behaviour}` and reused only when its terms match, otherwise the key is moved to a new
+price; a cached price Stripe refuses as inactive/archived is evicted and the update retried once with a fresh one); plan switches (upgrades are
+pending updates as well) do the same. The promotion is part of that price rather than a `once` coupon, which is equivalent because a
+long term's price is billed only once (the renewal schedule follows it). A payment that needs the buyer (SCA) or fails leaves the
+pending update: nothing changes until the buyer pays on the returned invoice page. Unpaid it expires: on
+`customer.subscription.pending_update_expired` (or any update without the pending update while Stripe does not bill the new term) the
+switch is marked failed (promotion use given back) and a released 13 week schedule is attached again. The paid invoice (billing reason `subscription_update`) is matched by the row (`InvoiceId`, or, when the switch call's
+response was lost, a row without one within 23 hours while Stripe bills its plan) before any other `updated` rule, so it is never a proration,
+never the "full term without a plan change" refund and not checked against the old price: direct ones must charge exactly
+`ChargedCents`. It converts the subscription to the long plan (`PriceCents` = the charged price, renewal plan and price), grants the
+term on top of the access end in the same transaction, and `TryScheduleStripeRenewal` attaches the 4-week schedule
+(`{renewal slug}:{cents}`). A paid invoice while Stripe does not bill the switched plan (pending update expired) is marked for a manual
+refund. The endpoint grants a paid switch itself (it calls the `invoice.paid` handler); the webhook then publishes the event.
+A failed call that did not reach Stripe marks the row failed and attaches a released 13 week schedule again at once; a card error
+returns "The payment failed: ...". When Stripe can not be read after a failed call (read twice), the switch stays pending for 15 minutes
+only, so the buyer can try again soon. Refunds: a full refund of the switch invoice reverts exactly its grant (the `updated` invoice
+without plan change path); the subscription then still bills the new term's schedule at Stripe, cancel it by hand if wanted.
+
+PayPal: a new PayPal subscription of the long plan (TRIAL = price now, REGULAR = 4-week renewal price, no `start_time`: it starts
+now, same `custom_id`), recorded as a `PaymentRequest` with `ExtendsSubscriptionId` (never a checkout) and `ExpiresAt` = the promotion's
+end (approvals more than 24 h after it are refused as for checkouts). The approval link is returned (again for the same term while it
+is pending; a request for another term replaces an unapproved one). Nothing changes until the payer approves: on activation (or its
+first sale, or the hourly run for a lost webhook) the new subscription is linked (`PreviousSubscriptionId`) and the old one cancelled
+at PayPal (its paid access stays, `EndsAt` = its access end); the first sale moves the old subscription's ownership (slot bundles:
+its tier slots) to the new one and extends it, so the year is added on top. A switch approved after another switch of the same
+subscription completed is refused (`ContinuationRefusedAt`, cancelled, its sales marked for a manual refund), and so is the approval
+of a switch that is no longer pending (replaced or expired), of an old subscription that is no longer active, has a PayPal extension or
+is already continued by another subscription. The hourly run also retries cancelling the old subscription of a linked switch.
+A later sale of the old subscription (charged before PayPal processed its cancellation) adds its period to the access the new
+subscription took over (granted once, under its own reference), and a refund or dispute of an old sale takes its time from there
+(`TransactionService` follows `PreviousSubscriptionId` when the old subscription has no ownership left).
+
+Disputes: a chargeback of the switch invoice (Stripe) or the new subscription's first sale (PayPal) goes through the normal dispute
+handling: exactly the switch's grant is reverted (the earlier periods stay), the (new) subscription is cancelled at once, and a won
+dispute grants the term again once (`...-disputewon`); the subscription stays cancelled.
+
+Confirmation: the paying invoice/sale is published to `sky-payments` like the first payment of the new term (`SubscriptionIsRenewal`
+false, the switch's declaration, `SubscriptionBillingWeeks` = new term, `SubscriptionRenewalAmount` = the 4-week price) plus
+`SubscriptionIsTermSwitch` true, `SubscriptionPreviousBillingWeeks`, `SubscriptionPreviousAccessEndsAt`, `SubscriptionNextBillingAt`
+(first 4-week charge), `SubscriptionPromotionCode`; `ServiceEndsAtUtc` is the access end as granted (read after the grant). The switch response's
+`accessUntil` is that actual end once `completed`, the preview (access end at the request + the term) while pending. SkyEventBroker does not read the new
+fields yet: its confirmation should state "switched from N weeks; your remaining days until {previous access end} were kept, access
+until {ServiceEndsAtUtc}; continues every 4 weeks at {renewal amount} from {next billing}".
+
 ## PayPal
 
 Webhook endpoint `/callback/paypal` (id in `PAYPAL:WEBHOOK_ID`), events `BILLING.SUBSCRIPTION.*`, `PAYMENT.SALE.COMPLETED`,
@@ -470,3 +587,6 @@ add `Subscriptions.RenewalProductId` (FK to `Product`, indexed), `RenewalPriceCe
 `PayPalPlans.RenewalWeeks` (existing rows set to their `BillingWeeks`), and replace the PayPal plan unique index by one on
 `(ProductSlug, BillingWeeks, RenewalWeeks, Currency)`. Rows the old release adds between the script and the deploy keep
 `RenewalWeeks` 0, which the new release treats like the old plans.
+
+`Migrations/20261120121323_TermSwitch` (EF) and its `.cockroach.sql` (rerunnable, apply after `20261119211429_RenewalExtension` and
+before the deploy) create `SubscriptionTermSwitches` with its indexes and grant `sky_payments` access to it and its identity sequence.
