@@ -391,6 +391,28 @@ public class StripeExtensionTests : DirectSubscriptionTestBase
             Is.EqualTo(new[] { ("bazaarPro", Sha("bazaarPro agreement root")), (null, null) }));
     }
 
+    /// <summary>
+    /// regression: naming SkyCofl's agreement made the broker check SkyApi's possibly outdated hash and hold the confirmation back;
+    /// SkyCofl's stays unnamed like before
+    /// </summary>
+    [Test]
+    public async Task FirstPaymentEventLeavesSkyCoflsAgreementUnnamed()
+    {
+        var request = await SeedCheckout("stripe", "cs_1", premiumYear, 118.63m);
+        var evidence = Evidence(request.Id, "Start my year now", "en");
+        (evidence.AgreementId, evidence.AgreementHash) = ("skycofl", Sha("skycofl agreement root"));
+        db.ServicePerformanceDeclarations.Add(evidence);
+        await db.SaveChangesAsync();
+        checkoutMetadata[Keys.PaymentRequestId] = request.Id.ToString();
+        remote = Snapshot();
+        var service = Service(stripe.Object);
+
+        await Record(service, await service.StripeInvoicePaid(Invoice()));
+
+        Assert.That(publishedPayments.Select(p => (p.AgreementId, p.AgreementHash)), Is.EqualTo(new[] { ((string)null, (string)null) }));
+        Assert.That(publishedPayments.Single().DeclarationText, Is.EqualTo("Start my year now"));
+    }
+
     private async Task<TopUpProduct> PremiumPlusYear()
     {
         var plan = new TopUpProduct

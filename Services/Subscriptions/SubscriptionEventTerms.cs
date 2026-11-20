@@ -52,11 +52,25 @@ public static class SubscriptionEventTerms
             return;
         payment.DeclarationVersion = declaration.DeclarationVersion;
         payment.DeclarationText = declaration.DeclarationText;
-        payment.AgreementId = declaration.AgreementId;
-        payment.AgreementHash = declaration.AgreementHash;
+        ApplyAgreement(payment, declaration);
         payment.LegalLocale = declaration.Locale;
         payment.ServiceStartsAtUtc = outcome.PaidAt;
         payment.ServiceEndsAtUtc = PaidTermEnd(outcome);
+    }
+
+    /// <summary>The broker's default agreement: confirmations without an agreement get these terms</summary>
+    internal const string DefaultAgreementId = "skycofl";
+
+    /// <summary>
+    /// Names another agreement than SkyCofl's (BazaarPro's). SkyCofl's is left out like before: the broker checks a named hash against
+    /// the terms it loaded, and SkyApi keeps sending the previous hash for a while after a terms update, which would hold the emails back
+    /// </summary>
+    private static void ApplyAgreement(PaymentEvent payment, ServicePerformanceDeclaration declaration)
+    {
+        if (string.IsNullOrEmpty(declaration.AgreementId) || declaration.AgreementId == DefaultAgreementId)
+            return;
+        payment.AgreementId = declaration.AgreementId;
+        payment.AgreementHash = declaration.AgreementHash;
     }
 
     /// <summary>The provider's period end once it moved past the payment, else the plan's length from the payment</summary>
