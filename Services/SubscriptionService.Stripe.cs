@@ -72,7 +72,7 @@ public partial class SubscriptionService
         return trial;
     }
 
-    private static TrialStart CheckoutTrialStart(Stripe.Checkout.Session session) => new(DateTime.UtcNow,
+    private static TrialStart CheckoutTrialStart(Stripe.Checkout.Session session) => new(session.Created,
         session.CustomerDetails?.Email ?? session.CustomerEmail, session.CustomerDetails?.Name, session.Currency);
 
     /// <summary>

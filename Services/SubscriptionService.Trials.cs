@@ -128,7 +128,7 @@ public partial class SubscriptionService
     private static int? StripeTrialDays(StripeSubscriptionSnapshot snapshot) =>
         int.TryParse(snapshot.Metadata.GetValueOrDefault(SubscriptionTrials.MetadataKey), out var days) && days > 0 ? days : null;
 
-    /// <summary>Grants a trial Stripe started for a checkout that gave one (its metadata names the days)</summary>
+    /// <summary>Grants a trial Stripe started for a checkout that gave one (its metadata names the days); the trial starts with the subscription</summary>
     private async Task GrantStripeTrial(UserSubscription subscription, StripeSubscriptionSnapshot snapshot)
     {
         if (snapshot.Status != "trialing" || snapshot.TrialEnd is not DateTime end || StripeTrialDays(snapshot) is not int days)
@@ -139,7 +139,7 @@ public partial class SubscriptionService
     private Task<SubscriptionPaymentOutcome> StripeTrialConfirmation(UserSubscription subscription, StripeSubscriptionSnapshot snapshot,
         TrialStart start) =>
         TrialConfirmation(subscription, StripeTrialDays(snapshot) ?? 0, StripeCheckoutRequestId(snapshot),
-            start with { TaxBehavior = snapshot.TaxBehavior });
+            start with { StartedAt = snapshot.Created, TaxBehavior = snapshot.TaxBehavior });
 
     /// <summary>The zero invoice Stripe creates when a trial starts (billing reason subscription_create)</summary>
     private static bool IsTrialStartInvoice(StripeInvoiceInfo invoice) =>
