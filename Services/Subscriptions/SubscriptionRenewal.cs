@@ -30,10 +30,12 @@ public static class SubscriptionRenewal
 
     /// <summary>
     /// Whether <paramref name="candidate"/> can be the 4-week plan <paramref name="plan"/> continues as: a sellable 4-week
-    /// subscription plan of the same tier, slot bundle size and currency.
+    /// subscription plan of the same product line (<see cref="PlanLines"/>, default <see cref="PlanLines.Default"/>), tier, slot bundle
+    /// size and currency.
     /// </summary>
-    public static bool IsRenewalOf(Product plan, TopUpProduct candidate) =>
+    public static bool IsRenewalOf(Product plan, TopUpProduct candidate, PlanLines lines = null) =>
         plan != null && candidate != null && candidate.Id != plan.Id
+        && (lines ?? PlanLines.Default).SameLine(plan, candidate)
         && SubscriptionService.IsSubscriptionPlan(candidate)
         && SubscriptionService.IntervalWeeks(candidate.OwnershipSeconds) == RenewalWeeks
         && candidate.SlotCount == plan.SlotCount && candidate.SlotTier == plan.SlotTier
@@ -45,9 +47,10 @@ public static class SubscriptionRenewal
     /// only matching plan, else among several the one whose slug the plan's slug starts with (l_premium for l_premium-year).
     /// Null when there is none or the choice is ambiguous.
     /// </summary>
-    public static TopUpProduct Select(TopUpProduct plan, IEnumerable<TopUpProduct> candidates, string configuredSlug)
+    public static TopUpProduct Select(TopUpProduct plan, IEnumerable<TopUpProduct> candidates, string configuredSlug,
+        PlanLines lines = null)
     {
-        var matching = candidates.Where(c => IsRenewalOf(plan, c)).ToList();
+        var matching = candidates.Where(c => IsRenewalOf(plan, c, lines)).ToList();
         if (!string.IsNullOrWhiteSpace(configuredSlug))
             return matching.FirstOrDefault(c => c.Slug == configuredSlug.Trim());
         if (matching.Count <= 1)
@@ -64,11 +67,13 @@ public class SubscriptionRenewalPlans
 {
     private readonly PaymentContext db;
     private readonly IConfiguration config;
+    private readonly PlanLines lines;
 
     public SubscriptionRenewalPlans(PaymentContext db, IConfiguration config = null)
     {
         this.db = db;
         this.config = config;
+        lines = PlanLines.From(config);
     }
 
     /// <summary>
@@ -82,7 +87,7 @@ public class SubscriptionRenewalPlans
             .Where(p => p.Type.HasFlag(Product.ProductType.SERVICE) && p.SlotCount == plan.SlotCount).ToListAsync();
         // The tier comes from the groups, which callers often did not load (ProductService.GetTopupProduct does not)
         var withGroups = candidates.FirstOrDefault(c => c.Id == plan.Id) ?? plan;
-        return SubscriptionRenewal.Select(withGroups, candidates, config?[SubscriptionRenewal.ConfigPrefix + plan.Slug]);
+        return SubscriptionRenewal.Select(withGroups, candidates, config?[SubscriptionRenewal.ConfigPrefix + plan.Slug], lines);
     }
 
     /// <summary>

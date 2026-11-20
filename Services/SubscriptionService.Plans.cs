@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.LemonSqueezy;
+using Coflnet.Payments.Services.Subscriptions;
 using Microsoft.EntityFrameworkCore;
 
 namespace Coflnet.Payments.Services;
@@ -43,8 +44,13 @@ public partial class SubscriptionService
         "week_4" => 4, "month_3" => 13, "year_1" => 52, _ => null
     };
 
-    private static bool CanChangePlan(Product current, TopUpProduct target) =>
-        IsSubscriptionPlan(target) && TierRank(current) > 0
+    private bool CanChangePlan(Product current, TopUpProduct target) => IsPlanSwitch(current, target, planLines);
+
+    /// <summary>
+    /// A plan switch changes the tier within the product line (<see cref="PlanLines"/>), keeping the slot count and billing interval
+    /// </summary>
+    internal static bool IsPlanSwitch(Product current, TopUpProduct target, PlanLines lines) =>
+        IsSubscriptionPlan(target) && TierRank(current) > 0 && lines.SameLine(current, target)
         && TierRank(target) != TierRank(current) && current.SlotCount == target.SlotCount
         && SubscriptionInterval(current.OwnershipSeconds) is string interval
         && interval == SubscriptionInterval(target.OwnershipSeconds);

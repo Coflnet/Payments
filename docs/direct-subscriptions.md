@@ -11,6 +11,16 @@ Lemon Squeezy is deprecated. New subscriptions (4, 13 or 52 week periods; Premiu
 Switches: `SUBSCRIPTIONS:STRIPE_DIRECT_ENABLED`, `SUBSCRIPTIONS:STRIPE_MANAGED_ENABLED`, `SUBSCRIPTIONS:PAYPAL_ENABLED` (all default
 false), `SUBSCRIPTIONS:LEMONSQUEEZY_CHECKOUT_ENABLED` (default true, only used where no other provider applies).
 
+## Product lines (BazaarPro)
+
+BazaarPro (`l_bazaarpro`, `l_bazaarpro-quarter`, `l_bazaarpro-year`, sold for pro.skyblock.bz) may be put in the `premium` and
+`starter_premium` groups so it includes Premium. It stays its own product line: `SUBSCRIPTIONS:SEPARATE_PLAN_GROUPS` (a list, or one
+comma separated value; default `l_bazaarpro`, empty: one line for everything) names the lines; a product's line is the first entry its
+slug starts with or that is one of its groups, every other product is in the default line (`PlanLines`). Plan switches (offered and
+executed, also ones a provider reports), term switches and the 4-week renewal plan only stay within the line: a Premium subscriber is
+never offered BazaarPro (which a Stripe `l_premium` subscription was, as a "downgrade" to the tierless `l_bazaarpro`), a BazaarPro
+subscriber never Premium+ or the starter plan, `l_bazaarpro-year` renews as `l_bazaarpro`. Ship this before the catalog change.
+
 ## US direct cap (per state)
 
 US buyers get direct Stripe/PayPal (no tax charged) only while fewer than `SUBSCRIPTIONS:US_DIRECT_LIMIT` (default 10) direct subscriptions
@@ -330,7 +340,7 @@ as the 4-week plan of the same tier at that plan's 4-week price until cancelled,
 PayPal), every country and slot bundles alike.
 
 - The renewal plan (`SubscriptionRenewal`, `SubscriptionRenewalPlans`): a sellable 4-week subscription plan (not disabled, price > 0)
-  with the same tier (`TierRank`: tier groups / `SlotTier`), slot count and currency. Several matches: the one whose slug the long
+  of the same product line (see "Product lines") with the same tier (`TierRank`: tier groups / `SlotTier`), slot count and currency. Several matches: the one whose slug the long
   plan's slug starts with (`l_premium` for `l_premium-year`), otherwise none. `SUBSCRIPTIONS:RENEWAL_PLAN:{long slug}` = 4-week slug
   overrides the choice (only a valid renewal plan is accepted). A 13/52 week plan without a renewal plan is not sold (checkout error,
   the discount code is not redeemed).

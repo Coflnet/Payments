@@ -15,10 +15,15 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// <summary>
 /// The 4-week renewal against sky's real product catalog (products.json as applied on 2026-11-18): its groups are uneven
 /// (the quarter plans are not in starter_premium, the starter plans only are, no slot bundle is in a group), which must
-/// still give every 13/52 week plan its own tier's 4-week plan.
+/// still give every 13/52 week plan its own tier's 4-week plan. Also run with the catalog change that makes BazaarPro include Premium
+/// (the l_bazaarpro plans added to the premium and starter_premium groups): BazaarPro stays its own product line (<see cref="PlanLines"/>).
 /// </summary>
-public class ProductionCatalogRenewalTests
+[TestFixture(false)]
+[TestFixture(true)]
+public class ProductionCatalogRenewalTests(bool bazaarProInPremium)
 {
+    private static readonly string[] BazaarProPlans = ["l_bazaarpro", "l_bazaarpro-quarter", "l_bazaarpro-year"];
+    private static readonly string[] PremiumFourWeekPlans = ["l_starter_premium", "l_premium", "l_prem_plus"];
     private SqliteConnection connection;
     private DbContextOptions<PaymentContext> options;
 
@@ -34,11 +39,23 @@ public class ProductionCatalogRenewalTests
         var products = new ProductService(NullLogger<ProductService>.Instance, db, groups);
         // POST /Apply (ProductProvisioner), deserialized as Startup configures MVC: Newtonsoft with string enums
         var state = JsonConvert.DeserializeObject<SystemState>(Catalog, new StringEnumConverter());
+        if (bazaarProInPremium)
+            AddBazaarProToPremium(state);
         await new ApplyController(db, products, groups, new RuleEngine(NullLogger<RuleEngine>.Instance, db)).ApplyState(state);
     }
 
     [TearDown]
     public async Task CloseDatabase() => await connection.DisposeAsync();
+
+    /// <summary>The catalog change of "BazaarPro includes Premium"</summary>
+    private static void AddBazaarProToPremium(SystemState state)
+    {
+        foreach (var group in new[] { "premium", "starter_premium" })
+            state.Groups[group] = [.. state.Groups[group], .. BazaarProPlans];
+    }
+
+    private async Task<List<TopUpProduct>> PlansWithGroups(PaymentContext db) =>
+        await db.TopUpProducts.Include(p => p.Groups).AsNoTracking().Where(p => p.Slug.StartsWith("l_")).ToListAsync();
 
     [TestCase("l_starter_premium-quarter", 13, 1, "l_starter_premium")]
     [TestCase("l_starter_premium-year", 52, 1, "l_starter_premium")]
@@ -46,8 +63,12 @@ public class ProductionCatalogRenewalTests
     [TestCase("l_premium-year", 52, 2, "l_premium")]
     [TestCase("l_prem_plus-quarter", 13, 3, "l_prem_plus")]
     [TestCase("l_prem_plus-year", 52, 3, "l_prem_plus")]
+    [TestCase("l_bazaarpro-quarter", 13, -1, "l_bazaarpro")]
+    [TestCase("l_bazaarpro-year", 52, -1, "l_bazaarpro")]
     public async Task EveryLongPlanContinuesAsTheFourWeekPlanOfItsTier(string slug, int weeks, int tier, string renewal)
     {
+        if (tier < 0) // BazaarPro: no tier, or Premium's with the catalog change
+            tier = bazaarProInPremium ? 2 : 0;
         await using var db = new PaymentContext(options);
         // As the checkout loads it: ProductService does not load the groups
         var plan = await new ProductService(NullLogger<ProductService>.Instance, db, null).GetTopupProduct(slug);
@@ -93,8 +114,37 @@ public class ProductionCatalogRenewalTests
         {
             ["l_starter_premium"] = 1, ["l_premium"] = 2, ["l_prem_plus"] = 3, ["l_premium-slots"] = 2, ["l_premium-slots-4"] = 2,
             ["l_prem_plus-slots"] = 3, ["l_prem_plus-slots-4"] = 3,
-            ["l_bazaarpro"] = 0 // no tier: no 13/52 week plan continues as it
+            ["l_bazaarpro"] = bazaarProInPremium ? 2 : 0 // in no tier group before the catalog change
         }));
+    }
+
+    /// <summary>Owner decision: Premium subscribers are never offered BazaarPro, BazaarPro subscribers never a Premium plan</summary>
+    [Test]
+    public async Task NoPlanSwitchBetweenBazaarProAndPremium()
+    {
+        await using var db = new PaymentContext(options);
+        var plans = (await PlansWithGroups(db)).ToDictionary(p => p.Slug);
+        var lines = PlanLines.Default;
+
+        foreach (var premium in PremiumFourWeekPlans)
+        {
+            Assert.That(SubscriptionService.IsPlanSwitch(plans[premium], plans["l_bazaarpro"], lines), Is.False, premium + " to BazaarPro");
+            Assert.That(SubscriptionService.IsPlanSwitch(plans["l_bazaarpro"], plans[premium], lines), Is.False, "BazaarPro to " + premium);
+        }
+        Assert.That(SubscriptionService.IsPlanSwitch(plans["l_premium"], plans["l_prem_plus"], lines), Is.True, "Premium still switches tiers");
+        Assert.That(SubscriptionService.IsPlanSwitch(plans["l_prem_plus"], plans["l_starter_premium"], lines), Is.True);
+    }
+
+    [Test]
+    public async Task PlanLinesSeparateBazaarProFromPremium()
+    {
+        await using var db = new PaymentContext(options);
+        var plans = await PlansWithGroups(db);
+
+        var lines = plans.Where(SubscriptionService.IsSubscriptionPlan).ToLookup(PlanLines.Default.LineOf, p => p.Slug);
+
+        Assert.That(lines["l_bazaarpro"], Is.EquivalentTo(BazaarProPlans));
+        Assert.That(lines[PlanLines.DefaultLine], Does.Contain("l_premium").And.Contain("l_prem_plus-year").And.Not.Contain("l_bazaarpro"));
     }
 
     /// <summary>sky's products.json, verbatim</summary>

@@ -449,7 +449,7 @@ public partial class SubscriptionService
         if (!SubscriptionRenewal.ContinuesAsFourWeeks(subscription.Product))
             return;
         var renewal = await PlanBySlug(metadata.GetValueOrDefault(StripeMetadata.RenewalProductSlug));
-        if (!SubscriptionRenewal.IsRenewalOf(subscription.Product, renewal)
+        if (!SubscriptionRenewal.IsRenewalOf(subscription.Product, renewal, planLines)
             || !long.TryParse(metadata.GetValueOrDefault(StripeMetadata.RenewalPriceCents), out var cents))
             return;
         subscription.RenewalProduct = renewal;

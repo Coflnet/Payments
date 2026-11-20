@@ -395,6 +395,52 @@ public class StripeTermSwitchTests : DirectSubscriptionTestBase
         Assert.That(switches, Is.Empty);
     }
 
+    /// <summary>
+    /// BazaarPro includes Premium (its plans are in the premium and starter_premium groups) but stays its own product line
+    /// (SUBSCRIPTIONS:SEPARATE_PLAN_GROUPS): its subscribers are offered no Premium plan, only BazaarPro's longer terms
+    /// </summary>
+    [Test]
+    public async Task BazaarProSubscriberSwitchesOnlyWithinBazaarPro()
+    {
+        await AddPlans(("l_starter_premium", 2.69m, FourWeeks, ["starter_premium"]));
+        foreach (var (slug, price, seconds) in new[] { ("l_bazaarpro", 12.99m, (long)FourWeeks), ("l_bazaarpro-quarter", 38.97m, Quarter), ("l_bazaarpro-year", 69.99m, Year) })
+            await AddPlans((slug, price, seconds, ["premium", "starter_premium"]));
+        metadata[Keys.ProductSlug] = "l_bazaarpro";
+        metadata[Keys.PriceCents] = "1546";
+        var bazaarPro = Snapshot("prod_bazaarpro", 1546, periodEnd) with { Id = "sub_3" };
+        stripe.Setup(s => s.GetSubscription("sub_3")).ReturnsAsync(() => bazaarPro);
+        Assert.That(await service.StripeInvoicePaid(Invoice("in_bp", "subscription_create", 1546) with { SubscriptionId = "sub_3" }), Is.Not.Null);
+
+        var plans = await service.GetAvailablePlans("buyer", "sub_3");
+        var terms = await service.GetTermOptions("buyer", "sub_3");
+
+        Assert.That(plans, Is.Empty, "neither Premium+ nor the starter plan");
+        Assert.ThrowsAsync<ApiException>(() => service.ChangePlan("buyer", "sub_3", "l_prem_plus"));
+        Assert.That(terms.Terms.Select(t => (t.ProductSlug, t.RenewsAsProductSlug)),
+            Is.EqualTo(new[] { ("l_bazaarpro-quarter", "l_bazaarpro"), ("l_bazaarpro-year", "l_bazaarpro") }));
+        Assert.That((await service.GetTermOptions("buyer", "sub_1")).Terms.Select(t => t.ProductSlug),
+            Is.EqualTo(new[] { "l_premium-quarter", "l_premium-year" }), "Premium is offered no BazaarPro term");
+        Assert.That((await service.GetAvailablePlans("buyer", "sub_1")).Select(p => p.ProductSlug),
+            Is.EquivalentTo(new[] { "l_prem_plus", "l_starter_premium" }), "Premium is offered no BazaarPro plan");
+    }
+
+    private async Task AddPlans(params (string Slug, decimal Price, long Seconds, string[] Groups)[] plans)
+    {
+        foreach (var (slug, price, seconds, tierGroups) in plans)
+        {
+            var plan = new TopUpProduct
+            {
+                Slug = slug, Title = slug, Price = price, Cost = 2100, CurrencyCode = "eur", ProviderSlug = "lemonsqueezy",
+                OwnershipSeconds = seconds, Type = Product.ProductType.SERVICE
+            };
+            db.TopUpProducts.Add(plan);
+            await db.SaveChangesAsync();
+            await groups.AddProductToGroup(plan, slug);
+            foreach (var group in tierGroups)
+                await groups.AddProductToGroup(plan, group);
+        }
+    }
+
     [Test]
     public async Task CancelledSubscriptionCanNotSwitch()
     {

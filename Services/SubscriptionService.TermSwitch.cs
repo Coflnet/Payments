@@ -158,8 +158,8 @@ public partial class SubscriptionService
     }
 
     /// <summary>
-    /// The sellable 13/52 week plans longer than the current term that continue as the subscription's 4-week plan (same tier, slot
-    /// count and currency, <see cref="SubscriptionRenewalPlans.Find"/>), one per length
+    /// The sellable 13/52 week plans longer than the current term that continue as the subscription's 4-week plan (same product line,
+    /// tier, slot count and currency, <see cref="SubscriptionRenewalPlans.Find"/>), one per length
     /// </summary>
     private async Task<List<TopUpProduct>> TermSwitchTargets(UserSubscription subscription)
     {
@@ -168,7 +168,7 @@ public partial class SubscriptionService
         var candidates = await context.TopUpProducts.Include(p => p.Groups)
             .Where(p => p.Type.HasFlag(Product.ProductType.SERVICE) && p.SlotCount == subscription.Product.SlotCount).ToListAsync();
         var targets = new List<TopUpProduct>();
-        foreach (var plan in candidates.Where(p => IsSubscriptionPlan(p) && IntervalWeeks(p.OwnershipSeconds) > currentWeeks))
+        foreach (var plan in candidates.Where(p => IsTermSwitchCandidate(basePlan, p, currentWeeks)))
         {
             if ((await renewalPlans.Find(plan))?.Id == basePlan.Id)
                 targets.Add(plan);
@@ -177,6 +177,9 @@ public partial class SubscriptionService
             .Select(g => g.OrderByDescending(p => p.Slug.StartsWith(basePlan.Slug, StringComparison.Ordinal)).ThenBy(p => p.Id).First())
             .OrderBy(p => p.OwnershipSeconds).ToList();
     }
+
+    private bool IsTermSwitchCandidate(Product basePlan, TopUpProduct plan, int currentWeeks) =>
+        IsSubscriptionPlan(plan) && IntervalWeeks(plan.OwnershipSeconds) > currentWeeks && planLines.SameLine(basePlan, plan);
 
     /// <summary>
     /// Regular price: the plan's list price with the subscription's creator code and lasting discount code (like an extension);

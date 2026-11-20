@@ -87,6 +87,62 @@ public class SubscriptionRenewalTests
         Assert.That(SubscriptionRenewal.Select(year, candidates, "l_prem_plus"), Is.Null, "another tier is never a renewal plan");
     }
 
+    /// <summary>BazaarPro includes Premium: its plans are in the premium group too, yet each line renews as its own 4-week plan</summary>
+    [Test]
+    public void LongPlansRenewWithinTheirProductLine()
+    {
+        var bazaarPro = Plan("l_bazaarpro", FourWeeks, 12.99m);
+        var premium = Plan("l_premium", FourWeeks, 9.69m);
+        var bazaarProYear = Plan("l_bazaarpro-year", Year, 69.99m);
+        var premiumYear = Plan("l_premium-year", Year, 99.69m);
+        var candidates = new[] { premium, bazaarPro, bazaarProYear, premiumYear };
+
+        Assert.That(SubscriptionRenewal.Select(bazaarProYear, candidates, null)?.Slug, Is.EqualTo("l_bazaarpro"));
+        Assert.That(SubscriptionRenewal.Select(premiumYear, candidates, null)?.Slug, Is.EqualTo("l_premium"));
+        Assert.That(SubscriptionRenewal.Select(bazaarProYear, [premium], null), Is.Null, "never renews as Premium");
+        Assert.That(SubscriptionRenewal.Select(premiumYear, [bazaarPro], null), Is.Null, "never renews as BazaarPro");
+        Assert.That(SubscriptionRenewal.Select(bazaarProYear, candidates, "l_premium"), Is.Null, "not even when configured");
+    }
+
+    /// <summary>A product is in a separate line by its slug prefix or by its group; the line list is configurable</summary>
+    [Test]
+    public void SeparateLinesMatchSlugPrefixOrGroup()
+    {
+        var byGroup = Plan("bp_year", Year, 69.99m);
+        byGroup.Groups.Add(new Group { Slug = "l_bazaarpro" });
+        var lines = new PlanLines(["other", "l_bazaarpro"]);
+
+        Assert.That(PlanLines.Default.LineOf(Plan("l_bazaarpro-quarter", ThirteenWeeks, 1)), Is.EqualTo("l_bazaarpro"));
+        Assert.That(PlanLines.Default.LineOf(byGroup), Is.EqualTo("l_bazaarpro"));
+        Assert.That(PlanLines.Default.LineOf(Plan("l_premium", FourWeeks, 1)), Is.EqualTo(PlanLines.DefaultLine));
+        Assert.That(lines.LineOf(Plan("other_plan", FourWeeks, 1)), Is.EqualTo("other"));
+        Assert.That(SubscriptionRenewal.Select(Plan("l_bazaarpro-year", Year, 1), [Plan("l_premium", FourWeeks, 1)], null,
+            new PlanLines([]))?.Slug, Is.EqualTo("l_premium"), "without separate lines every plan is in the default line");
+    }
+
+    [TestCase(null, new[] { "l_bazaarpro" })]
+    [TestCase("", new string[0])]
+    [TestCase("l_bazaarpro, ane_pro", new[] { "l_bazaarpro", "ane_pro" })]
+    public void SeparateLinesAreConfiguredAsCommaSeparatedValue(string value, string[] expected)
+    {
+        var settings = new Dictionary<string, string>();
+        if (value != null)
+            settings[PlanLines.ConfigKey] = value;
+        var config = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        Assert.That(PlanLines.From(config).SeparateGroups, Is.EqualTo(expected));
+    }
+
+    [Test]
+    public void SeparateLinesAreConfiguredAsList()
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            [PlanLines.ConfigKey + ":0"] = "ane_pro", [PlanLines.ConfigKey + ":1"] = "l_bazaarpro"
+        }).Build();
+        Assert.That(PlanLines.From(config).SeparateGroups, Is.EqualTo(new[] { "ane_pro", "l_bazaarpro" }));
+        Assert.That(PlanLines.From(null).SeparateGroups, Is.EqualTo(new[] { "l_bazaarpro" }));
+    }
+
     [Test]
     public void DisabledFreeOrOtherCurrencyPlansAreNoRenewalPlans()
     {

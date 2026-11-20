@@ -24,6 +24,7 @@ public partial class SubscriptionService
     private readonly IPayPalSubscriptionApi paypal;
     private readonly PayPalPlanCatalog paypalPlans;
     private readonly SubscriptionRenewalPlans renewalPlans;
+    private readonly PlanLines planLines;
     private readonly TimeSpan extensionBookingWindow;
     private readonly bool extensionsEnabled;
     private readonly bool termSwitchEnabled;
@@ -44,7 +45,8 @@ public partial class SubscriptionService
     /// <param name="renewalPlans">The 4-week plans 13 and 52 week subscriptions continue as; defaults to one without a config override</param>
     /// <param name="config">SUBSCRIPTIONS:EXTENSIONS_ENABLED: whether one more 13/52 week term can be booked (default false);
     /// SUBSCRIPTIONS:EXTENSION_BOOKING_WINDOW_DAYS: how long before the term ends it can be booked (default 60);
-    /// SUBSCRIPTIONS:TERM_SWITCH_ENABLED: whether a running subscription can switch to a longer term (default true)</param>
+    /// SUBSCRIPTIONS:TERM_SWITCH_ENABLED: whether a running subscription can switch to a longer term (default true);
+    /// SUBSCRIPTIONS:SEPARATE_PLAN_GROUPS: product lines plans never switch or renew across (<see cref="PlanLines"/>)</param>
     public SubscriptionService(
         ILogger<SubscriptionService> logger,
         TransactionService transactionService,
@@ -64,7 +66,8 @@ public partial class SubscriptionService
         extensionBookingWindow = TimeSpan.FromDays(int.TryParse(config?["SUBSCRIPTIONS:EXTENSION_BOOKING_WINDOW_DAYS"], out var days) && days > 0
             ? days : DefaultExtensionBookingWindowDays);
         this.tax = tax;
-        this.renewalPlans = renewalPlans ?? new SubscriptionRenewalPlans(context);
+        planLines = PlanLines.From(config);
+        this.renewalPlans = renewalPlans ?? new SubscriptionRenewalPlans(context, config);
         this.paypalPlans = paypalPlans ?? (paypal == null ? null : new PayPalPlanCatalog(context, paypal, null));
         this.logger = logger;
         this.transactionService = transactionService;
