@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Coflnet.Payments.Models;
 using Microsoft.Extensions.Configuration;
@@ -28,7 +29,9 @@ public record StripeSubscriptionCheckout(
     string Region = null, // the buyer's state at checkout (evidence, per-state US cap)
     TopUpProduct RenewalPlan = null, // 13/52 week plans: the 4-week plan the subscription continues as after its first term
     long? RenewalUnitAmountCents = null, // 13/52 week plans: what every 4-week renewal charges (direct: gross, managed: net)
-    string AccountUrl = null); // where the disclosure says to cancel (StripeSubscriptionDisclosure.AccountUrlFor), null: SkyCofl's
+    string AccountUrl = null, // where the disclosure says to cancel (StripeSubscriptionDisclosure.AccountUrlFor), null: SkyCofl's
+    int? TrialDays = null, // free trial before the first payment (SubscriptionTrials), null: none
+    DateTime? TrialEndsAt = null); // the trial end as of the session's creation (the disclosure's first charge date)
 
 /// <summary>
 /// Managed Payments settings (STRIPE:MANAGED_TAX_CODE, STRIPE:MANAGED_TAX_BEHAVIOR)
@@ -53,7 +56,8 @@ public record StripeManagedSettings(string TaxCode, string TaxBehavior)
 /// coupon (<see cref="StripeFirstPaymentCoupon"/>), every other code lowers the unit amount.
 /// 13 and 52 week plans carry their 4-week renewal plan and price in the metadata; a subscription schedule moves the
 /// subscription to it once the first term is paid (<see cref="StripeRenewalSchedule"/>).
-/// Both modes charge exactly what this service priced.
+/// Both modes charge exactly what this service priced. A trial (<see cref="SubscriptionTrials"/>) is subscription_data.trial_period_days
+/// in both modes: Checkout still collects the payment method, the first payment is charged when the trial ends.
 /// </summary>
 public static class StripeSubscriptionCheckoutBuilder
 {
@@ -96,7 +100,10 @@ public static class StripeSubscriptionCheckoutBuilder
             },
             Discounts = checkout.CouponId == null ? null : [new SessionDiscountOptions { Coupon = checkout.CouponId }],
             Metadata = metadata,
-            SubscriptionData = new SessionSubscriptionDataOptions { Metadata = new Dictionary<string, string>(metadata) },
+            SubscriptionData = new SessionSubscriptionDataOptions
+            {
+                Metadata = new Dictionary<string, string>(metadata), TrialPeriodDays = checkout.TrialDays
+            },
             ClientReferenceId = checkout.User.ExternalId,
             CustomerEmail = checkout.Email,
             SuccessUrl = checkout.SuccessUrl,
@@ -142,6 +149,8 @@ public static class StripeSubscriptionCheckoutBuilder
         AddIfSet(metadata, Keys.Region, checkout.Region);
         AddIfSet(metadata, Keys.DiscountCode, checkout.DiscountCode);
         AddIfSet(metadata, Keys.CreatorCode, checkout.CreatorCode);
+        if (checkout.TrialDays is int days)
+            metadata[SubscriptionTrials.MetadataKey] = days.ToString();
         if (checkout.RenewalPlan != null && checkout.RenewalUnitAmountCents != null)
         {
             metadata[Keys.RenewalProductSlug] = checkout.RenewalPlan.Slug;

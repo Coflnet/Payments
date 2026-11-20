@@ -65,6 +65,7 @@ public partial class TopUpController
             return await ExistingStripeCheckout(stripe, request.SessionId);
         await RememberCountry(user, country, options);
         await declarations.Record(options, user, plan, request);
+        var trialDays = await trials.DaysFor(options, plan, user, priced.Discount);
 
         var checkout = new StripeSubscriptionCheckout(user, plan,
             SubscriptionPricing.ToCents(priced.Recurring), // gross for direct sales, net for Managed Payments (see SubscriptionPrice)
@@ -73,13 +74,13 @@ public partial class TopUpController
             options?.UserEmail, options?.DiscountCode, options?.CreatorCode, request.Id, SubscriptionPricing.ToCents(priced.First),
             Region: region, RenewalPlan: priced.RenewalPlan,
             RenewalUnitAmountCents: priced.Renewal is decimal renewal ? SubscriptionPricing.ToCents(renewal) : null,
-            AccountUrl: await StripeAccountUrl(plan));
+            AccountUrl: await StripeAccountUrl(plan), TrialDays: trialDays, TrialEndsAt: DateTime.UtcNow.AddDays(trialDays ?? 0));
         var session = await FailRequestOnError(request, () => CreateStripeSubscriptionSession(stripe, checkout, vatBasisPoints), priced.Discount);
         request.SessionId = session.Id;
         request.CoinAmount = plan.Cost;
         request.ExpiresAt = priced.Discount?.ExpiresAt;
         await db.SaveChangesAsync();
-        return new TopUpIdResponse { Id = session.Id, DirectLink = session.Url };
+        return new TopUpIdResponse { Id = session.Id, DirectLink = session.Url, TrialDays = trialDays };
     }
 
     /// <summary>
@@ -135,6 +136,9 @@ public partial class TopUpController
             options?.SuccessUrl ?? config["DEFAULT:SUCCESS_URL"], options?.CancelUrl ?? config["DEFAULT:CANCEL_URL"],
             options?.UserEmail, priced.Following));
     }
+
+    private SubscriptionTrials trials => subscriptionTrials ??= new SubscriptionTrials(db, config);
+    private SubscriptionTrials subscriptionTrials;
 
     private SubscriptionDeclarationService declarations => subscriptionDeclarations ??=
         new SubscriptionDeclarationService(db, config, _logger);
@@ -321,8 +325,12 @@ public partial class TopUpController
         var existing = await stripe.GetCheckoutSession(sessionId);
         if (string.IsNullOrWhiteSpace(existing.Url))
             throw new ApiException("The existing Stripe checkout session is no longer active. Please try again later.");
-        return new TopUpIdResponse { Id = existing.Id, DirectLink = existing.Url };
+        return new TopUpIdResponse { Id = existing.Id, DirectLink = existing.Url, TrialDays = SessionTrialDays(existing) };
     }
+
+    /// <summary>The trial a reused session gives (an open checkout of the same prices is reused whether or not it has a trial)</summary>
+    private static int? SessionTrialDays(Session session) =>
+        int.TryParse(session.Metadata?.GetValueOrDefault(SubscriptionTrials.MetadataKey), out var days) && days > 0 ? days : null;
 
     private static async Task<TopUpIdResponse> ExistingPayPalApproval(IPayPalSubscriptionApi paypal, string subscriptionId)
     {

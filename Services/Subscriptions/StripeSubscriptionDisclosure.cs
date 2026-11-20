@@ -34,6 +34,14 @@ public static class StripeSubscriptionDisclosure
     /// price line: {0} weeks of the first term, {1} renewal weeks, {2} renewal price with currency
     /// </summary>
     public const string LineItemTemplate = "First {0} weeks, then every {1} weeks at {2} until cancelled.";
+    /// <summary>
+    /// A free trial (<see cref="SubscriptionTrials"/>), before the renewal terms: {0} trial days, {1} trial end and first charge date,
+    /// {2} first payment with currency
+    /// </summary>
+    public const string TrialTemplate =
+        "Free for {0} days until {1}; cancel before then and nothing is charged. The first payment of {2} is charged on {1}. ";
+    /// <summary>The trial end as written in <see cref="TrialTemplate"/> ("23 November 2026")</summary>
+    public const string TrialDateFormat = "d MMMM yyyy";
     public const string DirectSuffix = " The price includes VAT.";
     /// <summary>Stripe's own wording: Managed Payments receipts and statements read "Sold through Link"</summary>
     public const string ManagedSuffix = " The price is before taxes. Sold through Link (Stripe's reseller), which charges any applicable taxes.";
@@ -43,7 +51,7 @@ public static class StripeSubscriptionDisclosure
     /// renewal price), for Managed Payments also the reseller notice. The VAT note of
     /// direct sales is only given where VAT is charged (a VAT rate is attached; not for the US, rate 0).
     /// </summary>
-    public static string SubmitMessage(StripeSubscriptionCheckout checkout) => Renewal(checkout) + Suffix(checkout);
+    public static string SubmitMessage(StripeSubscriptionCheckout checkout) => Trial(checkout) + Renewal(checkout) + Suffix(checkout);
 
     /// <summary>
     /// The account page where buyers of <paramref name="plan"/> cancel, by its product line: SUBSCRIPTIONS:ACCOUNT_URL:{line}, else
@@ -57,6 +65,19 @@ public static class StripeSubscriptionDisclosure
     }
 
     private static string DefaultAccountUrl(string line) => line == PlanLines.BazaarProLine ? BazaarProAccountUrl : AccountUrl;
+
+    /// <summary>
+    /// The trial and the first charge date. The date is the trial end as of the session's creation; a buyer who completes the session
+    /// later (it stays open up to 24 hours) gets the full trial from then, so the first charge is never earlier than stated.
+    /// The first payment is the plan's price (a trial never comes with a "first payment only" code).
+    /// </summary>
+    private static string Trial(StripeSubscriptionCheckout checkout)
+    {
+        if (checkout.TrialDays is not int days || checkout.TrialEndsAt is not System.DateTime end)
+            return "";
+        return string.Format(CultureInfo.InvariantCulture, TrialTemplate, days, end.ToString(TrialDateFormat, CultureInfo.InvariantCulture),
+            Price(checkout.UnitAmountCents, checkout));
+    }
 
     private static string Renewal(StripeSubscriptionCheckout checkout)
     {

@@ -16,7 +16,7 @@ using Stripe.Checkout;
 
 namespace Payments.Controllers;
 
-public class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
+public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTestBase
 {
     private Mock<IStripeSubscriptionGateway> stripe;
     private Mock<IPayPalSubscriptionApi> paypal;

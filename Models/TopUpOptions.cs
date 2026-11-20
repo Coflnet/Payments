@@ -64,11 +64,13 @@ public class TopUpOptions
     public string DiscountCode { get; set; }
     /// <summary>
     /// Whether to enable free trial for subscription. Defaults to false.
-    /// Trials are limited to 3 days maximum and can only be used once per user/product.
+    /// Lemon Squeezy: at most 3 days, once per user/product. Direct Stripe/PayPal: only while SUBSCRIPTIONS:DIRECT_TRIAL_ENABLED is set,
+    /// for plans of SUBSCRIPTIONS:TRIAL_LINES, once per user and product line; otherwise ignored (the response's TrialDays is null).
     /// </summary>
     public bool EnableTrial { get; set; } = false;
     /// <summary>
-    /// Trial length in days (1-3). Only used if EnableTrial is true. Defaults to 3.
+    /// Trial length in days. Only used if EnableTrial is true. Defaults to 3. Lemon Squeezy caps it at 3 days, the direct providers at
+    /// SUBSCRIPTIONS:TRIAL_MAX_DAYS (default 7).
     /// </summary>
     public int TrialLengthDays { get; set; } = 3;
     /// <summary>
