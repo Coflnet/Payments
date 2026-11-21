@@ -27,6 +27,7 @@ namespace Coflnet.Payments.Services;
 public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
 {
     private const string Token = "private-purchase-token";
+    private const string ReplacementToken = "replacement-token";
     private const string Order = "GPA.1234-5678-9012-34567..0";
     private const string Audience = "https://payments.example/callback/googlepay";
     private const string PushAccount = "push@example.iam.gserviceaccount.com";
@@ -630,15 +631,22 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         Assert.That((await Access(subscription.ExternalId)).Expires, Is.InRange(expiry, expiry.AddHours(3)));
     }
 
-    [TestCase(false)]
-    [TestCase(true)]
-    public async Task LinkedPurchaseInheritsItsUserAndClosesThePreviousToken(bool completion)
+    [TestCase(false, null)]
+    [TestCase(true, null)]
+    [TestCase(false, "")]
+    [TestCase(true, "")]
+    [TestCase(false, " \t")]
+    [TestCase(true, " \t")]
+    [TestCase(false, "buyer")]
+    [TestCase(true, "buyer")]
+    public async Task LinkedPurchaseWithMatchingOrBlankAccountReplacesPreviousSubscription(bool completion, string accountId)
     {
         var service = PlayService();
         await service.SyncGooglePlay(Token, "buyer");
         var previous = await db.Subscriptions.SingleAsync();
         remote.LinkedPurchaseToken = Token;
-        remote.ExternalAccountIdentifiers = null;
+        remote.ExternalAccountIdentifiers = accountId == null ? null
+            : new ExternalAccountIdentifiers { ObfuscatedExternalAccountId = accountId };
         remote.LineItems[0].LatestSuccessfulOrderId = "GPA.9876-5432-1098-76543";
 
         var result = completion ? (await CompletePurchase(service, null, "replacement-token")).Value
@@ -650,6 +658,222 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         var previousAccess = await Access(previous.ExternalId);
         Assert.That(previousAccess == null || previousAccess.Expires <= DateTime.UtcNow, Is.True);
         Assert.That((await Access(replacement.ExternalId)).Expires, Is.InRange(expiry, expiry.AddHours(3)));
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task LinkedPurchaseWithConflictingAccountCannotReplaceGrantOrAcknowledge(bool completion)
+    {
+        var service = PlayService();
+        await service.SyncGooglePlay(Token, "buyer");
+        var previous = await db.Subscriptions.SingleAsync();
+        var previousRow = db.Entry(previous);
+        var previousValues = await previousRow.GetDatabaseValuesAsync();
+        var accessExpiry = (await Access(previous.ExternalId)).Expires;
+        var transactionCount = await db.FiniteTransactions.CountAsync();
+        remote.LinkedPurchaseToken = Token;
+        remote.ExternalAccountIdentifiers.ObfuscatedExternalAccountId = "another-buyer";
+        remote.LineItems[0].LatestSuccessfulOrderId = "replacement-order";
+        remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_PENDING";
+
+        for (var delivery = 0; delivery < 2; delivery++)
+        {
+            var result = completion ? (await CompletePurchase(service, "another-buyer", "replacement-token")).Value
+                : await service.SyncGooglePlayNotification("replacement-token");
+
+            Assert.That(result.IsValid, Is.False);
+            Assert.That(result.ErrorMessage, Is.EqualTo("user_mismatch"));
+            var currentValues = await previousRow.GetDatabaseValuesAsync();
+            Assert.That(currentValues.Properties.Select(p => currentValues[p]), Is.EqualTo(previousValues.Properties.Select(p => previousValues[p])));
+            Assert.That((await Access(previous.ExternalId)).Expires, Is.EqualTo(accessExpiry));
+            Assert.That(await db.Subscriptions.CountAsync(), Is.EqualTo(1));
+            Assert.That(await db.OwnerShips.CountAsync(), Is.EqualTo(1));
+            Assert.That(await db.FiniteTransactions.CountAsync(), Is.EqualTo(transactionCount));
+            Assert.That(await Grants(SubscriptionProviders.GrantReference("googleplay", Order)), Is.EqualTo(1));
+            Assert.That(await Grants(SubscriptionProviders.GrantReference("googleplay", "replacement-order")), Is.Zero);
+            Assert.That(await PaymentRecords("googleplay"), Is.EqualTo(1));
+            publisher.Verify(p => p.AcknowledgeSubscription(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        }
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task GrantedReplacementStillRenewsAndExpiresAfterForeignPredecessorArrives(bool sweep)
+    {
+        remote.ExternalAccountIdentifiers.ObfuscatedExternalAccountId = "bob";
+        remote.LinkedPurchaseToken = Token;
+        remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_PENDING";
+        var service = PlayService();
+        Assert.That((await service.SyncGooglePlay(ReplacementToken, "bob")).IsValid, Is.True);
+        publisher.Verify(p => p.AcknowledgeSubscription("premium", ReplacementToken), Times.Once);
+        var replacement = await db.Subscriptions.SingleAsync();
+        remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED";
+        var previous = await DeliverForeignPredecessor(service);
+        Assert.That(replacement.PreviousSubscriptionId, Is.EqualTo(previous.ExternalId));
+        var previousExpiry = (await Access(previous.ExternalId)).Expires;
+        Renew();
+        var renewalOrder = remote.LineItems[0].LatestSuccessfulOrderId;
+
+        Assert.That((await service.SyncGooglePlayNotification(ReplacementToken)).IsValid, Is.True);
+        var renewedExpiry = (await Access(replacement.ExternalId)).Expires;
+        Assert.That((await service.SyncGooglePlayNotification(ReplacementToken)).IsValid, Is.True);
+        Assert.That(await Grants(SubscriptionProviders.GrantReference("googleplay", renewalOrder)), Is.EqualTo(1));
+        Assert.That(await db.PaymentRecords.CountAsync(p => p.ExternalOrderId == renewalOrder), Is.EqualTo(1));
+        Assert.That(renewedExpiry, Is.InRange(expiry, expiry.AddHours(3)));
+        Assert.That((await Access(replacement.ExternalId)).Expires, Is.EqualTo(renewedExpiry));
+        Assert.That((await service.GooglePlayEligibility("bob", "l_premium")).Eligible, Is.False);
+
+        remote.SubscriptionState = "SUBSCRIPTION_STATE_EXPIRED";
+        remote.LineItems[0].ExpiryTimeDateTimeOffset = DateTimeOffset.UtcNow.AddMinutes(-1);
+        if (sweep)
+            await service.ReconcileGooglePlay(replacement.ExternalId, DateTime.UtcNow.AddSeconds(1));
+        else
+        {
+            var notification = SubscriptionNotification(type: 13);
+            notification.SubscriptionNotification.PurchaseToken = ReplacementToken;
+            Assert.That(await PostGooglePlay(PlayCallback(service), notification, true), Is.TypeOf<OkResult>());
+        }
+
+        var expired = await db.Subscriptions.AsNoTracking().SingleAsync(s => s.Id == replacement.Id);
+        Assert.That(expired.Status, Is.EqualTo("expired"));
+        Assert.That(expired.PreviousSubscriptionId, Is.Null);
+        Assert.That((await Access(replacement.ExternalId)).Expires, Is.LessThanOrEqualTo(DateTime.UtcNow));
+        Assert.That((await service.GooglePlayEligibility("bob", "l_premium")).Eligible, Is.True);
+        Assert.That((await db.Subscriptions.AsNoTracking().SingleAsync(s => s.Id == previous.Id)).Status, Is.EqualTo("active"));
+        Assert.That((await Access(previous.ExternalId)).Expires, Is.EqualTo(previousExpiry));
+        Assert.That(await PaymentRecords("googleplay"), Is.EqualTo(3));
+    }
+
+    [Test]
+    public async Task PendingReplacementCannotGrantAfterForeignPredecessorArrives()
+    {
+        remote.ExternalAccountIdentifiers.ObfuscatedExternalAccountId = "bob";
+        remote.LinkedPurchaseToken = Token;
+        remote.SubscriptionState = "SUBSCRIPTION_STATE_PENDING";
+        var service = PlayService();
+        Assert.That((await service.SyncGooglePlay(ReplacementToken, "bob")).Status, Is.EqualTo("pending"));
+        var replacement = await db.Subscriptions.SingleAsync();
+        await DeliverForeignPredecessor(service);
+        remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_PENDING";
+        Renew();
+
+        var result = await service.SyncGooglePlayNotification(ReplacementToken);
+
+        Assert.That(result.IsValid, Is.False);
+        Assert.That(result.ErrorMessage, Is.EqualTo("user_mismatch"));
+        Assert.That(await Access(replacement.ExternalId), Is.Null);
+        Assert.That(await Grants(SubscriptionProviders.GrantReference("googleplay", remote.LineItems[0].LatestSuccessfulOrderId)), Is.Zero);
+        Assert.That(await PaymentRecords("googleplay"), Is.EqualTo(1));
+        publisher.Verify(p => p.AcknowledgeSubscription(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    private async Task<UserSubscription> DeliverForeignPredecessor(SubscriptionService service)
+    {
+        remote.LinkedPurchaseToken = null;
+        remote.ExternalAccountIdentifiers.ObfuscatedExternalAccountId = "alice";
+        remote.SubscriptionState = "SUBSCRIPTION_STATE_ACTIVE";
+        remote.LineItems[0].LatestSuccessfulOrderId = "predecessor-order";
+        Assert.That((await service.SyncGooglePlayNotification(Token)).IsValid, Is.True);
+        remote.LinkedPurchaseToken = Token;
+        remote.ExternalAccountIdentifiers.ObfuscatedExternalAccountId = "bob";
+        return await db.Subscriptions.SingleAsync(s => s.ProviderToken == Token);
+    }
+
+    [Test]
+    public async Task ForeignPredecessorInsertedAfterValidationIsNotClosed()
+    {
+        var foreignUser = await users.GetOrCreate("alice");
+        var previousId = "gp_" + Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes("late-token")))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var previous = new UserSubscription
+        {
+            ProviderSlug = "googleplay", ProviderToken = "late-token", ExternalId = previousId,
+            User = foreignUser, Product = premium, Status = "active", RenewsAt = expiry
+        };
+        var access = new OwnerShip { User = foreignUser, Product = premium, SubscriptionId = previousId, Expires = expiry };
+        InterleaveNextGrant(async () =>
+        {
+            db.Subscriptions.Add(previous);
+            db.OwnerShips.Add(access);
+            await db.SaveChangesAsync();
+        });
+        remote.LinkedPurchaseToken = "late-token";
+
+        Assert.That((await PlayService().SyncGooglePlay(Token, "buyer")).IsValid, Is.True);
+
+        var persisted = await db.Subscriptions.AsNoTracking().SingleAsync(s => s.ExternalId == previousId);
+        Assert.That(persisted.Status, Is.EqualTo("active"));
+        Assert.That(persisted.EndsAt, Is.Null);
+        Assert.That((await db.OwnerShips.AsNoTracking().SingleAsync(o => o.SubscriptionId == previousId)).Expires, Is.EqualTo(expiry));
+        Assert.That(await Grants(SubscriptionProviders.GrantReference("googleplay", Order)), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task PredecessorEndWrittenAfterValidationSurvivesClosure()
+    {
+        await PlayService().SyncGooglePlay(Token, "buyer");
+        var previous = await db.Subscriptions.SingleAsync();
+        db.Entry(previous).State = EntityState.Detached;
+        var earlierEnd = DateTime.UtcNow.AddDays(-2);
+        InterleaveNextGrant(() => db.Subscriptions.Where(s => s.Id == previous.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.EndsAt, earlierEnd)));
+        remote.LinkedPurchaseToken = Token;
+        remote.LineItems[0].LatestSuccessfulOrderId = "replacement-order";
+
+        Assert.That((await PlayService().SyncGooglePlay(ReplacementToken, "buyer")).IsValid, Is.True);
+
+        var persisted = await db.Subscriptions.AsNoTracking().SingleAsync(s => s.Id == previous.Id);
+        Assert.That(persisted.Status, Is.EqualTo("expired"));
+        Assert.That(persisted.EndsAt, Is.EqualTo(earlierEnd));
+        Assert.That((await Access(previous.ExternalId)).Expires, Is.LessThanOrEqualTo(DateTime.UtcNow));
+    }
+
+    private void InterleaveNextGrant(Func<Task> interleave)
+    {
+        var producer = new Mock<ITransactionEventProducer>();
+        producer.Setup(p => p.ProduceEvent(It.IsAny<TransactionEvent>())).Returns(async () =>
+        {
+            var pending = interleave;
+            interleave = null;
+            if (pending != null)
+                await pending();
+        });
+        transactions = new TransactionService(NullLogger<TransactionService>.Instance, db, users, producer.Object,
+            null, new RuleEngine(NullLogger<RuleEngine>.Instance, db));
+    }
+
+    [Test]
+    public async Task ExpiredPurchaseCanRecoverDespiteForeignSuccessorOwnership()
+    {
+        var service = PlayService();
+        await service.SyncGooglePlay(Token, "buyer");
+        var previous = await db.Subscriptions.SingleAsync();
+        remote.SubscriptionState = "SUBSCRIPTION_STATE_EXPIRED";
+        await service.SyncGooglePlayNotification(Token);
+        var successor = new UserSubscription
+        {
+            ProviderSlug = "googleplay", ProviderToken = "foreign-token", ExternalId = "foreign-subscription",
+            PreviousSubscriptionId = previous.ExternalId, User = await users.GetOrCreate("another-buyer"),
+            Product = premium, Status = "active", RenewsAt = expiry
+        };
+        db.Subscriptions.Add(successor);
+        db.OwnerShips.Add(new OwnerShip
+        {
+            User = successor.User, Product = premium, SubscriptionId = successor.ExternalId, Expires = expiry
+        });
+        await db.SaveChangesAsync();
+        remote.SubscriptionState = "SUBSCRIPTION_STATE_ACTIVE";
+        expiry = DateTime.UtcNow;
+        Renew();
+
+        Assert.That((await service.SyncGooglePlayNotification(Token)).IsValid, Is.True);
+        Assert.That((await service.SyncGooglePlayNotification(Token)).IsValid, Is.True);
+
+        Assert.That(previous.Status, Is.EqualTo("active"));
+        Assert.That((await Access(previous.ExternalId)).Expires, Is.InRange(expiry, expiry.AddHours(3)));
+        Assert.That(await Grants(SubscriptionProviders.GrantReference("googleplay", remote.LineItems[0].LatestSuccessfulOrderId)), Is.EqualTo(1));
+        Assert.That(successor.Status, Is.EqualTo("active"));
+        Assert.That((await Access(successor.ExternalId)).Expires, Is.EqualTo(successor.RenewsAt));
     }
 
     [TestCase("US")]

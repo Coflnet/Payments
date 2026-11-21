@@ -154,7 +154,14 @@ public partial class SubscriptionService
 
         var linkedId = string.IsNullOrEmpty(purchase.LinkedPurchaseToken) ? existing?.PreviousSubscriptionId
             : PlaySubscriptionId(purchase.LinkedPurchaseToken);
-        var (remoteUserId, error) = await ResolveGooglePlayPurchaseUserId(id, purchase, linkedId, existing?.User.ExternalId, claimedUserId);
+        var linkedUserId = await PlayOwner(linkedId);
+        if (linkedUserId != null && existing != null && linkedUserId != existing.User.ExternalId
+            && await LatestGrantedGooglePlayOrder(existing) != null)
+        {
+            linkedId = null;
+            linkedUserId = null;
+        }
+        var (remoteUserId, error) = await ResolveGooglePlayPurchaseUserId(id, purchase, linkedUserId, existing?.User.ExternalId, claimedUserId);
         if (error != null)
             return (null, null, null, error);
         if (remoteUserId == null)
@@ -168,12 +175,20 @@ public partial class SubscriptionService
         return (plan, user, linkedId, null);
     }
 
+    private Task<string> PlayOwner(string id) => id == null ? Task.FromResult<string>(null) : context.Subscriptions
+        .Where(s => s.ProviderSlug == PlayProvider && s.ExternalId == id).Select(s => s.User.ExternalId).FirstOrDefaultAsync();
+
     private async Task<(string UserId, string Error)> ResolveGooglePlayPurchaseUserId(
-        string id, SubscriptionPurchaseV2 purchase, string linkedId, string existingUserId, string claimedUserId)
+        string id, SubscriptionPurchaseV2 purchase, string linkedUserId, string existingUserId, string claimedUserId)
     {
         var userId = purchase.ExternalAccountIdentifiers?.ObfuscatedExternalAccountId;
         if (string.IsNullOrWhiteSpace(userId))
-            userId = linkedId == null ? null : (await FindProviderSubscription(PlayProvider, linkedId))?.User.ExternalId;
+            userId = linkedUserId;
+        else if (linkedUserId != null && userId != linkedUserId)
+        {
+            logger.LogError("Google Play linked account sources disagree for subscription {SubscriptionId}", id);
+            return (null, "user_mismatch");
+        }
         if (existingUserId != null)
             return (userId ?? existingUserId, null);
 
@@ -183,7 +198,7 @@ public partial class SubscriptionService
             expiredAccountId = null;
         var expiredToken = resubscribe?.ExpiredPurchaseToken;
         var expiredTokenUserId = string.IsNullOrWhiteSpace(expiredToken) ? null
-            : (await FindProviderSubscription(PlayProvider, PlaySubscriptionId(expiredToken)))?.User.ExternalId;
+            : await PlayOwner(PlaySubscriptionId(expiredToken));
         if (expiredAccountId != null && expiredTokenUserId != null && expiredAccountId != expiredTokenUserId)
         {
             logger.LogError("Google Play resubscribe account sources disagree for subscription {SubscriptionId}", id);
@@ -373,7 +388,7 @@ public partial class SubscriptionService
 
     private Task<bool> WasGooglePlayReplaced(UserSubscription local) =>
         local.Status != "expired" ? Task.FromResult(false) : context.Subscriptions.AnyAsync(s =>
-            s.ProviderSlug == PlayProvider && s.PreviousSubscriptionId == local.ExternalId
+            s.ProviderSlug == PlayProvider && s.PreviousSubscriptionId == local.ExternalId && s.User.Id == local.User.Id
             && context.OwnerShips.Any(o => o.SubscriptionId == s.ExternalId && o.UserId == s.User.Id));
 
     private async Task CloseLinkedGooglePlay(UserSubscription local)
@@ -383,7 +398,7 @@ public partial class SubscriptionService
         await WithSubscriptionLock(local.PreviousSubscriptionId, async () =>
         {
             var previous = await FindProviderSubscription(PlayProvider, local.PreviousSubscriptionId);
-            if (previous != null && previous.Status != "expired")
+            if (previous != null && previous.User.Id == local.User.Id && previous.Status != "expired")
                 await EndGooglePlayAccess(previous);
             return true;
         });
