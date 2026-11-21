@@ -43,13 +43,11 @@ public static class StripeSubscriptionDisclosure
     /// <summary>The trial end as written in <see cref="TrialTemplate"/> ("23 November 2026")</summary>
     public const string TrialDateFormat = "d MMMM yyyy";
     public const string DirectSuffix = " The price includes VAT.";
-    /// <summary>Stripe's own wording: Managed Payments receipts and statements read "Sold through Link"</summary>
-    public const string ManagedSuffix = " The price is before taxes. Sold through Link (Stripe's reseller), which charges any applicable taxes.";
 
     /// <summary>
-    /// The text of custom_text.submit.message: renewal terms (13 and 52 week plans: that they continue every 4 weeks at the
-    /// renewal price), for Managed Payments also the reseller notice. The VAT note of
-    /// direct sales is only given where VAT is charged (a VAT rate is attached; not for the US, rate 0).
+    /// The text of custom_text.submit.message of direct sales (Managed Payments refuses custom_text): renewal terms (13 and
+    /// 52 week plans: that they continue every 4 weeks at the renewal price). The VAT note is only given where VAT is
+    /// charged (a VAT rate is attached; not for the US, rate 0).
     /// </summary>
     public static string SubmitMessage(StripeSubscriptionCheckout checkout) => Trial(checkout) + Renewal(checkout) + Suffix(checkout);
 
@@ -99,10 +97,5 @@ public static class StripeSubscriptionDisclosure
         StripeAmounts.FromMinorUnits(cents, checkout.Plan.CurrencyCode).ToString("0.00", CultureInfo.InvariantCulture) + " "
         + checkout.Plan.CurrencyCode.ToUpperInvariant();
 
-    private static string Suffix(StripeSubscriptionCheckout checkout)
-    {
-        if (checkout.Mode == StripeCheckoutMode.Managed)
-            return ManagedSuffix;
-        return checkout.TaxRateId == null ? "" : DirectSuffix;
-    }
+    private static string Suffix(StripeSubscriptionCheckout checkout) => checkout.TaxRateId == null ? "" : DirectSuffix;
 }

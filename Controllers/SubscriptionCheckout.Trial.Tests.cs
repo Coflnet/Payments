@@ -168,7 +168,10 @@ public partial class SubscriptionCheckoutControllerTests
         Assert.That(created.Discounts?.Count ?? 0, Is.EqualTo(expected == null ? 1 : 0));
     }
 
-    /// <summary>Managed Payments supports trials (Stripe sends its own trial start email there); trial_period_days is allowed</summary>
+    /// <summary>
+    /// Managed Payments supports trials (Stripe sends its own trial start email there); trial_period_days is allowed, but
+    /// custom_text is not, so Stripe's own trial line is the disclosure there
+    /// </summary>
     [Test]
     public async Task ManagedPaymentsCheckoutsGetTheTrialToo()
     {
@@ -178,7 +181,7 @@ public partial class SubscriptionCheckoutControllerTests
 
         Assert.That(created.ManagedPayments?.Enabled, Is.True);
         Assert.That(created.SubscriptionData.TrialPeriodDays, Is.EqualTo(3));
-        Assert.That(created.CustomText.Submit.Message, Does.StartWith("Free for 3 days until "));
+        Assert.That(created.CustomText, Is.Null);
     }
 
     [Test]

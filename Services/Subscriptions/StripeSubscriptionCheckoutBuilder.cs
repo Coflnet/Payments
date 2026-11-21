@@ -72,6 +72,12 @@ public static class StripeSubscriptionCheckoutBuilder
         if (checkout.TaxRateId != null)
             item.TaxRates = [checkout.TaxRateId]; // inclusive: the receipt shows rate and amount, the total stays the gross price
         options.LineItems = [item];
+        // Managed Payments refuses custom_text ("You cannot use custom_text with Managed Payments.", live 2026-11-20):
+        // there Stripe shows its own reseller notice and 13/52 week plans state their renewal in the line item description.
+        options.CustomText = new SessionCustomTextOptions
+        {
+            Submit = new SessionCustomTextSubmitOptions { Message = StripeSubscriptionDisclosure.SubmitMessage(checkout) }
+        };
         // Billing country is the evidence for the VAT we charge and remit ourselves.
         options.BillingAddressCollection = "required";
         // Direct buyers always pay the EUR price: Adaptive Pricing would show and charge a local currency, which the
@@ -94,10 +100,6 @@ public static class StripeSubscriptionCheckoutBuilder
         return new SessionCreateOptions
         {
             Mode = "subscription",
-            CustomText = new SessionCustomTextOptions
-            {
-                Submit = new SessionCustomTextSubmitOptions { Message = StripeSubscriptionDisclosure.SubmitMessage(checkout) }
-            },
             Discounts = checkout.CouponId == null ? null : [new SessionDiscountOptions { Coupon = checkout.CouponId }],
             Metadata = metadata,
             SubscriptionData = new SessionSubscriptionDataOptions

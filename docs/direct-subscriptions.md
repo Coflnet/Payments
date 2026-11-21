@@ -52,9 +52,9 @@ direct Stripe, Stripe Managed Payments and PayPal. SkyCofl Premium has none. `Su
   trials: `trial_period_days` is not among its disallowed parameters (docs.stripe.com/payments/managed-payments/update-checkout), Stripe
   sends "a trial start email that confirms the subscription" there (docs.stripe.com/payments/managed-payments/how-it-works) and its
   changelog lists trial confirmation emails (2026-04-22) and trials without a payment method (2026-02-09). Try a live Managed Payments
-  trial checkout before the first sale. The text next to the button starts with "Free for 3 days until 23 November 2026; cancel before
+  trial checkout before the first sale. Direct checkouts: the text next to the button starts with "Free for 3 days until 23 November 2026; cancel before
   then and nothing is charged. The first payment of 15.46 EUR is charged on 23 November 2026." (`StripeSubscriptionDisclosure.TrialTemplate`,
-  then the renewal terms). The date is computed when the session is created; a buyer who completes it later (sessions stay open up to 24
+  then the renewal terms). Managed Payments refuses that text (see below), Stripe's own trial line is shown there. The date is computed when the session is created; a buyer who completes it later (sessions stay open up to 24
   hours) gets the full trial from then, so the first charge is never earlier than stated.
 - PayPal: a plan variant per (plan, period, renewal, currency, trial days) that starts with a free TRIAL cycle (sequence 1, `DAY` ×
   days, price 0, one cycle), then the priced TRIAL cycle of the plan's period and the REGULAR 4-week cycle (PayPal allows two trial
@@ -316,14 +316,16 @@ tolerated), so the number of coupons is bounded by the distinct discounts. A cou
 `..._v2` (then `_v3`, up to `_v5`) is checked or created instead, so a coupon edited in the dashboard can never apply a wrong discount. The checkout metadata `priceCents` is the recurring price and
 `firstPriceCents` the first invoice; the first invoice must charge exactly `firstPriceCents` (direct), every other one `priceCents`.
 13/52 week checkouts also carry `renewalProductSlug` and `renewalPriceCents` (the 4-week renewal, see below); their `priceCents`
-is the line item's 13/52 week price, which is never charged again. Managed Payments does not list `discounts` or `custom_text` among its disallowed
-session parameters; whether a fixed or percentage coupon is taxed on the discounted amount there (and that the coupon is applied together with
+is the line item's 13/52 week price, which is never charged again. Managed Payments' Checkout docs list neither `discounts` nor `custom_text` among the disallowed
+session parameters, but Stripe refuses `custom_text` live ("You cannot use custom_text with Managed Payments.", every managed
+checkout failed from 2026-11-20 until it was dropped; the Payment Links docs do list it). So that list is incomplete; whether a fixed or percentage coupon is taxed on the discounted amount there (and that the coupon is applied together with
 Adaptive Pricing) is not stated by Stripe and needs a live test checkout before the first sale.
 
 Text next to the button (`StripeSubscriptionDisclosure`, one place for the legal wording): `custom_text.submit.message` states "Renews every
 4 weeks at X until cancelled. Cancel anytime in your account at sky.coflnet.com/account." (13/52 week plans: "After the first N weeks it
-continues every 4 weeks at Y until cancelled. Cancel anytime ...", Y = the renewal price, well below `MaxLength` 1200) plus, direct with VAT (not the US) "The price includes VAT.", managed "... before
-taxes. Sold through Link (Stripe's reseller), which charges any applicable taxes." (Stripe's wording: Managed Payments receipts read "Sold through Link") No `submit_type` is sent:
+continues every 4 weeks at Y until cancelled. Cancel anytime ...", Y = the renewal price, well below `MaxLength` 1200) plus, with VAT (not the US) "The price includes VAT.". Direct checkouts only: Managed Payments sessions carry no `custom_text`
+(Stripe refuses it and shows its own standardized terms and "Sold through Link"); 13/52 week plans state their continuation in the line
+item description there. No `submit_type` is sent:
 Stripe refuses `submit_type=pay` in subscription mode (seen live 2026-11-19), so the button keeps Stripe's "Subscribe" label. The request
 body Stripe.net sends is tested to contain no `submit_type`. The account url follows the plan's product line (see "Product lines"):
 `SUBSCRIPTIONS:ACCOUNT_URL:{line}` (`default`, `l_bazaarpro`), otherwise `sky.coflnet.com/account`, for BazaarPro its billing

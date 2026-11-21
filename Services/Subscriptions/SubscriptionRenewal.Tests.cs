@@ -190,13 +190,15 @@ public class SubscriptionRenewalTests
     public void CheckoutOfAYearStatesThatItContinuesEveryFourWeeksAtTheRenewalPrice()
     {
         var direct = Build(YearCheckout(StripeCheckoutMode.Direct, 5931, 865, "txr_de")).CustomText.Submit.Message;
-        var managed = Build(YearCheckout(StripeCheckoutMode.Managed, 4984, 727)).CustomText.Submit.Message;
+        var managed = Build(YearCheckout(StripeCheckoutMode.Managed, 4984, 727));
 
         Assert.That(direct, Is.EqualTo("After the first 52 weeks it continues every 4 weeks at 8.65 EUR until cancelled. "
             + "Cancel anytime in your account at sky.coflnet.com/account. The price includes VAT."));
-        Assert.That(managed, Does.StartWith("After the first 52 weeks it continues every 4 weeks at 7.27 EUR until cancelled."));
-        Assert.That(managed, Does.Contain("before taxes"));
-        Assert.That(new[] { direct.Length, managed.Length }, Is.All.LessThan(StripeSubscriptionDisclosure.MaxLength));
+        // Managed Payments refuses custom_text: the line item description states the continuation there
+        Assert.That(managed.CustomText, Is.Null);
+        Assert.That(managed.LineItems[0].PriceData.ProductData.Description,
+            Is.EqualTo("First 52 weeks, then every 4 weeks at 7.27 EUR until cancelled."));
+        Assert.That(direct.Length, Is.LessThan(StripeSubscriptionDisclosure.MaxLength));
     }
 
     [Test]

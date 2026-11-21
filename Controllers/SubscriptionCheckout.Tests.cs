@@ -1175,7 +1175,8 @@ public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTes
 
         Assert.That(created.ManagedPayments.Enabled, Is.True);
         Assert.That(created.SubscriptionData.Metadata["renewalPriceCents"], Is.EqualTo("654"), "net: Stripe adds the tax");
-        Assert.That(created.CustomText.Submit.Message, Does.StartWith("After the first 13 weeks it continues every 4 weeks at 6.54 EUR"));
+        Assert.That(created.CustomText, Is.Null, "Stripe refuses custom_text with Managed Payments");
+        Assert.That(created.LineItems[0].PriceData.ProductData.Description, Does.StartWith("First 13 weeks, then every 4 weeks at 6.54 EUR"));
     }
 
     /// <summary>

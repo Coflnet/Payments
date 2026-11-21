@@ -24,7 +24,7 @@ public class SubscriptionCheckoutTests
         "payment_method_configuration", "payment_method_types", "customer_update", "shipping_address_collection",
         "shipping_options", "subscription_data.application_fee_percent", "subscription_data.on_behalf_of",
         "subscription_data.transfer_data", "subscription_data.invoice_settings", "invoice_creation",
-        "billing_address_collection", "payment_method_options"
+        "billing_address_collection", "payment_method_options", "custom_text"
     ];
 
     private static readonly TopUpProduct Plan = new()
@@ -72,7 +72,8 @@ public class SubscriptionCheckoutTests
         "payment_method_configuration", "payment_method_options", "payment_method_types", "saved_payment_method_options",
         "customer_update.name", "customer_update.address", "shipping_address_collection", "shipping_options",
         "subscription_data.application_fee_percent", "subscription_data.on_behalf_of", "subscription_data.transfer_data",
-        "subscription_data.invoice_settings"
+        "subscription_data.invoice_settings", "custom_text", "consent_collection",
+        "payment_intent_data.statement_descriptor", "payment_intent_data.statement_descriptor_suffix"
     ];
 
     /// <summary>
@@ -294,11 +295,12 @@ public class SubscriptionCheckoutTests
     }
 
     /// <summary>
-    /// Both modes tell the buyer the renewal terms next to the button (Managed Payments adds the reseller notice)
-    /// and use the "pay" button label.
+    /// Direct sales tell the buyer the renewal terms next to the button. Managed Payments sessions carry no custom_text:
+    /// Stripe refuses it there ("You cannot use custom_text with Managed Payments.", every non-EU/UK/US checkout failed
+    /// from 2026-11-20) and shows its own reseller notice.
     /// </summary>
     [Test]
-    public void SubmitTextStatesTheRenewalTermsAndTheResellerForManagedPayments()
+    public void SubmitTextStatesTheRenewalTermsOnlyForDirectSales()
     {
         var direct = Build(Checkout(StripeCheckoutMode.Direct, 1153, taxRate: "txr_de"));
         var managed = Build(Checkout(StripeCheckoutMode.Managed, 969));
@@ -306,7 +308,7 @@ public class SubscriptionCheckoutTests
         Assert.That(direct.CustomText.Submit.Message, Does.StartWith("Renews every 13 weeks at 11.53 EUR until cancelled."));
         Assert.That(direct.CustomText.Submit.Message, Does.Contain("sky.coflnet.com/account").And.Contain("includes VAT"));
         Assert.That(direct.CustomText.Submit.Message, Does.Not.Contain("reseller"));
-        Assert.That(managed.CustomText.Submit.Message, Does.Contain("9.69 EUR").And.Contain("Sold through Link (Stripe's reseller), which charges any applicable taxes."));
+        Assert.That(managed.CustomText, Is.Null);
         // regression: Stripe refuses submit_type "pay" in subscription mode
         Assert.That(new[] { direct.SubmitType, managed.SubmitType }, Is.All.Null);
         Assert.That(direct.CustomText.Submit.Message.Length, Is.LessThan(StripeSubscriptionDisclosure.MaxLength));
@@ -359,15 +361,16 @@ public class SubscriptionCheckoutTests
         Assert.That(managed.LineItems.Single().TaxRates, Is.Null);
     }
 
+    /// <summary>Regression: Stripe refuses custom_text on Managed Payments sessions (every such checkout failed from 2026-11-20)</summary>
     [Test]
-    public async Task ManagedSessionWithCouponAndTextSendsThemAndNoDisallowedParameter()
+    public async Task ManagedSessionWithCouponSendsItAndNoDisallowedParameter()
     {
         var sent = await SentToStripe(Build(Checkout(StripeCheckoutMode.Managed, 2492, 1246, "coflnet_once_pct_5000")));
         var pairs = sent.Body.Split('&').Select(p => Uri.UnescapeDataString(p.Replace('+', ' '))).ToList();
 
         Assert.That(pairs, Does.Contain("discounts[0][coupon]=coflnet_once_pct_5000"));
         Assert.That(pairs.Any(p => p.StartsWith("submit_type=")), Is.False, "Stripe refuses submit_type pay in subscription mode");
-        Assert.That(pairs.Any(p => p.StartsWith("custom_text[submit][message]=Renews every 13 weeks")), Is.True);
+        Assert.That(pairs.Any(p => p.StartsWith("custom_text")), Is.False, "Stripe refuses custom_text with Managed Payments");
         Assert.That(pairs, Does.Contain("managed_payments[enabled]=true"));
     }
 
