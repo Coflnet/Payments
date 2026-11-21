@@ -154,15 +154,9 @@ public partial class SubscriptionService
 
         var linkedId = string.IsNullOrEmpty(purchase.LinkedPurchaseToken) ? existing?.PreviousSubscriptionId
             : PlaySubscriptionId(purchase.LinkedPurchaseToken);
-        var remoteUserId = purchase.ExternalAccountIdentifiers?.ObfuscatedExternalAccountId;
-        if (string.IsNullOrWhiteSpace(remoteUserId))
-            remoteUserId = linkedId == null ? existing?.User.ExternalId
-                : (await FindProviderSubscription(PlayProvider, linkedId))?.User.ExternalId ?? existing?.User.ExternalId;
-        if (remoteUserId == null && !string.IsNullOrWhiteSpace(claimedUserId))
-        {
-            logger.LogWarning("Binding Google Play subscription {SubscriptionId} to the app account because Play supplied no account identifier", id);
-            remoteUserId = claimedUserId;
-        }
+        var (remoteUserId, error) = await ResolveGooglePlayPurchaseUserId(id, purchase, linkedId, existing?.User.ExternalId, claimedUserId);
+        if (error != null)
+            return (null, null, null, error);
         if (remoteUserId == null)
         {
             logger.LogError("Google Play subscription {SubscriptionId} has no bound user", id);
@@ -172,6 +166,35 @@ public partial class SubscriptionService
             return (null, null, null, "user_mismatch");
         var user = existing?.User ?? await userService.GetOrCreate(remoteUserId);
         return (plan, user, linkedId, null);
+    }
+
+    private async Task<(string UserId, string Error)> ResolveGooglePlayPurchaseUserId(
+        string id, SubscriptionPurchaseV2 purchase, string linkedId, string existingUserId, string claimedUserId)
+    {
+        var userId = purchase.ExternalAccountIdentifiers?.ObfuscatedExternalAccountId;
+        if (string.IsNullOrWhiteSpace(userId))
+            userId = linkedId == null ? null : (await FindProviderSubscription(PlayProvider, linkedId))?.User.ExternalId;
+        if (existingUserId != null)
+            return (userId ?? existingUserId, null);
+
+        var resubscribe = purchase.OutOfAppPurchaseContext;
+        var expiredAccountId = resubscribe?.ExpiredExternalAccountIdentifiers?.ObfuscatedExternalAccountId;
+        if (string.IsNullOrWhiteSpace(expiredAccountId))
+            expiredAccountId = null;
+        var expiredToken = resubscribe?.ExpiredPurchaseToken;
+        var expiredTokenUserId = string.IsNullOrWhiteSpace(expiredToken) ? null
+            : (await FindProviderSubscription(PlayProvider, PlaySubscriptionId(expiredToken)))?.User.ExternalId;
+        if (expiredAccountId != null && expiredTokenUserId != null && expiredAccountId != expiredTokenUserId)
+        {
+            logger.LogError("Google Play resubscribe account sources disagree for subscription {SubscriptionId}", id);
+            return (null, "user_mismatch");
+        }
+
+        userId ??= expiredAccountId ?? expiredTokenUserId;
+        if (userId != null || string.IsNullOrWhiteSpace(claimedUserId))
+            return (userId, null);
+        logger.LogWarning("Binding Google Play subscription {SubscriptionId} to the app account because Play supplied no account identifier", id);
+        return (claimedUserId, null);
     }
 
     private async Task<GooglePlaySubscriptionResult> SyncGooglePlayLocked(string id, string token, string claimedUserId, bool revoked, string voidedOrderId)
