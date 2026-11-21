@@ -295,7 +295,7 @@ namespace Payments.Controllers
                 {
                     var charge = stripeEvent.Data.Object as Stripe.Charge;
                     var intentId = charge.PaymentIntentId;
-                    _logger.LogInformation("stripe charge failed " + intentId);
+                    _logger.LogInformation("stripe charge failed {IntentId} {Failure}", intentId, StripeChargeFailure.Describe(charge));
                     var transaction = await db.PaymentRequests.Where(t => t.SessionId == intentId).FirstOrDefaultAsync();
                     if (transaction != null)
                     {
