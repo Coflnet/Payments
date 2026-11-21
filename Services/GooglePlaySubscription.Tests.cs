@@ -301,26 +301,42 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
             Assert.That(subscription.EndsAt, Is.EqualTo(expiry).Within(TimeSpan.FromSeconds(1)));
     }
 
-    [Test]
-    public async Task RevokeLatestPaymentRemovesAccessAndRefundsOnlyOnce()
+    [TestCase(HttpStatusCode.Forbidden)]
+    [TestCase(HttpStatusCode.TooManyRequests)]
+    public async Task RevokeEndsAccessWhenVoidConfirmationFailsAndRefundsOnceOnRetry(HttpStatusCode status)
     {
         var service = PlayService();
         await service.SyncGooglePlay(Token, "buyer");
+        var transactionsBeforeRefund = await db.FiniteTransactions.CountAsync();
         remote.SubscriptionState = "SUBSCRIPTION_STATE_EXPIRED";
         remote.CanceledStateContext = new CanceledStateContext { DeveloperInitiatedCancellation = new() };
         remote.LineItems[0].ExpiryTimeDateTimeOffset = DateTimeOffset.UtcNow.AddMinutes(-1);
-        publisher.Setup(p => p.IsVoidedPurchase(Order, Token)).ReturnsAsync(true);
+        publisher.Setup(p => p.IsVoidedPurchase(Order, Token)).ThrowsAsync(
+            new GoogleApiException("androidpublisher") { HttpStatusCode = status });
+        var notification = SubscriptionNotification(type: 12);
 
-        Assert.That(await PostGooglePlay(PlayCallback(service), SubscriptionNotification(type: 12), true), Is.TypeOf<OkResult>());
-        var transactionsAfterRefund = await db.FiniteTransactions.CountAsync();
-        await service.SyncGooglePlayNotification(Token, revoked: true);
+        var result = await PostGooglePlay(PlayCallback(service), notification, true);
+        Assert.That(((StatusCodeResult)result).StatusCode, Is.EqualTo(500));
+        db.ChangeTracker.Clear();
 
         var subscription = await db.Subscriptions.SingleAsync();
         Assert.That(subscription.Status, Is.EqualTo("expired"));
-        var access = await Access(subscription.ExternalId);
-        Assert.That(access == null || access.Expires <= DateTime.UtcNow, Is.True);
+        Assert.That(subscription.EndsAt, Is.LessThanOrEqualTo(DateTime.UtcNow));
+        Assert.That((await Access(subscription.ExternalId)).Expires, Is.LessThanOrEqualTo(DateTime.UtcNow));
+        Assert.That((await db.PaymentRecords.SingleAsync()).Status, Is.EqualTo(PaymentRecordStatus.Confirmed));
+        Assert.That(await db.RefundedSubscriptionInvoices.CountAsync(), Is.Zero);
+        Assert.That(await db.FiniteTransactions.CountAsync(), Is.EqualTo(transactionsBeforeRefund));
+
+        publisher.Setup(p => p.IsVoidedPurchase(Order, Token)).ReturnsAsync(true);
+        Assert.That(await PostGooglePlay(PlayCallback(service), notification, true), Is.TypeOf<OkResult>());
+        var transactionsAfterRefund = await db.FiniteTransactions.CountAsync();
+        Assert.That(transactionsAfterRefund, Is.EqualTo(transactionsBeforeRefund + 2));
         Assert.That((await db.PaymentRecords.SingleAsync()).Status, Is.EqualTo(PaymentRecordStatus.Refunded));
+
+        Assert.That(await PostGooglePlay(PlayCallback(service), notification, true), Is.TypeOf<OkResult>());
+        Assert.That(await db.RefundedSubscriptionInvoices.CountAsync(), Is.EqualTo(1));
         Assert.That(await db.FiniteTransactions.CountAsync(), Is.EqualTo(transactionsAfterRefund));
+        Assert.That((await db.Subscriptions.AsNoTracking().SingleAsync()).Status, Is.EqualTo("expired"));
     }
 
     [TestCase(false)]

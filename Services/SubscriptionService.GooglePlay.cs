@@ -184,10 +184,14 @@ public partial class SubscriptionService
         var latestOrder = item?.LatestSuccessfulOrderId;
         if (revoked && purchase is { SubscriptionState: "SUBSCRIPTION_STATE_EXPIRED", CanceledStateContext: not null })
         {
+            await EndGooglePlayAccess(local);
             // The cancel context also covers ordinary expiration. Verify the payment reversal separately.
             latestOrder ??= await LatestGrantedGooglePlayOrder(local);
             if (latestOrder != null && await googlePlay.IsVoidedPurchase(latestOrder, token))
-                voidedOrderId = latestOrder;
+            {
+                await RefundGooglePlayOrder(local, latestOrder);
+                return new(false, local.Status, null);
+            }
         }
         if (voidedOrderId != null)
         {
