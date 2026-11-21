@@ -28,7 +28,8 @@ public class GooglePlaySubscriptionController(SubscriptionService subscriptions,
             return new GooglePlaySubscriptionResult(false, null, "invalid_package");
         try
         {
-            return await subscriptions.SyncGooglePlay(request.PurchaseToken, request.UserId);
+            var claimedUserId = string.IsNullOrWhiteSpace(request.UserId) ? null : request.UserId;
+            return await subscriptions.SyncGooglePlay(request.PurchaseToken, claimedUserId);
         }
         catch (SubscriptionBusyException)
         {

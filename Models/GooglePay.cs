@@ -94,9 +94,8 @@ namespace Coflnet.Payments.Models.GooglePay
         public string PackageName { get; set; }
 
         /// <summary>
-        /// The user ID who purchased the subscription
+        /// Optional claimed user ID. Omit it to resolve the buyer through Google Play.
         /// </summary>
-        [Required]
         public string UserId { get; set; }
     }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -94,11 +95,16 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         Issuer = issuer, Audience = audience, Email = account, EmailVerified = verified
     };
 
-    private static Task<ActionResult<GooglePlaySubscriptionResult>> CompletePurchase(SubscriptionService service) =>
-        new GooglePlaySubscriptionController(service).Complete(new GooglePlaySubscriptionRequest
+    private static Task<ActionResult<GooglePlaySubscriptionResult>> CompletePurchase(SubscriptionService service, string userId = "buyer",
+        string purchaseToken = Token)
+    {
+        var request = new GooglePlaySubscriptionRequest
         {
-            UserId = "buyer", PackageName = "com.coflnet.sky", SubscriptionId = "premium", PurchaseToken = Token
-        });
+            UserId = userId, PackageName = "com.coflnet.sky", SubscriptionId = "premium", PurchaseToken = purchaseToken
+        };
+        Validator.ValidateObject(request, new ValidationContext(request), validateAllProperties: true);
+        return new GooglePlaySubscriptionController(service).Complete(request);
+    }
 
     [Test]
     public async Task CompleteVerifiesAndPersistsThePurchaseAndPaidPeriod()
@@ -142,6 +148,50 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         Assert.That(await PaymentRecords("googleplay"), Is.EqualTo(1));
         Assert.That(await db.FiniteTransactions.CountAsync(), Is.EqualTo(transactionsBefore));
         Assert.That((await Access(subscription.ExternalId)).Expires, Is.EqualTo(accessExpiry));
+    }
+
+    [TestCase(null)]
+    [TestCase("")]
+    [TestCase(" \t")]
+    public async Task CompletionWithoutUserResolvesProviderAccountAndGrantsOnce(string userId)
+    {
+        remote.ExternalAccountIdentifiers.ObfuscatedExternalAccountId = "provider-buyer";
+        remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_PENDING";
+        publisher.Setup(p => p.AcknowledgeSubscription("premium", Token))
+            .Callback(() => remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED").Returns(Task.CompletedTask);
+        var service = PlayService();
+
+        Assert.That((await CompletePurchase(service, userId)).Value.IsValid, Is.True);
+        var subscription = await db.Subscriptions.Include(s => s.User).SingleAsync();
+        var accessExpiry = (await Access(subscription.ExternalId)).Expires;
+        Assert.That((await CompletePurchase(service, userId)).Value.IsValid, Is.True);
+
+        Assert.That(subscription.User.ExternalId, Is.EqualTo("provider-buyer"));
+        Assert.That(accessExpiry, Is.InRange(expiry, expiry.AddHours(3)));
+        Assert.That(await db.Subscriptions.CountAsync(), Is.EqualTo(1));
+        Assert.That(await Grants(SubscriptionProviders.GrantReference("googleplay", Order)), Is.EqualTo(1));
+        Assert.That(await PaymentRecords("googleplay"), Is.EqualTo(1));
+        Assert.That((await Access(subscription.ExternalId)).Expires, Is.EqualTo(accessExpiry));
+        publisher.Verify(p => p.AcknowledgeSubscription("premium", Token), Times.Once);
+    }
+
+    [TestCase(null)]
+    [TestCase("")]
+    [TestCase(" \t")]
+    public async Task CompletionWithoutAnyIdentityCannotBindGrantOrAcknowledge(string userId)
+    {
+        remote.ExternalAccountIdentifiers = null;
+        remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_PENDING";
+
+        var result = (await CompletePurchase(PlayService(), userId)).Value;
+
+        Assert.That(result.IsValid, Is.False);
+        Assert.That(result.ErrorMessage, Is.EqualTo("missing_user"));
+        Assert.That(await db.Subscriptions.CountAsync(), Is.Zero);
+        Assert.That(await db.OwnerShips.CountAsync(), Is.Zero);
+        Assert.That(await db.FiniteTransactions.CountAsync(), Is.Zero);
+        Assert.That(await PaymentRecords("googleplay"), Is.Zero);
+        publisher.Verify(p => p.AcknowledgeSubscription(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
     }
 
     [Test]
@@ -188,11 +238,14 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
     [Test]
     public async Task ClaimedUserMismatchCannotCreateOrGrantSubscription()
     {
-        var result = await PlayService().SyncGooglePlay(Token, "another-buyer");
+        remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_PENDING";
+        var result = (await CompletePurchase(PlayService(), "another-buyer")).Value;
         Assert.That(result.IsValid, Is.False);
+        Assert.That(result.ErrorMessage, Is.EqualTo("user_mismatch"));
         Assert.That(await db.Subscriptions.CountAsync(), Is.Zero);
         Assert.That(await db.FiniteTransactions.CountAsync(), Is.Zero);
         Assert.That(await PaymentRecords("googleplay"), Is.Zero);
+        publisher.Verify(p => p.AcknowledgeSubscription(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
     }
 
     [Test]
@@ -238,9 +291,11 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         publisher.Verify(p => p.AcknowledgeSubscription("premium", Token), Times.Once);
     }
 
-    [TestCase(false)]
-    [TestCase(true)]
-    public async Task OutOfAppResubscribeBindsItsExpiredUserAndGrantsOnce(bool useExpiredToken)
+    [TestCase(false, false)]
+    [TestCase(true, false)]
+    [TestCase(false, true)]
+    [TestCase(true, true)]
+    public async Task OutOfAppResubscribeBindsItsExpiredUserAndGrantsOnce(bool useExpiredToken, bool completion)
     {
         var service = PlayService();
         var previous = await ExpiredPlaySubscription(service);
@@ -261,10 +316,17 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
             remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED";
             remote.OutOfAppPurchaseContext = null;
         }).Returns(Task.CompletedTask);
-        var callback = PlayCallback(service);
-
-        Assert.That(await PostGooglePlay(callback, SubscriptionNotification(), true), Is.TypeOf<OkResult>());
-        Assert.That(await PostGooglePlay(callback, SubscriptionNotification(), false), Is.TypeOf<OkResult>());
+        if (completion)
+        {
+            Assert.That((await CompletePurchase(service, null)).Value.IsValid, Is.True);
+            Assert.That((await CompletePurchase(service, null)).Value.IsValid, Is.True);
+        }
+        else
+        {
+            var callback = PlayCallback(service);
+            Assert.That(await PostGooglePlay(callback, SubscriptionNotification(), true), Is.TypeOf<OkResult>());
+            Assert.That(await PostGooglePlay(callback, SubscriptionNotification(), false), Is.TypeOf<OkResult>());
+        }
 
         var current = await db.Subscriptions.Include(s => s.User).SingleAsync(s => s.ProviderToken == Token);
         Assert.That(current.User.ExternalId, Is.EqualTo("buyer"));
@@ -568,8 +630,9 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         Assert.That((await Access(subscription.ExternalId)).Expires, Is.InRange(expiry, expiry.AddHours(3)));
     }
 
-    [Test]
-    public async Task LinkedPurchaseInheritsItsUserAndClosesThePreviousToken()
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task LinkedPurchaseInheritsItsUserAndClosesThePreviousToken(bool completion)
     {
         var service = PlayService();
         await service.SyncGooglePlay(Token, "buyer");
@@ -578,7 +641,9 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         remote.ExternalAccountIdentifiers = null;
         remote.LineItems[0].LatestSuccessfulOrderId = "GPA.9876-5432-1098-76543";
 
-        Assert.That((await service.SyncGooglePlayNotification("replacement-token")).IsValid, Is.True);
+        var result = completion ? (await CompletePurchase(service, null, "replacement-token")).Value
+            : await service.SyncGooglePlayNotification("replacement-token");
+        Assert.That(result.IsValid, Is.True);
         var replacement = await db.Subscriptions.Include(s => s.User).SingleAsync(s => s.ProviderToken == "replacement-token");
         Assert.That(replacement.User.ExternalId, Is.EqualTo("buyer"));
         Assert.That(previous.Status, Is.EqualTo("expired"));
