@@ -24,7 +24,7 @@ public class SubscriptionCheckoutTests
         "payment_method_configuration", "payment_method_types", "customer_update", "shipping_address_collection",
         "shipping_options", "subscription_data.application_fee_percent", "subscription_data.on_behalf_of",
         "subscription_data.transfer_data", "subscription_data.invoice_settings", "invoice_creation",
-        "billing_address_collection", "payment_method_options", "custom_text"
+        "billing_address_collection", "payment_method_options", "custom_text", "customer_creation"
     ];
 
     private static readonly TopUpProduct Plan = new()
@@ -65,12 +65,12 @@ public class SubscriptionCheckoutTests
         Assert.That(options.SubscriptionData.Metadata["mode"], Is.EqualTo("managed"));
     }
 
-    /// <summary>Stripe's list of Checkout Session parameters not allowed with managed_payments[enabled]=true</summary>
+    /// <summary>Checkout Session parameters disallowed in Managed Payments subscription mode</summary>
     private static readonly string[] ManagedPaymentsDisallowed =
     [
         "automatic_tax", "tax_id_collection", "subscription_data.default_tax_rates", "payment_method_collection",
         "payment_method_configuration", "payment_method_options", "payment_method_types", "saved_payment_method_options",
-        "customer_update.name", "customer_update.address", "shipping_address_collection", "shipping_options",
+        "customer_update", "customer_creation", "shipping_address_collection", "shipping_options",
         "subscription_data.application_fee_percent", "subscription_data.on_behalf_of", "subscription_data.transfer_data",
         "subscription_data.invoice_settings", "custom_text", "consent_collection",
         "payment_intent_data.statement_descriptor", "payment_intent_data.statement_descriptor_suffix"
@@ -85,7 +85,7 @@ public class SubscriptionCheckoutTests
     {
         var options = StripeSubscriptionCheckoutBuilder.Build(
             new StripeSubscriptionCheckout(new User { ExternalId = "buyer" }, Plan, 2492, 13, StripeCheckoutMode.Managed, "BR",
-                "https://ok", "https://cancel", "a@b.c", "SAVE10", "creator", 42),
+                "https://ok", "https://cancel", "a@b.c", "SAVE10", "creator", 42, CustomerId: "cus_existing"),
             StripeManagedSettings.From(new ConfigurationBuilder().Build()));
 
         var sent = await SentToStripe(options);
@@ -101,10 +101,24 @@ public class SubscriptionCheckoutTests
         {
             options.AutomaticTax, options.TaxIdCollection, options.SubscriptionData.DefaultTaxRates, options.PaymentMethodCollection,
             options.PaymentMethodConfiguration, options.PaymentMethodOptions, options.PaymentMethodTypes,
-            options.SavedPaymentMethodOptions, options.CustomerUpdate, options.ShippingAddressCollection, options.ShippingOptions,
-            options.SubscriptionData.ApplicationFeePercent, options.SubscriptionData.OnBehalfOf,
+            options.SavedPaymentMethodOptions, options.CustomerUpdate, options.CustomerCreation, options.ShippingAddressCollection,
+            options.ShippingOptions, options.SubscriptionData.ApplicationFeePercent, options.SubscriptionData.OnBehalfOf,
             options.SubscriptionData.TransferData, options.SubscriptionData.InvoiceSettings
         }, Is.All.Null);
+    }
+
+    [TestCase("cus_existing")]
+    [TestCase(null)]
+    public async Task ManagedPaymentsUsesExistingCustomerOrEmail(string customerId)
+    {
+        var options = Build(Checkout(StripeCheckoutMode.Managed) with { CustomerId = customerId });
+        var sent = await SentToStripe(options);
+        var fields = sent.Body.Split('&').Select(Uri.UnescapeDataString).ToArray();
+
+        Assert.That(options.Customer, Is.EqualTo(customerId));
+        Assert.That(options.CustomerEmail, Is.EqualTo(customerId == null ? "a@b.c" : null));
+        Assert.That(fields, Does.Contain(customerId == null ? "customer_email=a@b.c" : "customer=" + customerId));
+        Assert.That(fields.Any(field => field.StartsWith(customerId == null ? "customer=" : "customer_email=")), Is.False);
     }
 
     /// <summary>

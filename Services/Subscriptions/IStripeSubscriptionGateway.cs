@@ -12,6 +12,8 @@ namespace Coflnet.Payments.Services.Subscriptions;
 /// </summary>
 public interface IStripeSubscriptionGateway
 {
+    /// <summary>Creates a customer with the supplied email and metadata and returns its id</summary>
+    Task<string> CreateCustomer(string email, Dictionary<string, string> metadata);
     /// <summary>Creates a hosted checkout session</summary>
     Task<Session> CreateCheckoutSession(SessionCreateOptions options);
     /// <summary>Loads an existing checkout session (to reuse its URL)</summary>

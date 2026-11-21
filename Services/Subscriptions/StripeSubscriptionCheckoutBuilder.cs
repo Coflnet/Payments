@@ -31,7 +31,18 @@ public record StripeSubscriptionCheckout(
     long? RenewalUnitAmountCents = null, // 13/52 week plans: what every 4-week renewal charges (direct: gross, managed: net)
     string AccountUrl = null, // where the disclosure says to cancel (StripeSubscriptionDisclosure.AccountUrlFor), null: SkyCofl's
     int? TrialDays = null, // free trial before the first payment (SubscriptionTrials), null: none
-    DateTime? TrialEndsAt = null); // the trial end as of the session's creation (the disclosure's first charge date)
+    DateTime? TrialEndsAt = null, // the trial end as of the session's creation (the disclosure's first charge date)
+    string CustomerId = null);
+
+/// <summary>
+/// Radar reads the seller from Customer metadata because subscription Checkout cannot set PaymentIntent metadata.
+/// <c>Block if :card_country: in ('TR','AE','SA','KR','VN','CL','MX','IL','PE','MD') and (is_missing(::customer:coflnet_seller::) or ::customer:coflnet_seller:: != 'stripe_managed')</c>
+/// </summary>
+internal static class StripeManagedCustomer
+{
+    public const string SellerKey = "coflnet_seller";
+    public const string SellerValue = "stripe_managed";
+}
 
 /// <summary>
 /// Managed Payments settings (STRIPE:MANAGED_TAX_CODE, STRIPE:MANAGED_TAX_BEHAVIOR)
@@ -107,7 +118,8 @@ public static class StripeSubscriptionCheckoutBuilder
                 Metadata = new Dictionary<string, string>(metadata), TrialPeriodDays = checkout.TrialDays
             },
             ClientReferenceId = checkout.User.ExternalId,
-            CustomerEmail = checkout.Email,
+            Customer = checkout.CustomerId,
+            CustomerEmail = checkout.CustomerId == null ? checkout.Email : null,
             SuccessUrl = checkout.SuccessUrl,
             CancelUrl = checkout.CancelUrl
         };

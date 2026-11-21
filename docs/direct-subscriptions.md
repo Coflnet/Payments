@@ -259,6 +259,11 @@ not granted (its payments are marked for a manual refund). An open checkout is o
 
 Activate Managed Payments (needed for every country outside the direct list): https://dashboard.stripe.com/settings/managed-payments
 
+The Radar card-country rule blocks cards from TR, AE, SA, KR, VN, CL, MX, IL, PE and MD unless the Customer has
+`coflnet_seller=stripe_managed`. New Managed Payments subscription sessions use a Customer created with that metadata because
+subscription Checkout cannot set PaymentIntent metadata. If Stripe rejects Customer creation, checkout continues with `customer_email`
+and the card-country block still applies. Reused sessions keep their original customer settings.
+
 Webhook endpoint `/callback/stripe` (secret `STRIPE:SIGNING_SECRET`), events: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.created`,
 `customer.subscription.updated`, `customer.subscription.deleted`, `customer.subscription.pending_update_expired`,

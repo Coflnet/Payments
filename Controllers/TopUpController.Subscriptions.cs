@@ -292,7 +292,7 @@ public partial class TopUpController
         try
         {
             checkout = await WithStripeObjects(stripe, checkout, vatBasisPoints);
-            return await stripe.CreateCheckoutSession(StripeSubscriptionCheckoutBuilder.Build(checkout, StripeManagedSettings.From(config)));
+            return await CreateSessionWithCustomerFallback(stripe, checkout);
         }
         catch (Stripe.StripeException e) when (StripeErrorClassifier.IsCredentialError(e.HttpStatusCode))
         {
@@ -309,10 +309,29 @@ public partial class TopUpController
     }
 
     /// <summary>
-    /// The Stripe objects a session refers to: the one-time coupon of a "first payment only" code and, for direct sales,
-    /// the inclusive VAT rate of the buyer's country (for the receipt; the charged amount is the gross price either way).
+    /// Stripe has not confirmed that Managed Payments sessions accept a pre-created customer (it refuses parameters its docs
+    /// do not list, e.g. custom_text). If Stripe rejects the session with the customer, it is created once more with the email
+    /// only: the Radar tag is lost for that buyer, but no checkout fails because of the tag.
     /// </summary>
-    private static async Task<StripeSubscriptionCheckout> WithStripeObjects(IStripeSubscriptionGateway stripe,
+    private async Task<Session> CreateSessionWithCustomerFallback(IStripeSubscriptionGateway stripe, StripeSubscriptionCheckout checkout)
+    {
+        var managed = StripeManagedSettings.From(config);
+        try
+        {
+            return await stripe.CreateCheckoutSession(StripeSubscriptionCheckoutBuilder.Build(checkout, managed));
+        }
+        catch (Stripe.StripeException e) when (checkout.CustomerId != null && e.HttpStatusCode == System.Net.HttpStatusCode.BadRequest)
+        {
+            _logger.LogWarning("Stripe refused the Managed Payments session with a customer ({StripeCode}: {StripeMessage}); retrying with the email only",
+                e.StripeError?.Code, e.StripeError?.Message);
+            return await stripe.CreateCheckoutSession(StripeSubscriptionCheckoutBuilder.Build(checkout with { CustomerId = null }, managed));
+        }
+    }
+
+    /// <summary>
+    /// Creates the session's one-time coupon, direct VAT rate, and Managed Payments customer as applicable.
+    /// </summary>
+    private async Task<StripeSubscriptionCheckout> WithStripeObjects(IStripeSubscriptionGateway stripe,
         StripeSubscriptionCheckout checkout, int vatBasisPoints)
     {
         var coupon = StripeFirstPaymentCoupon.For(checkout.Mode, checkout.UnitAmountCents,
@@ -320,7 +339,27 @@ public partial class TopUpController
         var couponId = coupon == null ? null : await stripe.EnsureFirstPaymentCoupon(coupon);
         var taxRateId = checkout.Mode == StripeCheckoutMode.Direct && vatBasisPoints > 0
             ? await stripe.EnsureVatTaxRate(checkout.Country, vatBasisPoints) : null;
-        return checkout with { CouponId = couponId, TaxRateId = taxRateId };
+        var customerId = checkout.Mode == StripeCheckoutMode.Managed ? await CreateManagedStripeCustomer(stripe, checkout.Email) : null;
+        return checkout with { CouponId = couponId, TaxRateId = taxRateId, CustomerId = customerId };
+    }
+
+    private async Task<string> CreateManagedStripeCustomer(IStripeSubscriptionGateway stripe, string email)
+    {
+        try
+        {
+            return await stripe.CreateCustomer(email, new Dictionary<string, string>
+            {
+                [StripeManagedCustomer.SellerKey] = StripeManagedCustomer.SellerValue
+            });
+        }
+        catch (Stripe.StripeException e)
+        {
+            if (StripeErrorClassifier.IsCredentialError(e.HttpStatusCode))
+                PaymentMetrics.StripeCredentialErrors.Inc();
+            _logger.LogWarning("Stripe Managed Payments customer creation failed (HTTP {StatusCode}). Continuing with email-only checkout.",
+                e.HttpStatusCode);
+            return null;
+        }
     }
 
     private static async Task<TopUpIdResponse> ExistingStripeCheckout(IStripeSubscriptionGateway stripe, string sessionId)

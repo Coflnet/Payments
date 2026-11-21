@@ -26,6 +26,9 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
         taxCode = StripeManagedSettings.From(config).TaxCode;
     }
 
+    public async Task<string> CreateCustomer(string email, Dictionary<string, string> metadata) =>
+        (await new CustomerService().CreateAsync(new CustomerCreateOptions { Email = email, Metadata = metadata })).Id;
+
     public Task<Session> CreateCheckoutSession(SessionCreateOptions options) =>
         new SessionService().CreateAsync(options);
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.PayPal;
@@ -34,6 +35,7 @@ public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTes
         coupons.Clear();
         taxRates.Clear();
         stripe = new Mock<IStripeSubscriptionGateway>();
+        stripe.Setup(s => s.CreateCustomer(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>())).ReturnsAsync("cus_1");
         stripe.Setup(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()))
             .Callback<SessionCreateOptions>(o => created = o)
             .ReturnsAsync(new Session { Id = "cs_1", Url = "https://checkout.stripe.com/c/cs_1" });
@@ -103,6 +105,8 @@ public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTes
 
         Assert.That(response.DirectLink, Is.EqualTo("https://checkout.stripe.com/c/cs_1"));
         Assert.That(created.ManagedPayments, Is.Null);
+        Assert.That(created.Customer, Is.Null);
+        stripe.Verify(s => s.CreateCustomer(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never);
         Assert.That(created.LineItems.Single().PriceData.UnitAmount, Is.EqualTo(1153));
         Assert.That(created.LineItems.Single().PriceData.Recurring.IntervalCount, Is.EqualTo(4));
         var request = await db.PaymentRequests.SingleAsync();
@@ -355,10 +359,56 @@ public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTes
     [Test]
     public async Task BuyerOutsideTheDirectCountriesGetsManagedPayments()
     {
-        await Controller("NO").StripeSubscribe("buyer", "l_premium", Options("NO"));
+        var options = Options("NO");
+        options.UserEmail = "buyer@example.com";
+        await Controller("NO").StripeSubscribe("buyer", "l_premium", options);
+
+        stripe.Verify(s => s.CreateCustomer(options.UserEmail, It.Is<Dictionary<string, string>>(metadata =>
+            metadata.Count == 1 && metadata.GetValueOrDefault("coflnet_seller") == "stripe_managed")), Times.Once);
+        Assert.That(created.Customer, Is.EqualTo("cus_1"));
+        Assert.That(created.CustomerEmail, Is.Null);
         Assert.That(created.ManagedPayments.Enabled, Is.True);
         Assert.That(created.LineItems.Single().PriceData.ProductData.TaxCode, Is.EqualTo("txcd_10103000"));
         Assert.That(created.SubscriptionData.Metadata["mode"], Is.EqualTo("managed"));
+    }
+
+    [TestCase(HttpStatusCode.Forbidden)]
+    [TestCase(HttpStatusCode.BadRequest)]
+    public async Task ManagedCheckoutContinuesWithEmailWhenCustomerCreationFails(HttpStatusCode statusCode)
+    {
+        var options = Options("NO");
+        options.UserEmail = "buyer@example.com";
+        stripe.Setup(s => s.CreateCustomer(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()))
+            .ThrowsAsync(new Stripe.StripeException(statusCode, null, "Cannot create customer"));
+
+        var response = await Controller("NO").StripeSubscribe("buyer", "l_premium", options);
+
+        Assert.That(response.DirectLink, Is.EqualTo("https://checkout.stripe.com/c/cs_1"));
+        Assert.That(created.ManagedPayments.Enabled, Is.True);
+        Assert.That(created.Customer, Is.Null);
+        Assert.That(created.CustomerEmail, Is.EqualTo(options.UserEmail));
+    }
+
+    /// <summary>Stripe has not confirmed that Managed Payments accepts a pre-created customer: a refused session is retried with the email</summary>
+    [Test]
+    public async Task ManagedSessionRefusedWithCustomerIsRetriedWithEmail()
+    {
+        var options = Options("NO");
+        options.UserEmail = "buyer@example.com";
+        var sent = new List<SessionCreateOptions>();
+        stripe.Setup(s => s.CreateCheckoutSession(It.Is<SessionCreateOptions>(o => o.Customer != null)))
+            .Callback<SessionCreateOptions>(sent.Add)
+            .ThrowsAsync(new Stripe.StripeException(HttpStatusCode.BadRequest, null, "You cannot use customer with Managed Payments."));
+        stripe.Setup(s => s.CreateCheckoutSession(It.Is<SessionCreateOptions>(o => o.Customer == null)))
+            .Callback<SessionCreateOptions>(o => { sent.Add(o); created = o; })
+            .ReturnsAsync(new Session { Id = "cs_1", Url = "https://checkout.stripe.com/c/cs_1" });
+
+        var response = await Controller("NO").StripeSubscribe("buyer", "l_premium", options);
+
+        Assert.That(response.DirectLink, Is.EqualTo("https://checkout.stripe.com/c/cs_1"));
+        Assert.That(sent.Select(o => o.Customer), Is.EqualTo(new[] { "cus_1", null }));
+        Assert.That(created.CustomerEmail, Is.EqualTo(options.UserEmail));
+        Assert.That(created.ManagedPayments.Enabled, Is.True);
     }
 
     [Test]
@@ -709,17 +759,19 @@ public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTes
         Assert.That((request.CreatorCode, request.DiscountCode), Is.EqualTo(("CREATOR", "SAVE10")));
     }
 
-    [Test]
-    public async Task OpenCheckoutOfTheSamePriceIsReused()
+    [TestCase("DE", 0)]
+    [TestCase("NO", 1)]
+    public async Task OpenCheckoutOfTheSamePriceIsReused(string country, int customerCreations)
     {
         stripe.Setup(s => s.GetCheckoutSession("cs_1")).ReturnsAsync(new Session { Id = "cs_1", Url = "https://checkout.stripe.com/c/cs_1" });
-        var controller = Controller("DE");
-        await controller.StripeSubscribe("buyer", "l_premium", Options("DE"));
+        var controller = Controller(country);
+        await controller.StripeSubscribe("buyer", "l_premium", Options(country));
 
-        var again = await controller.StripeSubscribe("buyer", "l_premium", Options("DE"));
+        var again = await controller.StripeSubscribe("buyer", "l_premium", Options(country));
 
         Assert.That(again.Id, Is.EqualTo("cs_1"));
         stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Once);
+        stripe.Verify(s => s.CreateCustomer(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Exactly(customerCreations));
         Assert.That(await db.PaymentRequests.CountAsync(), Is.EqualTo(1));
     }
 
