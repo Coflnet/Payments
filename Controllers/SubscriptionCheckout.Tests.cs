@@ -100,6 +100,28 @@ public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTes
     };
 
     [Test]
+    public async Task RenewingPlaySubscriptionBlocksWebCheckoutUntilCancelled()
+    {
+        var row = new UserSubscription
+        {
+            ProviderSlug = SubscriptionProviders.GooglePlay, Status = "active", User = await users.GetOrCreate("buyer"), Product = premiumPlus, ExternalId = "gp_active"
+        };
+        db.Subscriptions.Add(row);
+        await db.SaveChangesAsync();
+        var controller = Controller("DE");
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => controller.StripeSubscribe("buyer", premium.Slug, Options("DE"))).Slug,
+            Is.EqualTo("active_play_subscription"));
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => controller.PayPalSubscribe("buyer", premium.Slug, Options("DE"))).Slug,
+            Is.EqualTo("active_play_subscription"));
+        Assert.That(Assert.ThrowsAsync<ApiException>(() => controller.LemonSqueezySubscribe("buyer", premium.Slug, Options("DE"))).Slug,
+            Is.EqualTo("active_play_subscription"));
+
+        row.EndsAt = DateTime.UtcNow.AddDays(1);
+        await db.SaveChangesAsync();
+        Assert.That((await controller.StripeSubscribe("buyer", premium.Slug, Options("DE"))).Id, Is.EqualTo("cs_1"));
+    }
+
+    [Test]
     public async Task EuBuyerGetsADirectStripeSubscriptionAtTheNetPlanPricePlusVat()
     {
         var response = await Controller("DE").StripeSubscribe("buyer", "l_premium", Options("DE"));

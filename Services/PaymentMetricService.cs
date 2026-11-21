@@ -13,6 +13,10 @@ namespace Coflnet.Payments.Services;
 
 public static class PaymentMetrics
 {
+    public static readonly Counter GooglePlayDoubleSubscriptions = Metrics.CreateCounter(
+        "payments_google_play_double_subscriptions_total",
+        "Paid duplicate subscriptions in a product line involving Google Play");
+
     public static readonly Counter StripeCredentialErrors = Metrics.CreateCounter(
         "payments_stripe_credential_errors_total",
         "Stripe API requests rejected because the API credentials are invalid or lack permission");

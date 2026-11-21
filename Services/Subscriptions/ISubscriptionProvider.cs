@@ -59,6 +59,8 @@ public static class SubscriptionProviders
     public const string Stripe = "stripe";
     /// <summary>PayPal Subscriptions v1</summary>
     public const string PayPal = "paypal";
+    /// <summary>Google Play Billing</summary>
+    public const string GooglePlay = "googleplay";
 
     /// <summary>
     /// Rows created before providers were recorded are Lemon Squeezy subscriptions.
@@ -73,6 +75,7 @@ public static class SubscriptionProviders
     {
         Stripe => "stripe-invoice-" + invoiceId,
         PayPal => "paypal-sale-" + invoiceId,
+        GooglePlay => "googleplay-order-" + invoiceId,
         _ => "ls-invoice-" + invoiceId
     };
 }

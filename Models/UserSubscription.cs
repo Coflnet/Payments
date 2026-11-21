@@ -12,6 +12,12 @@ public class UserSubscription
     public Product Product { get; set; }
     public string ProviderSlug { get; set; }
     public string ExternalId { get; set; }
+    /// <summary>
+    /// Provider credential used to verify and manage the subscription (Google Play purchase token).
+    /// </summary>
+    [Column(TypeName = "text")]
+    [Newtonsoft.Json.JsonIgnore, System.Text.Json.Serialization.JsonIgnore]
+    public string ProviderToken { get; set; }
     public string ExternalCustomerId { get; set; }
     public DateTime RenewsAt { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -159,6 +165,11 @@ public class UserSubscription
     /// </summary>
     [NotMapped]
     public bool CanChangePlan { get; set; }
+    /// <summary>
+    /// Where the buyer can manage the subscription with its provider (response only)
+    /// </summary>
+    [NotMapped]
+    public string ManageUrl { get; set; }
 }
 
 /// <summary>

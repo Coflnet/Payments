@@ -74,13 +74,16 @@ public partial class SubscriptionService
     /// service, which extends the ownership (or tier slots) bound to <paramref name="subscriptionId"/>.
     /// Idempotent per <paramref name="reference"/>: returns false when that payment was already granted.
     /// </summary>
-    public async Task<bool> GrantPaidPeriod(string userId, TopUpProduct product, string subscriptionId, string reference)
+    public Task<bool> GrantPaidPeriod(string userId, TopUpProduct product, string subscriptionId, string reference) =>
+        GrantPaidPeriod(userId, product, subscriptionId, reference, null);
+
+    private async Task<bool> GrantPaidPeriod(string userId, TopUpProduct product, string subscriptionId, string reference, PaymentRecord payment)
     {
         if (await IsGranted(userId, reference))
             return false;
         try
         {
-            await GrantPaidPeriodCore(userId, product, subscriptionId, reference);
+            await GrantPaidPeriodCore(userId, product, subscriptionId, reference, payment);
             return true;
         }
         catch (TransactionService.DupplicateTransactionException)
@@ -114,16 +117,20 @@ public partial class SubscriptionService
     private Task<bool> IsGranted(string userId, string reference) => context.FiniteTransactions
         .AnyAsync(t => t.User.ExternalId == userId && (t.Reference == reference || t.Reference == reference + "-topup"));
 
-    private async Task GrantPaidPeriodCore(string userId, TopUpProduct product, string subscriptionId, string reference)
+    private async Task GrantPaidPeriodCore(string userId, TopUpProduct product, string subscriptionId, string reference, PaymentRecord payment = null)
     {
         await using var transaction = await transactionService.StartDbTransaction();
         try
         {
             await transactionService.AddTopUp(product.Id, userId, reference + "-topup");
             await transactionService.PurchaseService(product.Slug, userId, 1, reference, product, subscriptionId: subscriptionId);
+            if (payment != null)
+            {
+                context.PaymentRecords.Add(payment);
+                await context.SaveChangesAsync();
+            }
             await transaction.CommitAsync();
-            logger.LogInformation("Granted subscription {SubscriptionId} period of {ProductSlug} to user {UserId} ({Reference})",
-                subscriptionId, product.Slug, userId, reference);
+            logger.LogInformation("Granted subscription {SubscriptionId} period of {ProductSlug}", subscriptionId, product.Slug);
         }
         catch (Exception e)
         {

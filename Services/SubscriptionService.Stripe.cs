@@ -182,7 +182,8 @@ public partial class SubscriptionService
             return null;
         if (!followsTrial)
             WarnOnLongRenewal(subscription, invoice, extension);
-        await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference);
+        if (await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, subscription.ExternalId, reference) && first)
+            await RecordDoubleSubscription(subscription.User.ExternalId, (TopUpProduct)subscription.Product, SubscriptionProviders.Stripe, subscription.ExternalId);
         subscription.PaymentAmount = StripeAmounts.FromMinorUnits(invoice.AmountPaid, invoice.Currency).ToString("0.00", CultureInfo.InvariantCulture) + " " + invoice.Currency?.ToUpperInvariant();
         await context.SaveChangesAsync();
         await TryScheduleStripeRenewal(subscription, snapshot);

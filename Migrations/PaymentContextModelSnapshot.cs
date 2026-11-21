@@ -1334,6 +1334,9 @@ namespace Payments.Migrations
                     b.Property<string>("ProviderSlug")
                         .HasColumnType("text");
 
+                    b.Property<string>("ProviderToken")
+                        .HasColumnType("text");
+
                     b.Property<long?>("ProviderVariantId")
                         .HasColumnType("bigint");
 

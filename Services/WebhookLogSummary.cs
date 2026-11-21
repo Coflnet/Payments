@@ -39,7 +39,7 @@ public static class WebhookLogSummary
     }
 
     /// <summary>
-    /// e.g. "Google Play notification com.example event=1700000000000 subscription premium type=4"; never the purchase token
+    /// e.g. "Google Play notification com.example event=1700000000000 subscription premium type=4"
     /// </summary>
     public static string OfGooglePlay(GooglePlayNotification notification)
     {
@@ -75,6 +75,9 @@ public static class WebhookLogSummary
             return Join("subscription", subscription.SubscriptionId, Labeled("type", subscription.NotificationType.ToString(CultureInfo.InvariantCulture)));
         if (notification.OneTimeProductNotification is { } product)
             return Join("product", product.Sku, Labeled("type", product.NotificationType.ToString(CultureInfo.InvariantCulture)));
+        if (notification.VoidedPurchaseNotification is { } voided)
+            return Join("voided purchase", Labeled("productType", voided.ProductType.ToString(CultureInfo.InvariantCulture)),
+                Labeled("refundType", voided.RefundType.ToString(CultureInfo.InvariantCulture)));
         return notification.TestNotification != null ? "test" : null;
     }
 

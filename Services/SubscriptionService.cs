@@ -47,6 +47,7 @@ public partial class SubscriptionService
     /// SUBSCRIPTIONS:EXTENSION_BOOKING_WINDOW_DAYS: how long before the term ends it can be booked (default 60);
     /// SUBSCRIPTIONS:TERM_SWITCH_ENABLED: whether a running subscription can switch to a longer term (default true);
     /// SUBSCRIPTIONS:SEPARATE_PLAN_GROUPS: product lines plans never switch or renew across (<see cref="PlanLines"/>)</param>
+    /// <param name="googlePlay">Google Play Android Publisher API</param>
     public SubscriptionService(
         ILogger<SubscriptionService> logger,
         TransactionService transactionService,
@@ -59,8 +60,11 @@ public partial class SubscriptionService
         PayPalPlanCatalog paypalPlans = null,
         SubscriptionTax tax = null,
         SubscriptionRenewalPlans renewalPlans = null,
-        Microsoft.Extensions.Configuration.IConfiguration config = null)
+        Microsoft.Extensions.Configuration.IConfiguration config = null,
+        IGooglePlayPublisher googlePlay = null)
     {
+        this.googlePlay = googlePlay;
+        googlePlayConfig = config?.GetSection("GOOGLEPAY");
         extensionsEnabled = string.Equals(config?["SUBSCRIPTIONS:EXTENSIONS_ENABLED"], "true", StringComparison.OrdinalIgnoreCase);
         termSwitchEnabled = !string.Equals(config?["SUBSCRIPTIONS:TERM_SWITCH_ENABLED"], "false", StringComparison.OrdinalIgnoreCase);
         extensionBookingWindow = TimeSpan.FromDays(int.TryParse(config?["SUBSCRIPTIONS:EXTENSION_BOOKING_WINDOW_DAYS"], out var days) && days > 0
@@ -79,7 +83,7 @@ public partial class SubscriptionService
         this.paypal = paypal;
         providers = new ISubscriptionProvider[]
         {
-            new LemonSqueezyProvider(this), new StripeProvider(this), new PayPalProvider(this)
+            new LemonSqueezyProvider(this), new StripeProvider(this), new PayPalProvider(this), new GooglePlayProvider(this)
         }.ToDictionary(p => p.Slug);
     }
 
@@ -480,6 +484,8 @@ public partial class SubscriptionService
         }
 
         await GrantPaidPeriodCore(effectiveCustomData.UserId, product, subscriptionId, referenceId);
+        if (data.Data.Attributes.BillingReason == "initial")
+            await RecordDoubleSubscription(effectiveCustomData.UserId, product, SubscriptionProviders.LemonSqueezy, subscriptionId);
     }
 
     /// <summary>
@@ -605,7 +611,8 @@ public partial class SubscriptionService
         var reference = SubscriptionProviders.GrantReference(subscription.ProviderSlug, invoiceId);
         if (!await context.FiniteTransactions.AnyAsync(t => t.User.Id == subscription.User.Id && t.Reference == reference))
             reference = subscription.ExternalId + createdAt.Date.ToString("yyyy-MM-dd");
-        await RevertPurchase(subscription.User.ExternalId, reference);
+        // Play expiry is authoritative. An older void must leave the latest paid period intact.
+        await RevertPurchase(subscription.User.ExternalId, reference, adjustTime: subscription.ProviderSlug != SubscriptionProviders.GooglePlay);
         await RevertPurchase(subscription.User.ExternalId, reference + "-topup", adjustTime: false);
         await RevertDisputeRegrant(subscription, invoiceId);
     }
@@ -615,7 +622,7 @@ public partial class SubscriptionService
         var transactionId = context.FiniteTransactions.Where(t => t.Reference == reference && t.User.ExternalId == userId).Select(t => t.Id).FirstOrDefault();
         if (transactionId == 0)
         {
-            logger.LogWarning("No transaction found for reference {Reference} for user {UserId}, skipping revert", reference, userId);
+            logger.LogWarning("No transaction found for subscription payment revert");
             return;
         }
         await transactionService.RevertPurchase(userId, transactionId, adjustTime);

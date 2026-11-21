@@ -22,6 +22,8 @@ public partial class SubscriptionService
         if (!providers.TryGetValue(SubscriptionProviders.Normalize(subscription.ProviderSlug), out var provider))
             return;
         subscription.ProviderSlug = provider.Slug;
+        if (provider.Slug == SubscriptionProviders.GooglePlay)
+            subscription.ManageUrl = $"https://play.google.com/store/account/subscriptions?sku={Uri.EscapeDataString(subscription.ProviderPlanId ?? "")}&package={GooglePlayPackage}";
         subscription.CanResume = provider.CanResume(subscription);
         // A trial changes nothing but its cancellation (term switches, extensions and plan switches answer trial_active)
         subscription.CanChangePlan = provider.CanChangePlan(subscription) && !InTrial(subscription, DateTime.UtcNow);
@@ -51,6 +53,8 @@ public partial class SubscriptionService
     {
         var subscription = await OwnedSubscription(userId, subscriptionId)
             ?? throw new ApiException("Subscription not found");
+        if (subscription.ProviderSlug == SubscriptionProviders.GooglePlay)
+            throw new ApiException(GooglePlayManaged);
         if (subscription.Status != "cancelled")
             throw new ApiException($"Subscription is not cancelled, current status: {subscription.Status}");
         if (subscription.EndsAt.HasValue && subscription.EndsAt.Value < DateTime.UtcNow)
@@ -92,6 +96,8 @@ public partial class SubscriptionService
         var subscription = await OwnedSubscription(userId, subscriptionId)
             ?? throw new ApiException("Subscription not found");
         var provider = ProviderFor(subscription);
+        if (provider.Slug == SubscriptionProviders.GooglePlay)
+            throw new ApiException(GooglePlayManaged);
         var invoice = (await provider.GetInvoices(subscription))?.FirstOrDefault(i => i.Id == invoiceId)
             ?? throw new ApiException("Invoice not found");
         if (invoice.Refunded || invoice.Status == "refunded")

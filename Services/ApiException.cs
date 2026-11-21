@@ -7,8 +7,15 @@ namespace Coflnet.Payments.Services
     /// </summary>
     public class ApiException : Exception
     {
+        public string Slug { get; }
+
         public ApiException(string message) : base(message)
         {
+        }
+
+        public ApiException(string message, string slug) : this(message)
+        {
+            Slug = slug;
         }
     }
 }

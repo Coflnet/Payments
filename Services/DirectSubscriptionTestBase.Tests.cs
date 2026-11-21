@@ -106,7 +106,7 @@ public abstract class DirectSubscriptionTestBase
             stripe, paypal, paypalPlans, Tax(), config: config ?? (EnableExtensions ? ExtensionsOn : null));
 
     protected CallbackController Callback(SubscriptionService service, IDictionary<string, string> settings = null,
-        PayPalHttpClient paypalClient = null)
+        PayPalHttpClient paypalClient = null, IGooglePlayPublisher googlePlay = null)
     {
         var values = new Dictionary<string, string> { ["LEMONSQUEEZY:SECRET"] = "test" };
         foreach (var setting in settings ?? new Dictionary<string, string>())
@@ -121,7 +121,7 @@ public abstract class DirectSubscriptionTestBase
         });
         var controller = new CallbackController(new ConfigurationBuilder().AddInMemoryCollection(values).Build(),
             NullLogger<CallbackController>.Instance, db, transactions, paypalClient, producer.Object, service,
-            NullLogger<GooglePayController>.Instance, null, products,
+            NullLogger<GooglePayController>.Instance, googlePlay, products,
             new CreatorCodeService(NullLogger<CreatorCodeService>.Instance, db), null);
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
         return controller;

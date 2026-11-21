@@ -56,6 +56,7 @@ public partial class TopUpController
         await subscriptionRouting.RefreshAsync();
         var user = await userService.GetOrCreate(userId);
         var plan = await GetSubscriptionPlan(productId);
+        await EnsureNoRenewingGooglePlay(userId, plan);
         declarations.Validate(options, plan, userId);
         var region = UsDirectSubscriptionCap.NormalizeRegion(options?.Region);
         var (country, mode, vatBasisPoints) = await StripeCountryAndMode(options, subscriptionRouting.Capture(region));
@@ -98,6 +99,7 @@ public partial class TopUpController
         await subscriptionRouting.RefreshAsync();
         var user = await userService.GetOrCreate(userId);
         var plan = await GetSubscriptionPlan(productId);
+        await EnsureNoRenewingGooglePlay(userId, plan);
         if (!PayPalPlanCatalog.IsSellable(plan))
             throw new ApiException("This plan is not available via PayPal.");
         declarations.Validate(options, plan, userId);
@@ -165,6 +167,12 @@ public partial class TopUpController
     {
         var withGroups = await db.TopUpProducts.Include(p => p.Groups).AsNoTracking().FirstOrDefaultAsync(p => p.Id == plan.Id);
         return StripeSubscriptionDisclosure.AccountUrlFor(withGroups ?? plan, config);
+    }
+
+    private async Task EnsureNoRenewingGooglePlay(string userId, TopUpProduct plan)
+    {
+        if (await SubscriptionService.ActiveRenewingInLine(db, PlanLines.From(config), userId, plan, SubscriptionProviders.GooglePlay) != null)
+            throw new ApiException("Cancel your Google Play subscription before subscribing here.", "active_play_subscription");
     }
 
     private async Task<TopUpProduct> GetSubscriptionPlan(string productSlug)

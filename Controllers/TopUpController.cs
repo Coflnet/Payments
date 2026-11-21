@@ -532,6 +532,7 @@ namespace Payments.Controllers
             Console.WriteLine(JsonConvert.SerializeObject(product));
             if (!product.Type.HasFlag(Product.ProductType.SERVICE))
                 throw new ApiException("Product is not a service, can't be subscribed to");
+            await EnsureNoRenewingGooglePlay(userId, product);
             await subscriptionRouting.RefreshAsync();
             EnsureLemonSqueezySubscriptionAllowed(options?.Country, options?.Region);
             var (eurPrice, coinAmount, validatedCode, validatedDiscount) = await GetPriceAndCoins(options, product, isSubscription: true, checkoutProvider: SubscriptionProviders.LemonSqueezy);

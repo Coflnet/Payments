@@ -246,6 +246,11 @@ public partial class SubscriptionService
     {
         if (subscription.Status == "expired")
             return;
+        if (subscription.ProviderSlug == SubscriptionProviders.GooglePlay)
+        {
+            await EndGooglePlayAccess(subscription);
+            return;
+        }
         await CancelBookedExtension(subscription);
         if (subscription.ProviderSlug == SubscriptionProviders.Stripe)
             await CancelStripeNow(subscription);

@@ -1,22 +1,21 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Google.Apis.AndroidPublisher.v3;
+using Google.Apis.AndroidPublisher.v3.Data;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Coflnet.Payments.Models.GooglePay;
-using Coflnet.Payments.Models;
-using System.Text.Json.Serialization;
-using System.Text.Json;
 
 namespace Coflnet.Payments.Services
 {
     /// <summary>
     /// Service for verifying Google Play purchases
     /// </summary>
-    public class GooglePlayService
+    public class GooglePlayService : IGooglePlayPublisher
     {
         private readonly ILogger<GooglePlayService> _logger;
         private readonly GooglePlaySettings _settings;
@@ -27,14 +26,13 @@ namespace Coflnet.Payments.Services
             _logger = logger;
             _settings = configuration.GetSection("GOOGLEPAY").Get<GooglePlaySettings>()
                        ?? throw new ArgumentException("Google Pay settings not configured");
-            logger.LogInformation(JsonSerializer.Serialize(_settings).Truncate(20));
             try
             {
                 _androidPublisherService = CreateAndroidPublisherService();
             }
             catch (Exception e)
             {
-                _logger.LogError(e, "Failed to initialize Google Play Service");
+                _logger.LogError("Failed to initialize Google Play Service ({ErrorType})", e.GetType().Name);
             }
         }
 
@@ -78,7 +76,7 @@ namespace Coflnet.Payments.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create Android Publisher Service");
+                _logger.LogError("Failed to create Android Publisher Service ({ErrorType})", ex.GetType().Name);
                 throw;
             }
         }
@@ -107,38 +105,27 @@ namespace Coflnet.Payments.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to verify Google Play product purchase for product {ProductId}", productId);
+                _logger.LogError("Failed to verify Google Play product purchase for product {ProductId} ({ErrorType})", productId, ex.GetType().Name);
                 throw;
             }
         }
 
-        /// <summary>
-        /// Verifies a subscription purchase from Google Play
-        /// </summary>
-        /// <param name="packageName">The package name of the app</param>
-        /// <param name="subscriptionId">The subscription ID</param>
-        /// <param name="purchaseToken">The purchase token</param>
-        /// <returns>Subscription verification result</returns>
-        public async Task<Google.Apis.AndroidPublisher.v3.Data.SubscriptionPurchase> VerifySubscriptionPurchaseAsync(
-            string packageName, string subscriptionId, string purchaseToken)
+        public Task<SubscriptionPurchaseV2> GetSubscriptionV2(string token) =>
+            _androidPublisherService.Purchases.Subscriptionsv2.Get(_settings.PackageName, token).ExecuteAsync();
+
+        public async Task<bool> IsVoidedPurchase(string orderId, string purchaseToken)
         {
-            try
+            var request = _androidPublisherService.Purchases.Voidedpurchases.List(_settings.PackageName);
+            request.Type = 1;
+            // Google's default startTime is 30 days before it receives the request.
+            do
             {
-                _logger.LogInformation("Verifying Google Play subscription purchase for subscription {SubscriptionId}", subscriptionId);
-
-                var request = _androidPublisherService.Purchases.Subscriptions.Get(packageName, subscriptionId, purchaseToken);
-                var subscription = await request.ExecuteAsync();
-
-                _logger.LogInformation("Subscription verification completed for subscription {SubscriptionId}, state: {PaymentState}",
-                    subscriptionId, subscription.PaymentState);
-
-                return subscription;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to verify Google Play subscription purchase for subscription {SubscriptionId}", subscriptionId);
-                throw;
-            }
+                var page = await request.ExecuteAsync();
+                if (page.VoidedPurchases?.Any(p => p.OrderId == orderId && p.PurchaseToken == purchaseToken) == true)
+                    return true;
+                request.Token = page.TokenPagination?.NextPageToken;
+            } while (!string.IsNullOrEmpty(request.Token));
+            return false;
         }
 
         /// <summary>
@@ -162,35 +149,15 @@ namespace Coflnet.Payments.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to acknowledge Google Play product purchase for product {ProductId}", productId);
+                _logger.LogError("Failed to acknowledge Google Play product purchase for product {ProductId} ({ErrorType})", productId, ex.GetType().Name);
                 throw;
             }
         }
 
-        /// <summary>
-        /// Acknowledges a subscription purchase
-        /// </summary>
-        /// <param name="packageName">The package name of the app</param>
-        /// <param name="subscriptionId">The subscription ID</param>
-        /// <param name="purchaseToken">The purchase token</param>
-        /// <returns>Task representing the acknowledgment operation</returns>
-        public async Task AcknowledgeSubscriptionPurchaseAsync(string packageName, string subscriptionId, string purchaseToken)
+        public async Task AcknowledgeSubscription(string productId, string token)
         {
-            try
-            {
-                _logger.LogInformation("Acknowledging Google Play subscription purchase for subscription {SubscriptionId}", subscriptionId);
-
-                var acknowledgeRequest = new Google.Apis.AndroidPublisher.v3.Data.SubscriptionPurchasesAcknowledgeRequest();
-                var request = _androidPublisherService.Purchases.Subscriptions.Acknowledge(acknowledgeRequest, packageName, subscriptionId, purchaseToken);
-                await request.ExecuteAsync();
-
-                _logger.LogInformation("Subscription purchase acknowledged for subscription {SubscriptionId}", subscriptionId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to acknowledge Google Play subscription purchase for subscription {SubscriptionId}", subscriptionId);
-                throw;
-            }
+            var body = new Google.Apis.AndroidPublisher.v3.Data.SubscriptionPurchasesAcknowledgeRequest();
+            await _androidPublisherService.Purchases.Subscriptions.Acknowledge(body, _settings.PackageName, productId, token).ExecuteAsync();
         }
 
         /// <summary>
@@ -221,38 +188,6 @@ namespace Coflnet.Payments.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to get Google Play product details for product {ProductId}", productId);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Gets subscription details including localized pricing
-        /// </summary>
-        /// <param name="packageName">The package name of the app</param>
-        /// <param name="productId">The subscription ID (SKU)</param>
-        /// <returns>Subscription details including price information</returns>
-        public async Task<Google.Apis.AndroidPublisher.v3.Data.Subscription> GetSubscriptionDetailsAsync(
-            string packageName, string productId)
-        {
-            try
-            {
-                if (_androidPublisherService == null)
-                {
-                    throw new InvalidOperationException("Google Play service is not properly initialized. Check your Google Play service account credentials.");
-                }
-
-                _logger.LogInformation("Getting Google Play subscription details for subscription {ProductId}", productId);
-
-                var request = _androidPublisherService.Monetization.Subscriptions.Get(packageName, productId);
-                var subscription = await request.ExecuteAsync();
-
-                _logger.LogInformation("Subscription details retrieved for subscription {ProductId}", productId);
-
-                return subscription;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to get Google Play subscription details for subscription {ProductId}", productId);
                 throw;
             }
         }

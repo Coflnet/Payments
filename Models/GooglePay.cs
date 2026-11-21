@@ -134,6 +134,16 @@ namespace Coflnet.Payments.Models.GooglePay
         /// Test notification data
         /// </summary>
         public TestNotification TestNotification { get; set; }
+
+        public VoidedPurchaseNotification VoidedPurchaseNotification { get; set; }
+    }
+
+    public class VoidedPurchaseNotification
+    {
+        public string PurchaseToken { get; set; }
+        public string OrderId { get; set; }
+        public int ProductType { get; set; }
+        public int RefundType { get; set; }
     }
 
     public class OneTimeProductNotification

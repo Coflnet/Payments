@@ -81,8 +81,7 @@ namespace Coflnet.Payments
                     dbContextOptions => dbContextOptions
                         .UseNpgsql(Configuration["DB_CONNECTION"])
                         .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
-                        .EnableSensitiveDataLogging() // <-- These two calls are optional but help
-                        .EnableDetailedErrors()       // <-- with debugging (remove for production).
+                        .EnableDetailedErrors()
                 );
             if(Configuration["OLD_DB_CONNECTION"] != null)
             {
@@ -91,8 +90,7 @@ namespace Coflnet.Payments
                 services.AddDbContext<OldPaymentContext>(
                     dbContextOptions => dbContextOptions
                         .UseMySql(Configuration["OLD_DB_CONNECTION"], serverVersion)
-                        .EnableSensitiveDataLogging() // <-- These two calls are optional but help
-                        .EnableDetailedErrors()       // <-- with debugging (remove for production).
+                        .EnableDetailedErrors()
                 );
             }
             services.AddScoped<TransactionService>();
@@ -102,6 +100,7 @@ namespace Coflnet.Payments
             services.AddScoped<ILemonSqueezyCustomerLookup>(sp => sp.GetRequiredService<LemonSqueezyService>());
             services.AddSingleton<VariantCacheService>();
             services.AddSingleton<GooglePlayService>();
+            services.AddSingleton<IGooglePlayPublisher>(provider => provider.GetRequiredService<GooglePlayService>());
             services.AddSingleton<ExchangeService>();
             services.AddScoped<IRuleEngine, RuleEngine>();
             services.AddScoped<Services.ProductService>();
@@ -131,6 +130,7 @@ namespace Coflnet.Payments
             services.AddHostedService<PaymentConfirmationOutboxPublisher>();
             services.AddHostedService<SubscriptionRenewalConversionService>();
             services.AddHostedService<SubscriptionRenewalReminderService>();
+            services.AddHostedService<GooglePlayReconciliationService>();
 
             if (string.IsNullOrEmpty(Configuration["KAFKA:BROKERS"]))
             {
@@ -190,7 +190,8 @@ namespace Coflnet.Payments
                     {
                         context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
                         await context.Response.WriteAsync(
-                                        JsonConvert.SerializeObject(new { ex.Message }));
+                                        ex.Slug == null ? JsonConvert.SerializeObject(new { ex.Message })
+                                            : JsonConvert.SerializeObject(new { ex.Message, ex.Slug }));
                         badRequestCount.Inc();
                     }
                     else

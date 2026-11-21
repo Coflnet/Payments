@@ -197,7 +197,9 @@ public partial class SubscriptionService
         }
         await AdoptPreviousSlots(subscription);
         await AdoptSwitchedAccess(subscription);
-        await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, await AccessHolder(subscription), reference);
+        var first = await IsFirstGrantedPayment(subscription, reference);
+        if (await GrantPaidPeriod(subscription.User.ExternalId, (TopUpProduct)subscription.Product, await AccessHolder(subscription), reference) && first)
+            await RecordDoubleSubscription(subscription.User.ExternalId, (TopUpProduct)subscription.Product, SubscriptionProviders.PayPal, subscription.ExternalId);
         subscription.PaymentAmount = sale.Amount.Total + " " + sale.Amount.Currency;
         await SwitchToRecurringPrice(subscription);
         await context.SaveChangesAsync();

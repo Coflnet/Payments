@@ -83,6 +83,8 @@ public partial class SubscriptionService
     {
         var subscription = await OwnedSubscription(userId, externalId)
             ?? throw new ApiException("Subscription not found");
+        if (subscription.ProviderSlug == SubscriptionProviders.GooglePlay)
+            throw new ApiException(GooglePlayManaged);
         if (InTrial(subscription, DateTime.UtcNow))
             throw new ApiException(TrialActive);
         if (subscription.Status != "active" || subscription.EndsAt != null)
