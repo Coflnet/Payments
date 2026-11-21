@@ -29,6 +29,12 @@ public class StripeSubscriptionGateway : IStripeSubscriptionGateway
     public async Task<string> CreateCustomer(string email, Dictionary<string, string> metadata) =>
         (await new CustomerService().CreateAsync(new CustomerCreateOptions { Email = email, Metadata = metadata })).Id;
 
+    public Task TagManagedCustomer(string customerId) =>
+        new CustomerService().UpdateAsync(customerId, new CustomerUpdateOptions
+        {
+            Metadata = new Dictionary<string, string> { [StripeManagedCustomer.SellerKey] = StripeManagedCustomer.SellerValue }
+        });
+
     public Task<Session> CreateCheckoutSession(SessionCreateOptions options) =>
         new SessionService().CreateAsync(options);
 

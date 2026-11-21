@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.PayPal;
@@ -10,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 using Stripe;
 using PaymentRecord = Coflnet.Payments.Models.PaymentRecord;
+using StripeMetadata = Coflnet.Payments.Services.SubscriptionService.StripeMetadata;
 
 namespace Payments.Controllers;
 
@@ -33,13 +35,19 @@ public partial class CallbackController
                 await RecordSubscriptionPayment(await subscriptionService.StripeInvoicePaid(StripeInvoiceInfo.From(invoice)), "stripe");
                 return true;
             case Invoice invoice when stripeEvent.Type == EventTypes.InvoicePaymentFailed:
-                var failed = StripeInvoiceInfo.From(invoice);
-                if (failed.SubscriptionId != null)
-                    await subscriptionService.StripeSubscriptionChanged(failed.SubscriptionId);
+                var details = invoice.Parent?.SubscriptionDetails;
+                if (details?.SubscriptionId is { } subscriptionId)
+                    await subscriptionService.StripeSubscriptionChanged(subscriptionId,
+                        (invoice.CustomerId, details.Metadata?.GetValueOrDefault(StripeMetadata.Mode) == "managed"));
+                return true;
+            case Subscription subscription when stripeEvent.Type == EventTypes.CustomerSubscriptionCreated:
+                await subscriptionService.StripeSubscriptionChanged(subscription.Id,
+                    (subscription.CustomerId, subscription.ManagedPayments?.Enabled == true
+                        || subscription.Metadata?.GetValueOrDefault(StripeMetadata.Mode) == "managed"));
                 return true;
             // A pending update (term switch, upgrade) that expired unpaid gives a 13 week term its renewal schedule back
             case Subscription subscription when stripeEvent.Type is EventTypes.CustomerSubscriptionUpdated
-                or EventTypes.CustomerSubscriptionDeleted or EventTypes.CustomerSubscriptionCreated
+                or EventTypes.CustomerSubscriptionDeleted
                 or EventTypes.CustomerSubscriptionPendingUpdateExpired or EventTypes.CustomerSubscriptionPendingUpdateApplied:
                 await subscriptionService.StripeSubscriptionChanged(subscription.Id);
                 return true;

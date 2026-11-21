@@ -42,22 +42,31 @@ To configure stripe get your stripe `KEY` and `SIGNING_SECRET` from stripe.com a
 Next create a webhook callback to `/Callback/stripe` that triggers on confirmed purchase.
 
 ### Stripe — Minimal API Key Permissions
-The Stripe API key (`STRIPE__KEY`) is used for Checkout Sessions and pre-capture country validation:
+The restricted API key (`STRIPE__KEY`) needs these permissions for checkout, country validation, and subscription billing.
+Stripe's Write permission includes Read. [Stripe restricted API keys](https://docs.stripe.com/keys/restricted-api-keys#assign-permissions-to-a-restricted-api-key)
 
-| Operation | API Call | Permission |
-|-----------|----------|:----------:|
-| Create checkout session with dynamic payment methods | `SessionService.CreateAsync()` | Write |
-| List sessions by PaymentIntent | `SessionService.ListAsync()` | Read |
-| Expire stale sessions | `SessionService.ExpireAsync()` | Write |
-| Read provider country and capture/cancel supported authorizations | `PaymentIntentService` | Read & Write |
-| Read the expanded payment method country | PaymentIntent `payment_method` expansion | Read |
+| Stripe resource | Permission | Operation | API call |
+|-----------------|:----------:|-----------|----------|
+| Checkout Sessions | Write | Create, read, list, and expire checkout sessions | `SessionService` |
+| Payment Intents | Write | Read provider country and capture or cancel supported authorizations | `PaymentIntentService` |
+| Charges | Read | Read the card country of a subscription payment | PaymentIntent `latest_charge` expansion |
+| Payment Methods | Read | Read the expanded payment method country | PaymentIntent `payment_method` expansion |
+| Customers | Write | Create and tag customers for Managed Payments subscriptions | `CustomerService.CreateAsync()`, `CustomerService.UpdateAsync()` |
+| Coupons | Write | Look up and create first-payment coupons | `CouponService` |
+| Tax Rates | Write | Look up and create inclusive VAT rates | `TaxRateService` |
+| Products and Prices | Write | Look up and create plan products and prices | `ProductService`, `PriceService` |
+| Subscriptions | Write | Read, update, and cancel subscriptions | `SubscriptionService` |
+| Subscription Schedules | Write | Read, create, update, and release renewal schedules | `SubscriptionScheduleService` |
+| Invoices and Invoice Payments | Read | Read subscription invoices and their payments | `InvoiceService`, `InvoicePaymentService` |
+| Disputes | Read | Look up dispute status | `DisputeService.GetAsync()` |
 
 Webhook verification uses the signing secret. Card and Link use per-method manual capture without
 disabling other methods. When Stripe supplies a payment-method country it is authoritative; otherwise
 the country or locale supplied at session creation must match the independently looked-up IP country.
 Disallowed automatically captured payments are marked for manual refund and are not credited.
 
-> **Restricted key:** Enable only **Checkout Sessions → Read & Write**, **Payment Intents → Read & Write**, and **Payment Methods → Read**.
+The restricted key intentionally omits Refunds permission. The subscription invoice refund endpoint calls
+`RefundService.CreateAsync()` and requires a key with that permission to issue a refund.
 
 ### CoinGate country verification
 CoinGate requests must set `TopUpOptions.Country` from an explicit user selection and

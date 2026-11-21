@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Services.Subscriptions;
@@ -76,10 +77,10 @@ public partial class SubscriptionService
         session.CustomerDetails?.Email ?? session.CustomerEmail, session.CustomerDetails?.Name, session.Currency);
 
     /// <summary>
-    /// customer.subscription.updated/deleted and invoice.payment_failed: synchronizes status, EndsAt and RenewsAt.
+    /// Subscription changes and invoice.payment_failed synchronize status, EndsAt and RenewsAt.
     /// A 13 or 52 week subscription that will renew without our renewal schedule (e.g. resumed elsewhere) is scheduled again.
     /// </summary>
-    public Task StripeSubscriptionChanged(string subscriptionId) => WithSubscriptionLock(subscriptionId, async () =>
+    public Task StripeSubscriptionChanged(string subscriptionId, (string Id, bool Managed)? customerToTag = null) => WithSubscriptionLock(subscriptionId, async () =>
     {
         var snapshot = await StripeApi.GetSubscription(subscriptionId);
         var subscription = await EnsureStripeSubscription(snapshot);
@@ -90,8 +91,30 @@ public partial class SubscriptionService
         await context.SaveChangesAsync();
         await GrantStripeTrial(subscription, snapshot);
         await TryScheduleStripeRenewal(subscription, snapshot);
+        // after the sync, so a slow Stripe call never delays the status
+        if (customerToTag is { } customer && (customer.Managed || IsManagedStripeSubscription(snapshot) || subscription.ManagedPayments))
+            await TryTagManagedStripeCustomer(customer.Id ?? snapshot.CustomerId);
         return true;
     });
+
+    private async Task TryTagManagedStripeCustomer(string customerId)
+    {
+        if (string.IsNullOrWhiteSpace(customerId))
+            return;
+        try
+        {
+            await StripeApi.TagManagedCustomer(customerId);
+        }
+        catch (Exception e) when (e is Stripe.StripeException or HttpRequestException or TaskCanceledException)
+        {
+            var stripeError = e as Stripe.StripeException;
+            var level = stripeError != null && StripeErrorClassifier.IsCredentialError(stripeError.HttpStatusCode) ? LogLevel.Error : LogLevel.Warning;
+            if (level == LogLevel.Error)
+                PaymentMetrics.StripeCredentialErrors.Inc(); // e.g. the restricted key lacks Customers: Write
+            logger.Log(level, "Stripe Managed Payments customer tagging failed (HTTP {StatusCode}, Stripe code {StripeCode})",
+                stripeError?.HttpStatusCode ?? (e as HttpRequestException)?.StatusCode, stripeError?.StripeError?.Code);
+        }
+    }
 
     /// <summary>
     /// invoice.paid: grants the paid period exactly once. Returns the payment to record (also when a redelivery
@@ -449,7 +472,7 @@ public partial class SubscriptionService
             ProviderSlug = SubscriptionProviders.Stripe,
             ExternalId = snapshot.Id,
             CreatedAt = snapshot.Created,
-            ManagedPayments = snapshot.ManagedPayments || metadata.GetValueOrDefault(StripeMetadata.Mode) == "managed",
+            ManagedPayments = IsManagedStripeSubscription(snapshot),
             CheckoutCountry = MetadataCountry(snapshot)?.ToUpperInvariant(),
             CheckoutRegion = UsDirectSubscriptionCap.NormalizeRegion(snapshot.Metadata.GetValueOrDefault(StripeMetadata.Region)),
             PriceCents = long.TryParse(metadata.GetValueOrDefault(StripeMetadata.PriceCents), out var cents) ? cents : null,
@@ -480,6 +503,9 @@ public partial class SubscriptionService
 
     private static string MetadataCountry(StripeSubscriptionSnapshot snapshot) =>
         snapshot.Metadata.GetValueOrDefault(StripeMetadata.Country);
+
+    private static bool IsManagedStripeSubscription(StripeSubscriptionSnapshot snapshot) =>
+        snapshot.ManagedPayments || snapshot.Metadata.GetValueOrDefault(StripeMetadata.Mode) == "managed";
 
     /// <summary>
     /// Maps Stripe's status onto the vocabulary shared with Lemon Squeezy:

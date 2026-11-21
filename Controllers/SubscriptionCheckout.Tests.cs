@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.PayPal;
@@ -389,6 +390,24 @@ public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTes
         Assert.That(created.CustomerEmail, Is.EqualTo(options.UserEmail));
     }
 
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task ManagedCheckoutContinuesWithEmailWhenCustomerCreationHasATransportFailure(bool timedOut)
+    {
+        var options = Options("NO");
+        options.UserEmail = "buyer@example.com";
+        stripe.Setup(s => s.CreateCustomer(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()))
+            .ThrowsAsync(timedOut ? new TaskCanceledException("Customer request timed out") : new HttpRequestException("Customer request failed"));
+
+        var response = await Controller("NO").StripeSubscribe("buyer", "l_premium", options);
+
+        Assert.That(response.DirectLink, Is.EqualTo("https://checkout.stripe.com/c/cs_1"));
+        Assert.That(created.ManagedPayments.Enabled, Is.True);
+        Assert.That(created.Customer, Is.Null);
+        Assert.That(created.CustomerEmail, Is.EqualTo(options.UserEmail));
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Once);
+    }
+
     /// <summary>Stripe has not confirmed that Managed Payments accepts a pre-created customer: a refused session is retried with the email</summary>
     [Test]
     public async Task ManagedSessionRefusedWithCustomerIsRetriedWithEmail()
@@ -409,6 +428,40 @@ public partial class SubscriptionCheckoutControllerTests : DirectSubscriptionTes
         Assert.That(sent.Select(o => o.Customer), Is.EqualTo(new[] { "cus_1", null }));
         Assert.That(created.CustomerEmail, Is.EqualTo(options.UserEmail));
         Assert.That(created.ManagedPayments.Enabled, Is.True);
+    }
+
+    [TestCase("DE", HttpStatusCode.BadRequest)]
+    [TestCase("NO", HttpStatusCode.PaymentRequired)]
+    [TestCase("NO", HttpStatusCode.TooManyRequests)]
+    [TestCase("NO", HttpStatusCode.InternalServerError)]
+    public async Task SessionFailuresOutsideTheManagedCustomerFallbackAreNotRetried(string country, HttpStatusCode statusCode)
+    {
+        stripe.Setup(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()))
+            .Callback<SessionCreateOptions>(o => created = o)
+            .ThrowsAsync(new Stripe.StripeException(statusCode, null, "Session refused"));
+
+        Assert.ThrowsAsync<ApiException>(() => Controller(country).StripeSubscribe("buyer", "l_premium", Options(country)));
+
+        Assert.That(created.Customer, Is.EqualTo(country == "NO" ? "cus_1" : null));
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Once);
+        Assert.That((await db.PaymentRequests.SingleAsync()).State, Is.EqualTo(PaymentRequest.Status.FAILED));
+    }
+
+    [Test]
+    public async Task FailedManagedCustomerFallbackFailsTheRequestAfterExactlyTwoAttempts()
+    {
+        var customers = new List<string>();
+        stripe.Setup(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()))
+            .Callback<SessionCreateOptions>(o => customers.Add(o.Customer))
+            .ThrowsAsync(new Stripe.StripeException(HttpStatusCode.BadRequest, null, "Session refused"));
+
+        Assert.ThrowsAsync<ApiException>(() => Controller("NO").StripeSubscribe("buyer", "l_premium", Options("NO")));
+
+        Assert.That(customers, Is.EqualTo(new[] { "cus_1", null }));
+        stripe.Verify(s => s.CreateCheckoutSession(It.IsAny<SessionCreateOptions>()), Times.Exactly(2));
+        var request = await db.PaymentRequests.SingleAsync();
+        Assert.That(request.State, Is.EqualTo(PaymentRequest.Status.FAILED));
+        Assert.That(request.SessionId, Is.Null);
     }
 
     [Test]

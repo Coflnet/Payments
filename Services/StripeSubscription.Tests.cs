@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -884,6 +885,71 @@ public class StripeSubscriptionTests : DirectSubscriptionTestBase
         Assert.That(await Service(stripe.Object).StripeInvoicePaid(Invoice(total: 5890, currency: "brl")), Is.Not.Null);
         stripe.Verify(s => s.GetCardCountry(It.IsAny<string>()), Times.Never);
     }
+
+    [TestCase("managed", 1)]
+    [TestCase("direct", 0)]
+    public async Task SubscriptionCreatedTagsOnlyManagedCustomers(string mode, int tags)
+    {
+        var result = await PostStripe(Service(stripe.Object), "customer.subscription.created", SubscriptionCreatedJson(mode));
+
+        Assert.That(result, Is.TypeOf<OkResult>());
+        stripe.Verify(s => s.TagManagedCustomer("cus_from_event"), Times.Exactly(tags));
+        stripe.Verify(s => s.TagManagedCustomer("cus_1"), Times.Never);
+    }
+
+    [Test]
+    public async Task SubscriptionCreatedStillSucceedsWhenTaggingFails()
+    {
+        stripe.Setup(s => s.TagManagedCustomer("cus_from_event"))
+            .ThrowsAsync(new Stripe.StripeException(HttpStatusCode.Forbidden, null, "Cannot update customer"));
+
+        var result = await PostStripe(Service(stripe.Object), "customer.subscription.created", SubscriptionCreatedJson("managed"));
+
+        Assert.That(result, Is.TypeOf<OkResult>());
+        Assert.That((await Subscription("sub_1")).Status, Is.EqualTo("active"));
+        stripe.Verify(s => s.TagManagedCustomer("cus_from_event"), Times.Once);
+    }
+
+    [Test]
+    public async Task ManagedSubscriptionWithoutCustomerSkipsTagging()
+    {
+        remote = remote with { CustomerId = null };
+
+        var result = await PostStripe(Service(stripe.Object), "customer.subscription.created",
+            """{"id":"sub_1","object":"subscription","metadata":{"mode":"managed"}}""");
+
+        Assert.That(result, Is.TypeOf<OkResult>());
+        stripe.Verify(s => s.TagManagedCustomer(It.IsAny<string>()), Times.Never);
+    }
+
+    [TestCase("managed", false, 1)]
+    [TestCase("direct", false, 0)]
+    [TestCase(null, true, 1)]
+    public async Task InvoicePaymentFailedTagsOnlyManagedCustomers(string mode, bool storedManaged, int tags)
+    {
+        var service = Service(stripe.Object);
+        if (storedManaged)
+        {
+            await service.StripeSubscriptionChanged("sub_1");
+            (await Subscription("sub_1")).ManagedPayments = true;
+            await db.SaveChangesAsync();
+        }
+        remote = remote with { Status = "past_due" };
+        var metadata = mode == null ? "{}" : $$"""{"mode":"{{mode}}"}""";
+        var invoice = $$$"""
+            {"id":"in_1","object":"invoice","customer":"cus_1","billing_reason":"subscription_cycle","status":"open",
+             "parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_1","metadata":{{{metadata}}} } } }
+            """;
+
+        var result = await PostStripe(service, "invoice.payment_failed", invoice);
+
+        Assert.That(result, Is.TypeOf<OkResult>());
+        Assert.That((await Subscription("sub_1")).Status, Is.EqualTo("past_due"));
+        stripe.Verify(s => s.TagManagedCustomer("cus_1"), Times.Exactly(tags));
+    }
+
+    private static string SubscriptionCreatedJson(string mode) =>
+        $$$"""{"id":"sub_1","object":"subscription","customer":"cus_from_event","metadata":{"mode":"{{{mode}}}"}}""";
 
     private async Task RefundScenario()
     {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
 using Coflnet.Payments.Models.LemonSqueezy;
@@ -297,21 +298,25 @@ public partial class TopUpController
         catch (Stripe.StripeException e) when (StripeErrorClassifier.IsCredentialError(e.HttpStatusCode))
         {
             PaymentMetrics.StripeCredentialErrors.Inc();
-            _logger.LogCritical(e, "Stripe subscription checkout was rejected by Stripe credentials (HTTP {StatusCode}, Stripe code {StripeCode})",
+            _logger.LogCritical("Stripe subscription checkout was rejected by Stripe credentials (HTTP {StatusCode}, Stripe code {StripeCode})",
                 e.HttpStatusCode, e.StripeError?.Code);
             throw new ApiException(StripeErrorClassifier.UserMessage);
         }
         catch (Exception e) when (e is not ApiException)
         {
-            _logger.LogError(e, "Stripe subscription checkout session could not be created");
+            var stripeError = e as Stripe.StripeException;
+            if (stripeError == null && e is not HttpRequestException)
+                _logger.LogError(e, "Stripe subscription checkout session failed before reaching Stripe");
+            // the parameter Stripe refused names the cause (e.g. custom_text); the message is left out, it can echo the buyer's email
+            _logger.LogError("Stripe subscription checkout session could not be created ({ExceptionType}, HTTP {StatusCode}, Stripe code {StripeCode}, parameter {StripeParam})",
+                e.GetType().Name, stripeError?.HttpStatusCode ?? (e as HttpRequestException)?.StatusCode, stripeError?.StripeError?.Code,
+                stripeError?.StripeError?.Param);
             throw new ApiException("Stripe payment is temporarily unavailable. Please try again later.");
         }
     }
 
     /// <summary>
-    /// Stripe has not confirmed that Managed Payments sessions accept a pre-created customer (it refuses parameters its docs
-    /// do not list, e.g. custom_text). If Stripe rejects the session with the customer, it is created once more with the email
-    /// only: the Radar tag is lost for that buyer, but no checkout fails because of the tag.
+    /// Retry a Managed Payments session once with the email if Stripe responds with HTTP 400 when a customer was supplied.
     /// </summary>
     private async Task<Session> CreateSessionWithCustomerFallback(IStripeSubscriptionGateway stripe, StripeSubscriptionCheckout checkout)
     {
@@ -322,8 +327,8 @@ public partial class TopUpController
         }
         catch (Stripe.StripeException e) when (checkout.CustomerId != null && e.HttpStatusCode == System.Net.HttpStatusCode.BadRequest)
         {
-            _logger.LogWarning("Stripe refused the Managed Payments session with a customer ({StripeCode}: {StripeMessage}); retrying with the email only",
-                e.StripeError?.Code, e.StripeError?.Message);
+            _logger.LogWarning("Stripe refused the Managed Payments session (HTTP 400, {StripeCode}); retrying once without the customer (parameter {StripeParam})",
+                e.StripeError?.Code, e.StripeError?.Param);
             return await stripe.CreateCheckoutSession(StripeSubscriptionCheckoutBuilder.Build(checkout with { CustomerId = null }, managed));
         }
     }
@@ -352,12 +357,14 @@ public partial class TopUpController
                 [StripeManagedCustomer.SellerKey] = StripeManagedCustomer.SellerValue
             });
         }
-        catch (Stripe.StripeException e)
+        catch (Exception e) when (e is Stripe.StripeException or HttpRequestException or TaskCanceledException)
         {
-            if (StripeErrorClassifier.IsCredentialError(e.HttpStatusCode))
-                PaymentMetrics.StripeCredentialErrors.Inc();
-            _logger.LogWarning("Stripe Managed Payments customer creation failed (HTTP {StatusCode}). Continuing with email-only checkout.",
-                e.HttpStatusCode);
+            var stripeError = e as Stripe.StripeException;
+            var level = stripeError != null && StripeErrorClassifier.IsCredentialError(stripeError.HttpStatusCode) ? LogLevel.Error : LogLevel.Warning;
+            if (level == LogLevel.Error)
+                PaymentMetrics.StripeCredentialErrors.Inc(); // e.g. the restricted key lacks Customers: Write
+            _logger.Log(level, "Stripe Managed Payments customer creation failed (HTTP {StatusCode}, Stripe code {StripeCode}). Continuing with email-only checkout.",
+                stripeError?.HttpStatusCode ?? (e as HttpRequestException)?.StatusCode, stripeError?.StripeError?.Code);
             return null;
         }
     }
