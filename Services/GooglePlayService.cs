@@ -113,6 +113,13 @@ namespace Coflnet.Payments.Services
         public Task<SubscriptionPurchaseV2> GetSubscriptionV2(string token) =>
             _androidPublisherService.Purchases.Subscriptionsv2.Get(_settings.PackageName, token).ExecuteAsync();
 
+        /// <inheritdoc />
+        public async Task<(Money Total, Money Tax)> GetOrderAmounts(string orderId)
+        {
+            var order = await _androidPublisherService.Orders.Get(_settings.PackageName, orderId).ExecuteAsync();
+            return (order.Total, order.Tax);
+        }
+
         public async Task<bool> IsVoidedPurchase(string orderId, string purchaseToken)
         {
             var request = _androidPublisherService.Purchases.Voidedpurchases.List(_settings.PackageName);

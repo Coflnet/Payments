@@ -65,6 +65,7 @@ public partial class SubscriptionService
     {
         this.googlePlay = googlePlay;
         googlePlayConfig = config?.GetSection("GOOGLEPAY");
+        googlePlaySaleOffers = new(ReadGooglePlaySaleOffers);
         extensionsEnabled = string.Equals(config?["SUBSCRIPTIONS:EXTENSIONS_ENABLED"], "true", StringComparison.OrdinalIgnoreCase);
         termSwitchEnabled = !string.Equals(config?["SUBSCRIPTIONS:TERM_SWITCH_ENABLED"], "false", StringComparison.OrdinalIgnoreCase);
         extensionBookingWindow = TimeSpan.FromDays(int.TryParse(config?["SUBSCRIPTIONS:EXTENSION_BOOKING_WINDOW_DAYS"], out var days) && days > 0

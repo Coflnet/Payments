@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Coflnet.Payments.Models;
@@ -68,5 +69,51 @@ public class DiscountCodeServiceTests : DirectSubscriptionTestBase
         var code = BlackFriday();
         code.SubscriptionOnly = false;
         Assert.ThrowsAsync<ApiException>(() => Codes().Upsert(code));
+    }
+
+    [Test]
+    public async Task AutoApplyIncludesTheStartAndExcludesTheExpiration()
+    {
+        var code = BlackFriday();
+        var start = new DateTime(2000, 11, 24, 0, 0, 0, DateTimeKind.Utc);
+        var expiration = start.AddDays(1);
+        code.StartsAt = start;
+        code.ExpiresAt = expiration;
+        await Codes().Upsert(code);
+
+        var codes = Codes();
+        Assert.That(await codes.GetAutoApplyAt(start.AddTicks(-1)), Is.Null);
+        Assert.That((await codes.GetAutoApplyAt(start))?.Code, Is.EqualTo("BF2026"));
+        Assert.That((await codes.GetAutoApplyAt(expiration.AddTicks(-1)))?.Code, Is.EqualTo("BF2026"));
+        Assert.That(await codes.GetAutoApplyAt(expiration), Is.Null);
+        Assert.That(await codes.GetActiveAutoApply(), Is.Null);
+    }
+
+    [Test]
+    public async Task AutoApplyRequiresAnActiveSubscriptionOfferWithRedemptionsLeft()
+    {
+        var at = new DateTime(2026, 11, 27, 0, 0, 0, DateTimeKind.Utc);
+        db.DiscountCodes.AddRange(
+            new DiscountCode { Code = "INACTIVE", AutoApply = true, SubscriptionOnly = true, IsActive = false },
+            new DiscountCode { Code = "MANUAL", SubscriptionOnly = true },
+            new DiscountCode { Code = "ONE-TIME", AutoApply = true },
+            new DiscountCode { Code = "USED-UP", AutoApply = true, SubscriptionOnly = true, MaxRedemptions = 1, TimesRedeemed = 1 });
+        await db.SaveChangesAsync();
+
+        Assert.That(await Codes().GetAutoApplyAt(at), Is.Null);
+    }
+
+    [Test]
+    public async Task AutoApplyPrefersNewestCreationTimeThenHighestId()
+    {
+        var at = new DateTime(2026, 11, 27, 0, 0, 0, DateTimeKind.Utc);
+        db.DiscountCodes.AddRange(
+            new DiscountCode { Id = 3, Code = "OLDER", AutoApply = true, SubscriptionOnly = true, CreatedAt = at.AddDays(-2) },
+            new DiscountCode { Id = 1, Code = "LOWER-ID", AutoApply = true, SubscriptionOnly = true, CreatedAt = at.AddDays(-1) },
+            new DiscountCode { Id = 2, Code = "WINNER", AutoApply = true, SubscriptionOnly = true, CreatedAt = at.AddDays(-1), MaxRedemptions = 2, TimesRedeemed = 1 });
+        await db.SaveChangesAsync();
+
+        Assert.That((await Codes().GetAutoApplyAt(at))?.Code, Is.EqualTo("WINNER"));
+        Assert.That((await Codes().GetActiveAutoApply())?.Code, Is.EqualTo("WINNER"));
     }
 }

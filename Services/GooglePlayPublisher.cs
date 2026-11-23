@@ -7,6 +7,10 @@ namespace Coflnet.Payments.Services;
 public interface IGooglePlayPublisher
 {
     Task<SubscriptionPurchaseV2> GetSubscriptionV2(string token);
+
+    /// <summary>Returns the final amount paid and the tax included in it.</summary>
+    Task<(Money Total, Money Tax)> GetOrderAmounts(string orderId);
+
     Task AcknowledgeSubscription(string productId, string token);
     Task<bool> IsVoidedPurchase(string orderId, string purchaseToken);
     Task<ProductPurchase> VerifyProductPurchaseAsync(string packageName, string productId, string purchaseToken);

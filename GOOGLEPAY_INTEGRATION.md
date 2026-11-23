@@ -19,6 +19,14 @@ Payments looks up the SKU in its product catalog under provider `googlepay`, ver
 
 `POST /api/googlepay/product-pricing` returns the Play catalog pricing and listings for a one-time SKU. The legacy subscription verification and pricing routes were retired. Clients use subscription eligibility and completion, and obtain localized subscription prices from Play Billing.
 
+## Subscription sale offers
+
+Set `GOOGLEPAY:SALE_OFFERS` to map whole discount percentages to developer-determined Play offer IDs. For example, use `{"25":"sale-25"}` or the configuration section entry `GOOGLEPAY__SALE_OFFERS__25=sale-25`. Create the offer on the configured four-week base plan in Play Console. During an active auto-apply percentage sale for the first payment, eligibility returns `offerId` and `discountPercent` when the sale has a start date, has no redemption cap, and the four-week discount matches a mapping. With the setting unset, eligibility has no sale offer.
+
+Payments verifies that the offer matches the auto-apply sale at the purchase start or 15 minutes earlier. Payments saves the validated sale code with the subscription. For each newly granted order on a subscription bought with an offer, Payments reads the paid total and included tax via Android Publisher `orders.get`. This requires the Play Console **View financial data** permission for the service account. A license-test offer purchase checks the permission and logs whether the lookup succeeded.
+
+Play has no start time while a purchase is pending, so Payments uses the sale running when it first validates the purchase.
+
 ## Real-time developer notifications
 
 Cloud Pub/Sub pushes to `POST /callback/googlepay`. Both `GOOGLEPAY:PUBSUB_AUDIENCE` and `GOOGLEPAY:PUBSUB_SERVICE_ACCOUNT` are required. Missing either setting or an invalid issuer, audience, account email, or `email_verified` claim returns 401. The app's `/api/googlepay/verify` top-up flow continues independently. [Authenticated push setup](docs/google-play-subscriptions.md#pubsub-and-rtdn)

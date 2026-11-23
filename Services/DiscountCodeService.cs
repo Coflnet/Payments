@@ -47,13 +47,15 @@ public class DiscountCodeService
     /// The newest active code flagged <see cref="DiscountCode.AutoApply"/> that is inside its validity window
     /// and has redemptions left; null when there is none.
     /// </summary>
-    public async Task<DiscountCode> GetActiveAutoApply()
+    public Task<DiscountCode> GetActiveAutoApply() => GetAutoApplyAt(DateTime.UtcNow);
+
+    /// <summary>Applies the auto-apply selection rules at the given instant.</summary>
+    public async Task<DiscountCode> GetAutoApplyAt(DateTime at)
     {
-        var now = DateTime.UtcNow;
         var candidates = await db.DiscountCodes
             .Where(c => c.AutoApply && c.IsActive && c.SubscriptionOnly)
-            .Where(c => c.StartsAt == null || c.StartsAt <= now)
-            .Where(c => c.ExpiresAt == null || c.ExpiresAt > now)
+            .Where(c => c.StartsAt == null || c.StartsAt <= at)
+            .Where(c => c.ExpiresAt == null || c.ExpiresAt > at)
             .Where(c => c.MaxRedemptions == null || c.TimesRedeemed < c.MaxRedemptions)
             .ToListAsync();
         // ordered in memory: CreatedAt ties (and SQLite/Postgres collations) must not decide

@@ -16,6 +16,7 @@ using Google.Apis.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Newtonsoft.Json;
@@ -24,13 +25,14 @@ using Payments.Controllers;
 
 namespace Coflnet.Payments.Services;
 
-public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
+public partial class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
 {
     private const string Token = "private-purchase-token";
     private const string ReplacementToken = "replacement-token";
     private const string Order = "GPA.1234-5678-9012-34567..0";
     private const string Audience = "https://payments.example/callback/googlepay";
     private const string PushAccount = "push@example.iam.gserviceaccount.com";
+    private static readonly Dictionary<string, string> SaleOffers = new() { ["GOOGLEPAY:SALE_OFFERS"] = "{\"25\":\"sale-25\"}" };
     private Mock<IGooglePlayPublisher> publisher;
     private SubscriptionPurchaseV2 remote;
     private DateTime expiry;
@@ -67,7 +69,9 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         publisher.Setup(p => p.IsVoidedPurchase(It.IsAny<string>(), It.IsAny<string>())).ReturnsAsync(false);
     }
 
-    private SubscriptionService PlayService(bool acceptTestPurchases = true, string allowedRegions = "DE") => new(NullLogger<SubscriptionService>.Instance, transactions, users, products, db,
+    private SubscriptionService PlayService(bool acceptTestPurchases = true, string allowedRegions = "DE",
+        IEnumerable<KeyValuePair<string, string>> saleOffers = null, ILogger<SubscriptionService> logger = null) =>
+        new(logger ?? NullLogger<SubscriptionService>.Instance, transactions, users, products, db,
         new LemonSqueezyService(new ConfigurationBuilder().Build(), NullLogger<LemonSqueezyService>.Instance, db,
             new VariantCacheService(NullLogger<VariantCacheService>.Instance)), tax: Tax(),
         config: new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
@@ -76,7 +80,7 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
             ["GOOGLEPAY:SUBSCRIPTION_PLANS:premium_plus"] = "l_prem_plus",
             ["GOOGLEPAY:ALLOWED_REGIONS"] = allowedRegions,
             ["GOOGLEPAY:ACCEPT_TEST_PURCHASES"] = acceptTestPurchases.ToString()
-        }).Build(), googlePlay: publisher.Object);
+        }).AddInMemoryCollection(saleOffers ?? []).Build(), googlePlay: publisher.Object);
 
     private CallbackController PlayCallback(SubscriptionService service, string audience = Audience, string account = PushAccount)
     {
@@ -107,10 +111,11 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         return new GooglePlaySubscriptionController(service).Complete(request);
     }
 
-    [Test]
-    public async Task CompleteVerifiesAndPersistsThePurchaseAndPaidPeriod()
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task CompleteVerifiesAndPersistsThePurchaseAndPaidPeriod(bool saleOffersConfigured)
     {
-        var result = (await CompletePurchase(PlayService())).Value;
+        var result = (await CompletePurchase(PlayService(saleOffers: saleOffersConfigured ? SaleOffers : null))).Value;
 
         Assert.That(result.IsValid, Is.True);
         Assert.That(result.Status, Is.EqualTo("active"));
@@ -129,8 +134,12 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         Assert.That(payment.IsSubscriptionPayment, Is.True);
         Assert.That(payment.TaxRemittedByProcessor, Is.True);
         Assert.That(payment.GrossAmount, Is.EqualTo(9.69m));
+        Assert.That(payment.Subtotal, Is.EqualTo(payment.GrossAmount));
+        Assert.That(payment.NetAmount, Is.EqualTo(payment.GrossAmount));
+        Assert.That(payment.TaxAmount, Is.Zero);
         Assert.That(payment.Country, Is.EqualTo("DE"));
         Assert.That((await Buyer()).Balance, Is.Zero);
+        publisher.Verify(p => p.GetOrderAmounts(It.IsAny<string>()), Times.Never);
     }
 
     [Test]
@@ -409,18 +418,27 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         publisher.Verify(p => p.AcknowledgeSubscription(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
     }
 
-    [Test]
-    public async Task PurchaseWithOfferCannotGrantOrAcknowledge()
+    [TestCase(null)]
+    [TestCase("")]
+    [TestCase(" \t")]
+    public async Task UnsetOrBlankSaleOffersKeepEligibilityAndPurchaseBehavior(string setting)
     {
-        remote.LineItems[0].OfferDetails.OfferId = "intro";
+        await AddGooglePlaySale();
+        remote.LineItems[0].OfferDetails.OfferId = "sale-25";
         remote.AcknowledgementState = "ACKNOWLEDGEMENT_STATE_PENDING";
+        var service = PlayService(saleOffers: setting == null ? null : new Dictionary<string, string> { ["GOOGLEPAY:SALE_OFFERS"] = setting });
 
-        var result = await PlayService().SyncGooglePlay(Token, "buyer");
+        var eligibility = await new GooglePlaySubscriptionController(service).Eligibility("buyer", "l_premium");
+        Assert.That(eligibility, Is.EqualTo(new GooglePlayEligibility(true, null, "premium", "p4w", null)));
+        Assert.That(JsonConvert.SerializeObject(eligibility), Does.Not.Contain("OfferId").And.Not.Contain("DiscountPercent"));
+
+        var result = await service.SyncGooglePlay(Token, "buyer");
 
         Assert.That(result.ErrorMessage, Is.EqualTo("plan_unavailable"));
         Assert.That(await db.Subscriptions.CountAsync(), Is.Zero);
         Assert.That(await db.OwnerShips.CountAsync(), Is.Zero);
         publisher.Verify(p => p.AcknowledgeSubscription(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        publisher.Verify(p => p.GetOrderAmounts(It.IsAny<string>()), Times.Never);
     }
 
     [TestCase("unknown", "p4w")]
@@ -1055,6 +1073,49 @@ public class GooglePlaySubscriptionTests : DirectSubscriptionTestBase
         Assert.That(await service.GetAvailablePlans("buyer", subscription.ExternalId), Is.Empty);
         Assert.That(Assert.ThrowsAsync<ApiException>(() => service.CancelSubscription("buyer", subscription.ExternalId)).Message,
             Is.EqualTo("Managed in Google Play"));
+    }
+
+    [TestCase(55, 655, 655)]
+    [TestCase(0, 0, 710)]
+    public async Task GooglePlayInvoiceShowsRecordedTaxAndPreservesTaxlessTotals(int taxCents, int recordedSubtotalCents,
+        int invoiceSubtotalCents)
+    {
+        var service = PlayService();
+        Assert.That((await service.SyncGooglePlay(Token, "buyer")).IsValid, Is.True);
+        var payment = await db.PaymentRecords.SingleAsync();
+        payment.GrossAmount = 7.10m;
+        payment.Currency = "USD";
+        payment.TaxAmount = taxCents / 100m;
+        payment.Subtotal = recordedSubtotalCents / 100m;
+        payment.NetAmount = payment.GrossAmount - payment.TaxAmount;
+        await db.SaveChangesAsync();
+
+        var subscription = await db.Subscriptions.SingleAsync();
+        var invoice = (await service.GetSubscriptionInvoices("buyer", subscription.ExternalId)).Single();
+
+        Assert.That(invoice.Id, Is.EqualTo(Order));
+        Assert.That(invoice.Currency, Is.EqualTo("USD"));
+        Assert.That(invoice.Total, Is.EqualTo(710));
+        Assert.That(invoice.Tax, Is.EqualTo(taxCents));
+        Assert.That(invoice.Subtotal, Is.EqualTo(invoiceSubtotalCents));
+    }
+
+    [Test]
+    public async Task GooglePlayInvoicePartsAlwaysAddUpToTheTotal()
+    {
+        var service = PlayService();
+        Assert.That((await service.SyncGooglePlay(Token, "buyer")).IsValid, Is.True);
+        var payment = await db.PaymentRecords.SingleAsync();
+        payment.GrossAmount = 7.104m;
+        payment.Currency = "USD";
+        payment.TaxAmount = 0.555m;
+        payment.Subtotal = 6.549m;
+        await db.SaveChangesAsync();
+
+        var subscription = await db.Subscriptions.SingleAsync();
+        var invoice = (await service.GetSubscriptionInvoices("buyer", subscription.ExternalId)).Single();
+
+        Assert.That(invoice.Subtotal + invoice.Tax, Is.EqualTo(invoice.Total));
     }
 
     [TestCase(false)]

@@ -52,9 +52,10 @@ public partial class SubscriptionService
         if (plan == null)
             return new(false, "plan_unavailable", null, null, null);
         var blocking = await ActiveRenewingInLine(context, planLines, userId, plan);
-        return blocking == null
-            ? new(true, null, productId, PlayBasePlan, null)
-            : new(false, "active_subscription", productId, PlayBasePlan, SubscriptionProviders.Normalize(blocking.ProviderSlug));
+        if (blocking != null)
+            return new(false, "active_subscription", productId, PlayBasePlan, SubscriptionProviders.Normalize(blocking.ProviderSlug));
+        var (offerId, percent) = await GooglePlaySaleOffer();
+        return new(true, null, productId, PlayBasePlan, null, offerId, percent);
     }
 
     internal static async Task<UserSubscription> ActiveRenewingInLine(PaymentContext db, PlanLines lines, string userId, Product plan,
@@ -106,7 +107,8 @@ public partial class SubscriptionService
             await GetOrCreateSubscriptionAsync(new UserSubscription
             {
                 ExternalId = id, ProviderSlug = PlayProvider, ProviderToken = token, User = binding.User, Product = binding.Plan,
-                Status = "pending", CreatedAt = first.StartTimeDateTimeOffset?.UtcDateTime ?? DateTime.UtcNow,
+                Status = "pending", DiscountCode = binding.SaleCode,
+                CreatedAt = first.StartTimeDateTimeOffset?.UtcDateTime ?? DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow, RenewsAt = DateTime.UtcNow
             });
         }
@@ -126,31 +128,29 @@ public partial class SubscriptionService
         }
     }
 
-    private async Task<(TopUpProduct Plan, User User, string LinkedId, string Error)> ResolveGooglePlayPurchase(
+    private async Task<(TopUpProduct Plan, User User, string LinkedId, string SaleCode, string Error)> ResolveGooglePlayPurchase(
         string id, SubscriptionPurchaseV2 purchase, string claimedUserId, UserSubscription existing = null)
     {
         if (purchase == null)
-            return (null, null, null, "invalid_purchase");
+            return (null, null, null, null, "invalid_purchase");
         var item = purchase.LineItems?.FirstOrDefault();
-        if (!string.IsNullOrEmpty(item?.OfferDetails?.OfferId))
-        {
-            logger.LogError("Google Play subscription {SubscriptionId} uses an unsupported offer", id);
-            return (null, null, null, "plan_unavailable");
-        }
+        var (saleCode, offerAllowed) = await ResolveGooglePlayOffer(id, item?.OfferDetails?.OfferId, purchase, existing);
+        if (!offerAllowed)
+            return (null, null, null, null, "plan_unavailable");
         if (GooglePlayState(purchase.SubscriptionState, item?.AutoRenewingPlan?.AutoRenewEnabled == true) == null)
         {
             logger.LogWarning("Ignoring unknown Google Play state for subscription {SubscriptionId}", id);
-            return (null, null, null, "unsupported_state");
+            return (null, null, null, null, "unsupported_state");
         }
         var plan = item?.ProductId != null && item.OfferDetails?.BasePlanId == PlayBasePlan
             ? await GooglePlayPlan(PlayPlans.GetValueOrDefault(item.ProductId)) : null;
         if (plan == null)
         {
             logger.LogWarning("Ignoring Google Play subscription {SubscriptionId} with an unsupported product or base plan", id);
-            return (null, null, null, "plan_unavailable");
+            return (null, null, null, null, "plan_unavailable");
         }
         if (purchase.TestPurchase != null && string.Equals(googlePlayConfig?["ACCEPT_TEST_PURCHASES"], "false", StringComparison.OrdinalIgnoreCase))
-            return (null, null, null, "test_purchase_disabled");
+            return (null, null, null, null, "test_purchase_disabled");
 
         var linkedId = string.IsNullOrEmpty(purchase.LinkedPurchaseToken) ? existing?.PreviousSubscriptionId
             : PlaySubscriptionId(purchase.LinkedPurchaseToken);
@@ -163,16 +163,16 @@ public partial class SubscriptionService
         }
         var (remoteUserId, error) = await ResolveGooglePlayPurchaseUserId(id, purchase, linkedUserId, existing?.User.ExternalId, claimedUserId);
         if (error != null)
-            return (null, null, null, error);
+            return (null, null, null, null, error);
         if (remoteUserId == null)
         {
             logger.LogError("Google Play subscription {SubscriptionId} has no bound user", id);
-            return (null, null, null, "missing_user");
+            return (null, null, null, null, "missing_user");
         }
         if ((claimedUserId != null && remoteUserId != claimedUserId) || (existing != null && remoteUserId != existing.User.ExternalId))
-            return (null, null, null, "user_mismatch");
+            return (null, null, null, null, "user_mismatch");
         var user = existing?.User ?? await userService.GetOrCreate(remoteUserId);
-        return (plan, user, linkedId, null);
+        return (plan, user, linkedId, saleCode, null);
     }
 
     private Task<string> PlayOwner(string id) => id == null ? Task.FromResult<string>(null) : context.Subscriptions
@@ -271,7 +271,7 @@ public partial class SubscriptionService
 
         var expiry = item.ExpiryTimeDateTimeOffset?.UtcDateTime;
         var price = item.AutoRenewingPlan?.RecurringPrice;
-        var amount = (price?.Units ?? 0) + (price?.Nanos ?? 0) / 1_000_000_000m;
+        var amount = GooglePlayAmount(price);
         ApplyGooglePlayDetails(local, token, purchase.RegionCode, item.ProductId, plan, linkedId, price?.CurrencyCode, amount);
         if (!GooglePlayRegionAllowed(purchase.RegionCode) && await LatestGrantedGooglePlayOrder(local) == null)
         {
@@ -287,7 +287,7 @@ public partial class SubscriptionService
         var grants = order != null && state is ("active" or "cancelled" or "past_due");
         if (grants)
         {
-            await GrantGooglePlayOrder(local, plan, purchase, order, amount);
+            await GrantGooglePlayOrder(local, plan, purchase, order, amount, !string.IsNullOrEmpty(item.OfferDetails.OfferId));
             await CloseLinkedGooglePlay(local);
         }
         await AlignGooglePlayAccess(local, expiry, grants, wasSuspended);
@@ -319,22 +319,19 @@ public partial class SubscriptionService
         return allowed == null || allowed.Length == 0 || allowed.Contains(region, StringComparer.OrdinalIgnoreCase);
     }
 
-    private async Task GrantGooglePlayOrder(UserSubscription local, TopUpProduct plan, SubscriptionPurchaseV2 purchase, string order, decimal amount)
+    private async Task GrantGooglePlayOrder(UserSubscription local, TopUpProduct plan, SubscriptionPurchaseV2 purchase,
+        string order, decimal amount, bool hasOffer)
     {
         var reference = SubscriptionProviders.GrantReference(PlayProvider, order);
+        if (hasOffer && await IsGranted(local.User.ExternalId, reference))
+            return;
         var first = await IsFirstGrantedPayment(local, reference);
-        var paidAt = first ? purchase.StartTimeDateTimeOffset?.UtcDateTime : null;
-        var payment = purchase.TestPurchase != null ? null : new PaymentRecord
-        {
-            User = local.User, ExternalUserId = local.User.ExternalId, Country = local.CheckoutCountry,
-            Provider = PlayProvider, PaymentMethod = PlayProvider, ExternalOrderId = order, ExternalTransactionId = local.ExternalId,
-            ProductId = plan.Id, ProductSlug = plan.Slug, CoinAmount = (long)plan.Cost,
-            GrossAmount = amount, Subtotal = amount, NetAmount = amount, Currency = local.Currency ?? plan.CurrencyCode.ToUpperInvariant(),
-            TaxRemittedByProcessor = true, IsSubscriptionPayment = true,
-            PaidAt = paidAt ?? DateTime.UtcNow, RecordedAt = DateTime.UtcNow, Status = PaymentRecordStatus.Confirmed
-        };
-        if (await GrantPaidPeriod(local.User.ExternalId, plan, local.ExternalId, reference, payment) && first)
-            await RecordDoubleSubscription(local.User.ExternalId, plan, PlayProvider, local.ExternalId, local.PreviousSubscriptionId);
+        var payment = await BuildGooglePlayPayment(local, plan, purchase, order, amount, hasOffer, first);
+        if (!await GrantPaidPeriod(local.User.ExternalId, plan, local.ExternalId, reference, payment) || !first)
+            return;
+        if (purchase.TestPurchase == null && !string.IsNullOrEmpty(local.DiscountCode))
+            await RedeemGooglePlaySale(local.ExternalId, local.DiscountCode);
+        await RecordDoubleSubscription(local.User.ExternalId, plan, PlayProvider, local.ExternalId, local.PreviousSubscriptionId);
     }
 
     private async Task RefundGooglePlayOrder(UserSubscription local, string order)
@@ -459,11 +456,13 @@ public partial class SubscriptionService
             var payment = payments.GetValueOrDefault(order);
             var wasRefunded = refunded.Contains(order);
             var total = payment == null ? 0 : (int)StripeAmounts.ToMinorUnits(payment.GrossAmount, payment.Currency);
+            var tax = payment == null ? 0 : (int)StripeAmounts.ToMinorUnits(payment.TaxAmount, payment.Currency);
+            var subtotal = total - tax;
             return new SubscriptionInvoice
             {
                 Id = order, SubscriptionId = subscription.Id, BillingReason = "renewal",
                 CreatedAt = payment?.PaidAt ?? g.Timestamp, UpdatedAt = payment?.RefundedAt ?? g.Timestamp,
-                Currency = payment?.Currency ?? subscription.Currency, Total = total, Subtotal = total,
+                Currency = payment?.Currency ?? subscription.Currency, Total = total, Subtotal = subtotal, Tax = tax,
                 Status = wasRefunded ? "refunded" : "paid", Refunded = wasRefunded,
                 RefundedAmount = wasRefunded ? total : 0
             };
