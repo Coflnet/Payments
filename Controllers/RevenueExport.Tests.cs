@@ -141,8 +141,11 @@ public class RevenueExportTests : DirectSubscriptionTestBase
         var record = db.PaymentRecords.Single(r => r.ExternalOrderId == "in_ok");
         record.TaxRate = 19.5;
         record.TaxAmount = 1.84m;
-        record.PaidAt = new DateTime(2026, 11, 12, 13, 4, 5, DateTimeKind.Utc);
+        // inside the rolling export window, so the test keeps passing as time goes on
+        var paidAt = Start.Date.AddDays(5).Add(new TimeSpan(13, 4, 5));
+        record.PaidAt = paidAt;
         await db.SaveChangesAsync();
+        var expectedTimestamp = paidAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
         var previous = CultureInfo.CurrentCulture;
         CultureInfo.CurrentCulture = new CultureInfo("de-DE");
         try
@@ -151,7 +154,7 @@ public class RevenueExportTests : DirectSubscriptionTestBase
 
             var row = rows.Single(r => r["ExternalReference"] == "in_ok");
             Assert.That((row["Amount"], row["TaxAmount"], row["TaxRate"], row["Timestamp"]),
-                Is.EqualTo(("11.53", "1.84", "19.5", "2026-11-12 13:04:05")));
+                Is.EqualTo(("11.53", "1.84", "19.5", expectedTimestamp)));
             Assert.That(row["SubscriptionMode"], Is.EqualTo("direct"), "no column shifted");
         }
         finally
